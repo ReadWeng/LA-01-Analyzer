@@ -315,7 +315,7 @@ hr {
 
 @st.cache_data(show_spinner=False)
 
-def fetch_firebase_lactate_records(start_time=None):
+def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
     url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{st.session_state.get('firebase_uid')}/lactate_records"
     try:
         headers = {"Authorization": f"Bearer {st.session_state.get('firebase_token')}"}
@@ -345,7 +345,8 @@ def fetch_firebase_lactate_records(start_time=None):
                     elapsed_min = 0.0
                     if start_time:
                         elapsed_min = (record_time - start_time).total_seconds() / 60.0
-                        if abs(elapsed_min) > 60:
+                        # 條件: 起始時間 - 60分鐘 <= 記錄時間 <= 起始時間 + 運動時間 + 60分鐘
+                        if elapsed_min < -60 or elapsed_min > (duration_minutes + 60):
                             continue
 
                 records.append({
@@ -721,7 +722,7 @@ if fit_bytes is not None:
                     st.error("請先在左側邊欄登入 Firebase 帳號！")
                 else:
                     with st.spinner('Syncing...'):
-                        cloud_records = fetch_firebase_lactate_records(start_time)
+                        cloud_records = fetch_firebase_lactate_records(start_time, duration_minutes)
                         if cloud_records:
                             new_rows = []
                             for r in cloud_records:
