@@ -10,12 +10,7 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-set /p REPO_URL="Please enter your GitHub Repository URL (e.g. https://github.com/YourAccount/Project.git): "
-if "%REPO_URL%"=="" (
-    echo [Error] URL cannot be empty!
-    pause
-    exit /b
-)
+set REPO_URL=https://github.com/ReadWeng/LA-01-Analyzer.git
 
 if not exist .git (
     echo.
