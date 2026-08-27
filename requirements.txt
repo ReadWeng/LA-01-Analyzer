@@ -3,4 +3,5 @@ pandas
 numpy
 plotly
 fitparse
+fitdecode
 requests
