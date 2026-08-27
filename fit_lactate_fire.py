@@ -344,9 +344,9 @@ def fetch_firebase_lactate_records(start_time=None):
                     record_time = datetime(full_year, month, day, hour, minute)
                     elapsed_min = 0.0
                     if start_time:
-                    elapsed_min = (record_time - start_time).total_seconds() / 60.0
-                    if abs(elapsed_min) > 60:
-                        continue
+                        elapsed_min = (record_time - start_time).total_seconds() / 60.0
+                        if abs(elapsed_min) > 60:
+                            continue
 
                 records.append({
                         "elapsed_minutes": elapsed_min,
