@@ -1,0 +1,6 @@
+@echo off
+echo 安裝必備套件...
+pip install -r requirements.txt
+echo 啟動系統中...
+streamlit run fit_lactate_fire.py
+pause
