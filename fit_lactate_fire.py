@@ -235,9 +235,15 @@ def generate_html_report(df_summary, fig, start_time, file_name, metrics):
     return html_content
 
 # 頁面配置與高級視覺主題
+from PIL import Image
+try:
+    page_icon_img = Image.open("logo.jpg")
+except:
+    page_icon_img = "🩸"
+
 st.set_page_config(
     page_title="FIT 檔與乳酸協同分析工具",
-    page_icon="🩸",
+    page_icon=page_icon_img,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -617,7 +623,14 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
         
     st.stop()
 
-st.markdown('<div class="title-container">🩸 FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
+import base64
+try:
+    with open("logo.jpg", "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode()
+    img_tag = f'<img src="data:image/jpeg;base64,{encoded_string}" style="height: 50px; vertical-align: middle; margin-right: 15px; border-radius: 50%; object-fit: cover;">'
+    st.markdown(f'<div class="title-container" style="display: flex; align-items: center;">{img_tag}FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
+except:
+    st.markdown('<div class="title-container">🩸 FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-text">上傳運動 .fit 檔案，標定乳酸測試數據，進行心率、功率、核心體溫與乳酸的完美對照作圖。</div>', unsafe_allow_html=True)
 
 # 初始化 session state 中的乳酸與血糖數據
