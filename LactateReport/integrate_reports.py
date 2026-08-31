@@ -1226,11 +1226,11 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         const physioDatasets = datasets.filter(d => ['power', 'hr', 'coreTemp'].includes(d.metric));
         const lactateDatasets = datasets.filter(d => ['lactate', 'glucose'].includes(d.metric));
 
-        const physioScales = Object.assign({}, chartScales);
+        const physioScales = Object.assign({{}}, chartScales);
         delete physioScales.yLactate;
         delete physioScales.yGlucose;
 
-        const lactateScales = Object.assign({}, chartScales);
+        const lactateScales = Object.assign({{}}, chartScales);
         delete lactateScales.yPowerHr;
         delete lactateScales.yCoreTemp;
 
@@ -1313,10 +1313,10 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 }},
                 }};
 
-        const physioOptions = Object.assign({}, baseOptions);
+        const physioOptions = Object.assign({{}}, baseOptions);
         physioOptions.scales = physioScales;
 
-        const lactateOptions = Object.assign({}, baseOptions);
+        const lactateOptions = Object.assign({{}}, baseOptions);
         lactateOptions.scales = lactateScales;
 
         const ctxPhysio = document.getElementById('physioChart').getContext('2d');
@@ -1334,13 +1334,19 @@ def build_integrated_html(raw_data_dict, theme='dark'):
 
         // Function to update visibility of datasets
         function updateChartVisibility() {{
-            physioChart.data.datasets.forEach(dataset => {
+            physioChart.data.datasets.forEach(dataset => {{
             const date = dataset.date;
             const metric = dataset.metric;
-            const isDateVisible = document.getElementById('chk-date-' + date).checked;
-            const isMetricVisible = document.getElementById('chk-metric-' + metric).checked;
-            dataset.hidden = !(isDateVisible && isMetricVisible);
-        });
+            
+            // Check if the checkboxes exist, otherwise fallback to activeDates dictionary
+            const dateCheckbox = document.getElementById('chk-date-' + date);
+            const metricCheckbox = document.getElementById('chk-metric-' + metric);
+            
+            const dateActive = dateCheckbox ? dateCheckbox.checked : activeDates[date];
+            const metricActive = metricCheckbox ? metricCheckbox.checked : activeMetrics[metric];
+            
+            dataset.hidden = !(dateActive && metricActive);
+        }});
         physioChart.update();
 
         lactateChart.data.datasets.forEach(dataset => {{
@@ -1353,6 +1359,8 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 dataset.hidden = !(dateActive && metricActive);
             }});
             
+            autoScaleYAxes(physioChart);
+            physioChart.update();
             autoScaleYAxes(lactateChart);
             lactateChart.update();
         }}
