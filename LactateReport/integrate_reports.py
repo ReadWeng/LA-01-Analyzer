@@ -903,6 +903,11 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         <!-- Chart Section -->
         <div class="chart-card">
             <div class="chart-wrapper">
+                <canvas id="physioChart"></canvas>
+            </div>
+        </div>
+        <div class="chart-card" style="margin-top: 20px;">
+            <div class="chart-wrapper">
                 <canvas id="lactateChart"></canvas>
             </div>
         </div>
