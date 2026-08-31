@@ -1223,12 +1223,18 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             }};
         }}
 
-        const lactateChart = new Chart(ctx, {{
-            type: 'line',
-            data: {{
-                datasets: datasets
-            }},
-            options: {{
+        const physioDatasets = datasets.filter(d => ['power', 'hr', 'coreTemp'].includes(d.metric));
+        const lactateDatasets = datasets.filter(d => ['lactate', 'glucose'].includes(d.metric));
+
+        const physioScales = Object.assign({}, chartScales);
+        delete physioScales.yLactate;
+        delete physioScales.yGlucose;
+
+        const lactateScales = Object.assign({}, chartScales);
+        delete lactateScales.yPowerHr;
+        delete lactateScales.yCoreTemp;
+
+        const baseOptions = {{
                 responsive: true,
                 maintainAspectRatio: false,
                 interaction: {{
@@ -1305,13 +1311,39 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                         }}
                     }}
                 }},
-                scales: chartScales
-            }}
+                }};
+
+        const physioOptions = Object.assign({}, baseOptions);
+        physioOptions.scales = physioScales;
+
+        const lactateOptions = Object.assign({}, baseOptions);
+        lactateOptions.scales = lactateScales;
+
+        const ctxPhysio = document.getElementById('physioChart').getContext('2d');
+        const physioChart = new Chart(ctxPhysio, {{
+            type: 'line',
+            data: {{ datasets: physioDatasets }},
+            options: physioOptions
+        }});
+
+        const lactateChart = new Chart(ctx, {{
+            type: 'line',
+            data: {{ datasets: lactateDatasets }},
+            options: lactateOptions
         }});
 
         // Function to update visibility of datasets
         function updateChartVisibility() {{
-            lactateChart.data.datasets.forEach(dataset => {{
+            physioChart.data.datasets.forEach(dataset => {
+            const date = dataset.date;
+            const metric = dataset.metric;
+            const isDateVisible = document.getElementById('chk-date-' + date).checked;
+            const isMetricVisible = document.getElementById('chk-metric-' + metric).checked;
+            dataset.hidden = !(isDateVisible && isMetricVisible);
+        });
+        physioChart.update();
+
+        lactateChart.data.datasets.forEach(dataset => {{
                 const date = dataset.date;
                 const metric = dataset.metric;
                 
