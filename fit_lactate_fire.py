@@ -646,32 +646,11 @@ st.sidebar.markdown("### 📁 數據源選擇")
 uploaded_file = st.sidebar.file_uploader("上傳您的 FIT 檔 (.fit)", type=["fit"])
 
 # 如果沒有上傳檔案，提供載入預設測試檔的按鈕，以方便使用者快速體驗
-use_demo = False
-if uploaded_file is None:
-    st.sidebar.info("您可以上傳自己的 .fit 檔案，或點擊下方按鈕載入系統內建的測試檔案。")
-    if st.sidebar.button("載入內建測試 FIT 檔案"):
-        use_demo = True
-        try:
-            with open("0521/20260521060844.fit", "rb") as f:
-                demo_bytes = f.read()
-            st.session_state['demo_bytes'] = demo_bytes
-            st.session_state['use_demo'] = True
-            st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"無法載入測試檔案: {e}")
-
-# 獲取實際要解析的檔案 bytes
 fit_bytes = None
 file_name = ""
 if uploaded_file is not None:
     fit_bytes = uploaded_file.read()
     file_name = uploaded_file.name
-    st.session_state['use_demo'] = False
-elif st.session_state.get('use_demo', False):
-    fit_bytes = st.session_state.get('demo_bytes')
-    file_name = "20260521060844.fit (內建測試)"
-
-# 檢查檔案是否切換，若是，重設乳酸資料與編輯器狀態以防資料混亂
 if 'last_file' not in st.session_state:
     st.session_state['last_file'] = None
 
