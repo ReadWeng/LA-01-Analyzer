@@ -765,8 +765,8 @@ if fit_bytes is not None:
             t = row['相對時間 (分鐘)']
             lac = row.get('乳酸值 (mmol/L)')
             glc = row.get('血糖值 (mg/dL)')
-            has_lac = pd.notna(lac) and lac > 0
-            has_glc = pd.notna(glc) and glc > 0
+            has_lac = pd.notna(lac) and lac >= 0
+            has_glc = pd.notna(glc) and glc >= 0
             if pd.notna(t) and (has_lac or has_glc):
                 custom_lactate_points.append({
                     'elapsed_minutes': float(t),
