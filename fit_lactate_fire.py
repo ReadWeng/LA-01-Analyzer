@@ -1140,7 +1140,7 @@ else:
                 df_hist = pd.DataFrame(all_records)
                 if not df_hist.empty and 'record_time' in df_hist.columns:
                     df_hist['date_str'] = df_hist['record_time'].dt.strftime('%Y-%m-%d')
-                    top_5_dates = df_hist['date_str'].drop_duplicates().nlargest(5).values
+                    top_5_dates = df_hist['date_str'].drop_duplicates().sort_values(ascending=False).head(5).values
                     df_top5 = df_hist[df_hist['date_str'].isin(top_5_dates)].copy()
                     df_top5 = df_top5.sort_values('record_time')
                     
