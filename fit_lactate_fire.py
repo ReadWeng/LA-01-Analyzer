@@ -321,6 +321,71 @@ hr {
 
 @st.cache_data(show_spinner=False)
 
+
+def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
+    uid = st.session_state.get('firebase_uid')
+    token = st.session_state.get('firebase_token')
+    if not uid or not token:
+        st.error('請先登入 Firebase')
+        return False
+        
+    try:
+        # Downsample to 30s
+        df_copy = df.copy()
+        # bin size = 0.5 minutes (30s)
+        df_copy['bin'] = (df_copy['elapsed_minutes'] * 2).astype(int) / 2.0
+        df_res = df_copy.groupby('bin').mean(numeric_only=True).reset_index()
+        
+        # Prepare array data
+        time_series = []
+        for _, row in df_res.iterrows():
+            point = {
+                'mapValue': {
+                    'fields': {
+                        'elapsed_minutes': {'doubleValue': round(row.get('elapsed_minutes', 0), 2)}
+                    }
+                }
+            }
+            if pd.notna(row.get('heart_rate')):
+                point['mapValue']['fields']['heart_rate'] = {'doubleValue': round(row['heart_rate'], 1)}
+            if pd.notna(row.get('power')):
+                point['mapValue']['fields']['power'] = {'doubleValue': round(row['power'], 1)}
+            if pd.notna(row.get('core_temp')):
+                point['mapValue']['fields']['core_temp'] = {'doubleValue': round(row['core_temp'], 2)}
+            if 'cadence' in row and pd.notna(row.get('cadence')):
+                point['mapValue']['fields']['cadence'] = {'doubleValue': round(row['cadence'], 1)}
+            time_series.append(point)
+            
+        # JSON payload for Firestore
+        payload = {
+            'fields': {
+                'file_name': {'stringValue': str(file_name)},
+                'start_time': {'timestampValue': start_time.isoformat() + 'Z' if start_time.tzinfo is None else start_time.isoformat()},
+                'avg_power': {'integerValue': str(int(avg_power))},
+                'max_power': {'integerValue': str(int(max_power))},
+                'avg_hr': {'integerValue': str(int(avg_hr))},
+                'max_hr': {'integerValue': str(int(max_hr))},
+                'time_series': {'arrayValue': {'values': time_series}}
+            }
+        }
+        if max_core is not None:
+            payload['fields']['max_core'] = {'doubleValue': float(max_core)}
+            
+        url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            return True
+        else:
+            st.error(f'Upload failed: {response.text}')
+            return False
+    except Exception as e:
+        st.error(f'Upload error: {e}')
+        return False
+
+
+
 def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
     url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{st.session_state.get('firebase_uid')}/lactate_records"
     try:
