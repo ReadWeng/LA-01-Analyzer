@@ -1130,40 +1130,40 @@ if fit_bytes is not None:
 else:
     # 歡迎畫面
     
-            st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是點擊載入系統內建的測試檔案來開始分析。")
-            
-            if st.session_state.get('firebase_uid'):
-                with st.spinner('正在載入歷史乳酸紀錄...'):
-                    all_records = fetch_firebase_lactate_records()
-                    if all_records:
-                        import plotly.express as px
-                        df_hist = pd.DataFrame(all_records)
-                        if not df_hist.empty and 'record_time' in df_hist.columns:
-                            df_hist['date_str'] = df_hist['record_time'].dt.strftime('%Y-%m-%d')
-                            top_5_dates = df_hist['date_str'].drop_duplicates().nlargest(5).values
-                            df_top5 = df_hist[df_hist['date_str'].isin(top_5_dates)].copy()
-                            df_top5 = df_top5.sort_values('record_time')
-                            
-                            # Calculate order for alignment
-                            df_top5['測試點順序'] = df_top5.groupby('date_str').cumcount() + 1
-                            
-                            fig = px.line(df_top5, x='測試點順序', y='lactate_mmol', color='date_str', markers=True,
-                                          title='📈 最近五期乳酸紀錄趨勢 (依量測順序)',
-                                          labels={'測試點順序': '該期量測順序', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'})
-                            
-                            fig.update_layout(
-                                xaxis_title="量測順序",
-                                yaxis_title="乳酸值 (mmol/L)",
-                                xaxis=dict(tickmode='linear', tick0=1, dtick=1),
-                                hovermode="x unified",
-                                plot_bgcolor='rgba(0,0,0,0)',
-                                paper_bgcolor='rgba(0,0,0,0)'
-                            )
-                            # Apply zero-grid style
-                            fig.update_xaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
-                            fig.update_yaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
-                            
-                            st.plotly_chart(fig, use_container_width=True)
+    st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是點擊載入系統內建的測試檔案來開始分析。")
+    
+    if st.session_state.get('firebase_uid'):
+        with st.spinner('正在載入歷史乳酸紀錄...'):
+            all_records = fetch_firebase_lactate_records()
+            if all_records:
+                import plotly.express as px
+                df_hist = pd.DataFrame(all_records)
+                if not df_hist.empty and 'record_time' in df_hist.columns:
+                    df_hist['date_str'] = df_hist['record_time'].dt.strftime('%Y-%m-%d')
+                    top_5_dates = df_hist['date_str'].drop_duplicates().nlargest(5).values
+                    df_top5 = df_hist[df_hist['date_str'].isin(top_5_dates)].copy()
+                    df_top5 = df_top5.sort_values('record_time')
+                    
+                    # Calculate order for alignment
+                    df_top5['測試點順序'] = df_top5.groupby('date_str').cumcount() + 1
+                    
+                    fig = px.line(df_top5, x='測試點順序', y='lactate_mmol', color='date_str', markers=True,
+                                  title='📈 最近五期乳酸紀錄趨勢 (依量測順序)',
+                                  labels={'測試點順序': '該期量測順序', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'})
+                    
+                    fig.update_layout(
+                        xaxis_title="量測順序",
+                        yaxis_title="乳酸值 (mmol/L)",
+                        xaxis=dict(tickmode='linear', tick0=1, dtick=1),
+                        hovermode="x unified",
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)'
+                    )
+                    # Apply zero-grid style
+                    fig.update_xaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
+                    fig.update_yaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
+                    
+                    st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("""
     ### 💡 本工具特色：
