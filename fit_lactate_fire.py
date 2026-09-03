@@ -763,7 +763,15 @@ if fit_bytes is not None:
             if max_core is not None:
                 st.markdown(f'<div class="metric-card"><div class="metric-label">🔥 最大核心溫度</div><div class="metric-value" style="color: #ff9100;">{max_core:.2f} °C</div></div>', unsafe_allow_html=True)
             else:
+                
                 st.markdown('<div class="metric-card"><div class="metric-label">🔥 最大核心溫度</div><div class="metric-value" style="color: #8b949e;">未偵測</div></div>', unsafe_allow_html=True)
+            
+        if st.session_state.get('firebase_uid'):
+            if st.button('☁️ 上傳此筆 FIT 紀錄至雲端'):
+                with st.spinner('上傳中...'):
+                    if upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
+                        st.success('✅ FIT 數據已成功上傳儲存！')
+
             
         st.markdown("<hr>", unsafe_allow_html=True)
         
