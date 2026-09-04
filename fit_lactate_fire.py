@@ -329,7 +329,6 @@ def import_historical_html_to_firebase(html_content, file_name):
     import base64
     import numpy as np
     import pandas as pd
-    from bs4 import BeautifulSoup
     import re
     from datetime import datetime
     import requests
@@ -339,20 +338,15 @@ def import_historical_html_to_firebase(html_content, file_name):
     if not uid or not token:
         return False, "請先登入 Firebase 帳號"
 
-    soup = BeautifulSoup(html_content, 'html.parser')
-
     # 1. Metadata
-    meta_bar = soup.find('div', class_='metadata-bar')
-    if not meta_bar:
-        return False, "找不到報告中的 metadata-bar"
-
-    meta_text = meta_bar.get_text()
-    time_m = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', meta_text)
+    time_m = re.search(r'活動開始時間.*?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', html_content, re.DOTALL)
+    if not time_m:
+        time_m = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', html_content)
     if not time_m:
         return False, "找不到活動開始時間"
     start_time = datetime.strptime(time_m.group(1), '%Y-%m-%d %H:%M:%S')
 
-    fn_m = re.search(r'檔案名稱\s*:\s*([^&|\s\n\r]+)', meta_text)
+    fn_m = re.search(r'檔案名稱.*?[:：]\s*([^&|\s\n\r<]+)', html_content)
     original_filename = fn_m.group(1).strip() if fn_m else file_name
 
     # 2. KPIs
@@ -360,24 +354,17 @@ def import_historical_html_to_firebase(html_content, file_name):
     avg_hr, max_hr = 0, 0
     max_core = None
 
-    for kpi in soup.find_all('div', class_='kpi-card'):
-        lbl = kpi.find('div', class_='kpi-label')
-        val = kpi.find('div', class_='kpi-value')
-        if not lbl or not val:
-            continue
-        l_text, v_text = lbl.get_text(), val.get_text()
-        if '功率' in l_text and '/' in v_text:
-            pm = re.search(r'(\d+)\s*/\s*(\d+)', v_text)
-            if pm:
-                avg_power, max_power = int(pm.group(1)), int(pm.group(2))
-        elif '心率' in l_text and '/' in v_text:
-            hm = re.search(r'(\d+)\s*/\s*(\d+)', v_text)
-            if hm:
-                avg_hr, max_hr = int(hm.group(1)), int(hm.group(2))
-        elif '核心溫度' in l_text and '未偵測' not in v_text:
-            cm = re.search(r'([\d\.]+)', v_text)
-            if cm:
-                max_core = float(cm.group(1))
+    pm = re.search(r'功率.*?(\d+)\s*/\s*(\d+)\s*W', html_content, re.DOTALL)
+    if pm:
+        avg_power, max_power = int(pm.group(1)), int(pm.group(2))
+
+    hm = re.search(r'心率.*?(\d+)\s*/\s*(\d+)\s*bpm', html_content, re.DOTALL)
+    if hm:
+        avg_hr, max_hr = int(hm.group(1)), int(hm.group(2))
+
+    cm = re.search(r'核心溫度.*?([\d\.]+)\s*°C', html_content, re.DOTALL)
+    if cm:
+        max_core = float(cm.group(1))
 
     # 3. Plotly time series (downsample to 30s bins)
     time_series_points = []
@@ -467,16 +454,16 @@ def import_historical_html_to_firebase(html_content, file_name):
         return False, f"連線至 fit_records 失敗: {e}"
 
     # 5. Summary table -> lactate_records
-    table = soup.find('table', class_='summary-table')
     la_count = 0
-    if table:
-        rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')[1:]
-        for row in rows:
-            cols = [c.get_text().strip() for c in row.find_all('td')]
-            if len(cols) >= 2:
+    table_m = re.search(r'<table[^>]*>(.*?)</table>', html_content, re.DOTALL)
+    if table_m:
+        tr_matches = re.findall(r'<tr[^>]*>(.*?)</tr>', table_m.group(1), re.DOTALL)
+        for tr in tr_matches:
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            if len(tds) >= 2:
                 try:
-                    elapsed_min = float(cols[0])
-                    la_val = float(cols[1])
+                    elapsed_min = float(tds[0].strip())
+                    la_val = float(tds[1].strip())
                     record_time = start_time + pd.Timedelta(minutes=elapsed_min)
 
                     la_payload = {
@@ -494,7 +481,7 @@ def import_historical_html_to_firebase(html_content, file_name):
                     requests.post(la_url, headers=headers, json=la_payload, timeout=10)
                     la_count += 1
                 except Exception as e:
-                    print(f"Skipping row in html import: {e}")
+                    pass
 
     return True, f"成功匯入（包含 {len(time_series_points)} 個軌跡點，{la_count} 筆乳酸數據）"
 

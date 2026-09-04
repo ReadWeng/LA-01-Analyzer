@@ -5,3 +5,4 @@ plotly
 fitparse
 fitdecode
 requests
+beautifulsoup4
