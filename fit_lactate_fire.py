@@ -793,10 +793,11 @@ if fit_bytes is not None:
                 st.markdown('<div class="metric-card"><div class="metric-label">🔥 最大核心溫度</div><div class="metric-value" style="color: #8b949e;">未偵測</div></div>', unsafe_allow_html=True)
             
         if st.session_state.get('firebase_uid'):
-            if st.button('☁️ 上傳此筆 FIT 紀錄至雲端'):
-                with st.spinner('上傳中...'):
+            if st.session_state.get('last_uploaded_fit_name') != file_name:
+                # Automatically upload
+                with st.spinner('自動同步 FIT 數據至雲端...'):
                     if upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
-                        st.success('✅ FIT 數據已成功上傳儲存！')
+                        st.session_state['last_uploaded_fit_name'] = file_name
 
             
         st.markdown("<hr>", unsafe_allow_html=True)
@@ -1140,6 +1141,20 @@ if fit_bytes is not None:
                     mime="text/csv",
                     use_container_width=True
                 )
+
+    with save_cols[3]:
+        if st.button("☁️ 備份分析報告至 Firebase", use_container_width=True):
+            if not st.session_state.get('firebase_uid'):
+                st.error("請先於左側登入 Firebase")
+            else:
+                with st.spinner("上傳中..."):
+                    fname = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                    ok, msg = upload_report_to_firebase_storage(html_report_data, fname)
+                    if ok:
+                        st.success("✅ 已上傳至 Firebase Storage！")
+                    else:
+                        st.error(f"上傳失敗: {msg}")
+
         else:
             st.info("請於上方輸入乳酸數據，此處將自動產生對照彙整表與提供報告下載。")
             
