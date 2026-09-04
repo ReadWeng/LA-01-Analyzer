@@ -323,6 +323,122 @@ hr {
 
 
 
+
+def import_historical_html_to_firebase(html_content, file_name):
+    from bs4 import BeautifulSoup
+    import re
+    from datetime import datetime
+    import requests
+    
+    uid = st.session_state.get('firebase_uid')
+    token = st.session_state.get('firebase_token')
+    if not uid or not token:
+        return False, "請先登入 Firebase"
+        
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 1. Parse Metadata
+    meta_bar = soup.find('div', class_='metadata-bar')
+    if not meta_bar:
+        return False, "找不到 Metadata Bar"
+        
+    text = meta_bar.get_text()
+    start_time_match = re.search(r'活動開始時間.*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', text)
+    if not start_time_match:
+        return False, "找不到活動開始時間"
+        
+    start_time_str = start_time_match.group(1)
+    start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
+    
+    original_filename = file_name
+    file_match = re.search(r'檔案名稱.*?(.*\.fit)', text)
+    if file_match:
+        original_filename = file_match.group(1).strip()
+        
+    # 2. Parse KPIs
+    kpis = soup.find_all('div', class_='kpi-card')
+    avg_power, max_power = 0, 0
+    avg_hr, max_hr = 0, 0
+    max_core = 0.0
+    
+    for kpi in kpis:
+        label_div = kpi.find('div', class_='kpi-label')
+        val_div = kpi.find('div', class_='kpi-value')
+        if not label_div or not val_div: continue
+        label = label_div.get_text()
+        val = val_div.get_text()
+        
+        if '功率' in label and '/' in val:
+            m = re.search(r'(\d+)\s*/\s*(\d+)', val)
+            if m:
+                avg_power, max_power = int(m.group(1)), int(m.group(2))
+        elif '心率' in label and '/' in val:
+            m = re.search(r'(\d+)\s*/\s*(\d+)', val)
+            if m:
+                avg_hr, max_hr = int(m.group(1)), int(m.group(2))
+        elif '核心溫度' in label and '未偵測' not in val:
+            m = re.search(r'([\d\.]+)', val)
+            if m:
+                max_core = float(m.group(1))
+                
+    # 3. Parse Summary Table
+    table = soup.find('table', class_='summary-table')
+    if not table:
+        return False, "找不到生理數據彙整表"
+        
+    rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')[1:]
+    
+    # Upload to fit_records
+    fit_doc_id = f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
+    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?documentId={fit_doc_id}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    payload = {
+        "fields": {
+            "upload_time": {"timestampValue": datetime.utcnow().isoformat() + "Z"},
+            "activity_start_time": {"timestampValue": start_time.isoformat() + "Z"},
+            "original_filename": {"stringValue": original_filename},
+            "avg_power": {"integerValue": str(avg_power)},
+            "max_power": {"integerValue": str(max_power)},
+            "avg_hr": {"integerValue": str(avg_hr)},
+            "max_hr": {"integerValue": str(max_hr)},
+            "max_core_temp": {"doubleValue": float(max_core)},
+            "time_series": {"arrayValue": {"values": []}} # 省空間不存完整序列
+        }
+    }
+    
+    requests.post(fit_url, headers=headers, json=payload)
+    
+    # Upload lactate points
+    for row in rows:
+        cols = row.find_all('td')
+        if len(cols) >= 8:
+            try:
+                elapsed_min = float(cols[0].get_text().strip())
+                la_val = float(cols[1].get_text().strip())
+                record_time = start_time + pd.Timedelta(minutes=elapsed_min)
+                
+                point_id = f"la_{record_time.strftime('%Y%m%d_%H%M%S')}"
+                point_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?documentId={point_id}"
+                
+                point_payload = {
+                    "fields": {
+                        "year": {"integerValue": str(record_time.year)},
+                        "month": {"integerValue": str(record_time.month)},
+                        "day": {"integerValue": str(record_time.day)},
+                        "hour": {"integerValue": str(record_time.hour)},
+                        "minute": {"integerValue": str(record_time.minute)},
+                        "final_la_mmol": {"doubleValue": float(la_val)},
+                        "source": {"stringValue": "html_import"}
+                    }
+                }
+                requests.post(point_url, headers=headers, json=point_payload)
+            except Exception as e:
+                print(f"Skipping row: {e}")
+                
+    return True, "匯入成功！"
+
+
 def upload_report_to_firebase_storage(html_data, file_name):
     import urllib.parse
     uid = st.session_state.get('firebase_uid')
