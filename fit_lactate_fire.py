@@ -322,6 +322,32 @@ hr {
 @st.cache_data(show_spinner=False)
 
 
+
+def upload_report_to_firebase_storage(html_data, file_name):
+    import urllib.parse
+    uid = st.session_state.get('firebase_uid')
+    token = st.session_state.get('firebase_token')
+    if not uid or not token:
+        return False, "請先登入 Firebase 帳號"
+    
+    object_name = f"users/{uid}/reports/{file_name}"
+    object_name_encoded = urllib.parse.quote(object_name, safe='')
+    url = f"https://firebasestorage.googleapis.com/v0/b/lactatecloud.appspot.com/o?name={object_name_encoded}"
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "text/html"
+    }
+    try:
+        response = requests.post(url, headers=headers, data=html_data.encode('utf-8'), timeout=15)
+        if response.status_code == 200:
+            return True, "成功"
+        else:
+            return False, f"錯誤 {response.status_code}: {response.text}"
+    except Exception as e:
+        return False, str(e)
+
+
 def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
@@ -1076,7 +1102,7 @@ if fit_bytes is not None:
                 }
             )
             
-            save_cols = st.columns(3)
+            save_cols = st.columns(4)
             
             with save_cols[0]:
                 if st.button("💾 儲存報告至本機專案資料夾", use_container_width=True):
