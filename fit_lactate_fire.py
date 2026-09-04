@@ -325,119 +325,178 @@ hr {
 
 
 def import_historical_html_to_firebase(html_content, file_name):
+    import json
+    import base64
+    import numpy as np
+    import pandas as pd
     from bs4 import BeautifulSoup
     import re
     from datetime import datetime
     import requests
-    
+
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
     if not uid or not token:
-        return False, "請先登入 Firebase"
-        
+        return False, "請先登入 Firebase 帳號"
+
     soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # 1. Parse Metadata
+
+    # 1. Metadata
     meta_bar = soup.find('div', class_='metadata-bar')
     if not meta_bar:
-        return False, "找不到 Metadata Bar"
-        
-    text = meta_bar.get_text()
-    start_time_match = re.search(r'活動開始時間.*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', text)
-    if not start_time_match:
+        return False, "找不到報告中的 metadata-bar"
+
+    meta_text = meta_bar.get_text()
+    time_m = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', meta_text)
+    if not time_m:
         return False, "找不到活動開始時間"
-        
-    start_time_str = start_time_match.group(1)
-    start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
-    
-    original_filename = file_name
-    file_match = re.search(r'檔案名稱.*?(.*\.fit)', text)
-    if file_match:
-        original_filename = file_match.group(1).strip()
-        
-    # 2. Parse KPIs
-    kpis = soup.find_all('div', class_='kpi-card')
+    start_time = datetime.strptime(time_m.group(1), '%Y-%m-%d %H:%M:%S')
+
+    fn_m = re.search(r'檔案名稱\s*:\s*([^&|\s\n\r]+)', meta_text)
+    original_filename = fn_m.group(1).strip() if fn_m else file_name
+
+    # 2. KPIs
     avg_power, max_power = 0, 0
     avg_hr, max_hr = 0, 0
-    max_core = 0.0
-    
-    for kpi in kpis:
-        label_div = kpi.find('div', class_='kpi-label')
-        val_div = kpi.find('div', class_='kpi-value')
-        if not label_div or not val_div: continue
-        label = label_div.get_text()
-        val = val_div.get_text()
-        
-        if '功率' in label and '/' in val:
-            m = re.search(r'(\d+)\s*/\s*(\d+)', val)
-            if m:
-                avg_power, max_power = int(m.group(1)), int(m.group(2))
-        elif '心率' in label and '/' in val:
-            m = re.search(r'(\d+)\s*/\s*(\d+)', val)
-            if m:
-                avg_hr, max_hr = int(m.group(1)), int(m.group(2))
-        elif '核心溫度' in label and '未偵測' not in val:
-            m = re.search(r'([\d\.]+)', val)
-            if m:
-                max_core = float(m.group(1))
-                
-    # 3. Parse Summary Table
-    table = soup.find('table', class_='summary-table')
-    if not table:
-        return False, "找不到生理數據彙整表"
-        
-    rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')[1:]
-    
-    # Upload to fit_records
-    fit_doc_id = f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
-    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?documentId={fit_doc_id}"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    
-    payload = {
+    max_core = None
+
+    for kpi in soup.find_all('div', class_='kpi-card'):
+        lbl = kpi.find('div', class_='kpi-label')
+        val = kpi.find('div', class_='kpi-value')
+        if not lbl or not val:
+            continue
+        l_text, v_text = lbl.get_text(), val.get_text()
+        if '功率' in l_text and '/' in v_text:
+            pm = re.search(r'(\d+)\s*/\s*(\d+)', v_text)
+            if pm:
+                avg_power, max_power = int(pm.group(1)), int(pm.group(2))
+        elif '心率' in l_text and '/' in v_text:
+            hm = re.search(r'(\d+)\s*/\s*(\d+)', v_text)
+            if hm:
+                avg_hr, max_hr = int(hm.group(1)), int(hm.group(2))
+        elif '核心溫度' in l_text and '未偵測' not in v_text:
+            cm = re.search(r'([\d\.]+)', v_text)
+            if cm:
+                max_core = float(cm.group(1))
+
+    # 3. Plotly time series (downsample to 30s bins)
+    time_series_points = []
+    idx = html_content.find('Plotly.newPlot(')
+    if idx != -1:
+        first_comma = html_content.find(',', idx)
+        start_arr = html_content.find('[', first_comma)
+        depth = 0
+        end_arr = -1
+        for i in range(start_arr, len(html_content)):
+            if html_content[i] == '[':
+                depth += 1
+            elif html_content[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    end_arr = i + 1
+                    break
+        if end_arr != -1:
+            try:
+                traces = json.loads(html_content[start_arr:end_arr])
+                x_time, y_pwr, y_hr, y_core = None, None, None, None
+                for t in traces:
+                    nm = t.get('name', '')
+                    x_obj, y_obj = t.get('x', {}), t.get('y', {})
+                    if isinstance(x_obj, dict) and 'bdata' in x_obj and isinstance(y_obj, dict) and 'bdata' in y_obj:
+                        x_data = np.frombuffer(base64.b64decode(x_obj['bdata']), dtype=np.float64)
+                        y_data = np.frombuffer(base64.b64decode(y_obj['bdata']), dtype=np.float64)
+                        if '功率' in nm and ('30s' in nm or '平均' in nm):
+                            x_time = x_data
+                            y_pwr = y_data
+                        elif '心率' in nm or 'BPM' in nm:
+                            y_hr = y_data
+                        elif '核心' in nm:
+                            y_core = y_data
+
+                if x_time is not None:
+                    df_ts = pd.DataFrame({'elapsed_minutes': x_time})
+                    if y_pwr is not None and len(y_pwr) == len(x_time):
+                        df_ts['power'] = y_pwr
+                    if y_hr is not None and len(y_hr) == len(x_time):
+                        df_ts['heart_rate'] = y_hr
+                    if y_core is not None and len(y_core) == len(x_time):
+                        df_ts['core_temp'] = y_core
+
+                    df_ts['bin'] = (df_ts['elapsed_minutes'] * 2).astype(int) / 2.0
+                    df_res = df_ts.groupby('bin').mean(numeric_only=True).reset_index()
+                    for _, row in df_res.iterrows():
+                        pt = {
+                            'mapValue': {
+                                'fields': {
+                                    'elapsed_minutes': {'doubleValue': round(float(row.get('elapsed_minutes', 0)), 2)}
+                                }
+                            }
+                        }
+                        if 'power' in row and pd.notna(row['power']):
+                            pt['mapValue']['fields']['power'] = {'doubleValue': round(float(row['power']), 1)}
+                        if 'heart_rate' in row and pd.notna(row['heart_rate']):
+                            pt['mapValue']['fields']['heart_rate'] = {'doubleValue': round(float(row['heart_rate']), 1)}
+                        if 'core_temp' in row and pd.notna(row['core_temp']):
+                            pt['mapValue']['fields']['core_temp'] = {'doubleValue': round(float(row['core_temp']), 2)}
+                        time_series_points.append(pt)
+            except Exception as e:
+                print('Error parsing plotly json in html import:', e)
+
+    # 4. Upload to fit_records
+    fit_payload = {
         "fields": {
-            "upload_time": {"timestampValue": datetime.utcnow().isoformat() + "Z"},
-            "activity_start_time": {"timestampValue": start_time.isoformat() + "Z"},
-            "original_filename": {"stringValue": original_filename},
-            "avg_power": {"integerValue": str(avg_power)},
-            "max_power": {"integerValue": str(max_power)},
-            "avg_hr": {"integerValue": str(avg_hr)},
-            "max_hr": {"integerValue": str(max_hr)},
-            "max_core_temp": {"doubleValue": float(max_core)},
-            "time_series": {"arrayValue": {"values": []}} # 省空間不存完整序列
+            "file_name": {"stringValue": str(original_filename)},
+            "start_time": {"timestampValue": start_time.isoformat() + "Z"},
+            "avg_power": {"integerValue": str(int(avg_power))},
+            "max_power": {"integerValue": str(int(max_power))},
+            "avg_hr": {"integerValue": str(int(avg_hr))},
+            "max_hr": {"integerValue": str(int(max_hr))},
+            "time_series": {"arrayValue": {"values": time_series_points}}
         }
     }
-    
-    requests.post(fit_url, headers=headers, json=payload)
-    
-    # Upload lactate points
-    for row in rows:
-        cols = row.find_all('td')
-        if len(cols) >= 8:
-            try:
-                elapsed_min = float(cols[0].get_text().strip())
-                la_val = float(cols[1].get_text().strip())
-                record_time = start_time + pd.Timedelta(minutes=elapsed_min)
-                
-                point_id = f"la_{record_time.strftime('%Y%m%d_%H%M%S')}"
-                point_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?documentId={point_id}"
-                
-                point_payload = {
-                    "fields": {
-                        "year": {"integerValue": str(record_time.year)},
-                        "month": {"integerValue": str(record_time.month)},
-                        "day": {"integerValue": str(record_time.day)},
-                        "hour": {"integerValue": str(record_time.hour)},
-                        "minute": {"integerValue": str(record_time.minute)},
-                        "final_la_mmol": {"doubleValue": float(la_val)},
-                        "source": {"stringValue": "html_import"}
-                    }
-                }
-                requests.post(point_url, headers=headers, json=point_payload)
-            except Exception as e:
-                print(f"Skipping row: {e}")
-                
-    return True, "匯入成功！"
+    if max_core is not None:
+        fit_payload["fields"]["max_core"] = {"doubleValue": float(max_core)}
 
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+    try:
+        r_fit = requests.post(fit_url, headers=headers, json=fit_payload, timeout=15)
+        if r_fit.status_code not in [200, 201]:
+            return False, f"上傳 fit_records 失敗 ({r_fit.status_code}): {r_fit.text}"
+    except Exception as e:
+        return False, f"連線至 fit_records 失敗: {e}"
+
+    # 5. Summary table -> lactate_records
+    table = soup.find('table', class_='summary-table')
+    la_count = 0
+    if table:
+        rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')[1:]
+        for row in rows:
+            cols = [c.get_text().strip() for c in row.find_all('td')]
+            if len(cols) >= 2:
+                try:
+                    elapsed_min = float(cols[0])
+                    la_val = float(cols[1])
+                    record_time = start_time + pd.Timedelta(minutes=elapsed_min)
+
+                    la_payload = {
+                        "fields": {
+                            "year": {"integerValue": str(record_time.year)},
+                            "month": {"integerValue": str(record_time.month)},
+                            "day": {"integerValue": str(record_time.day)},
+                            "hour": {"integerValue": str(record_time.hour)},
+                            "minute": {"integerValue": str(record_time.minute)},
+                            "final_la_mmol": {"doubleValue": float(la_val)},
+                            "source": {"stringValue": "html_import"}
+                        }
+                    }
+                    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
+                    requests.post(la_url, headers=headers, json=la_payload, timeout=10)
+                    la_count += 1
+                except Exception as e:
+                    print(f"Skipping row in html import: {e}")
+
+    return True, f"成功匯入（包含 {len(time_series_points)} 個軌跡點，{la_count} 筆乳酸數據）"
 
 def upload_report_to_firebase_storage(html_data, file_name):
     import urllib.parse
@@ -851,6 +910,36 @@ if 'custom_lactate' not in st.session_state:
 # 側邊欄：檔案上傳與設定
 st.sidebar.markdown("### 📁 數據源選擇")
 uploaded_file = st.sidebar.file_uploader("上傳您的 FIT 檔 (.fit)", type=["fit"])
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📥 歷史報告匯入工具")
+with st.sidebar.expander("匯入已分析的 HTML 報告", expanded=True):
+    st.caption("將之前產生的 HTML 分析報告直接上傳還原至 Firebase 雲端，自動轉換為 30 秒平均與乳酸紀錄。")
+    uploaded_htmls = st.file_uploader("選擇 HTML 報告 (可多選)", type=["html"], accept_multiple_files=True, key="history_html_uploader")
+    if uploaded_htmls:
+        if not st.session_state.get('firebase_uid'):
+            st.warning("⚠️ 請先在上方登入 Firebase 帳號再進行匯入！")
+        else:
+            if st.button("🚀 開始批次匯入至雲端", use_container_width=True):
+                success_count = 0
+                fail_count = 0
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+                for i, h_file in enumerate(uploaded_htmls):
+                    status_text.text(f"正在處理 ({i+1}/{len(uploaded_htmls)}): {h_file.name}")
+                    h_content = h_file.read().decode('utf-8', errors='ignore')
+                    ok, msg = import_historical_html_to_firebase(h_content, h_file.name)
+                    if ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                        st.error(f"❌ {h_file.name}: {msg}")
+                    progress_bar.progress((i + 1) / len(uploaded_htmls))
+                status_text.empty()
+                progress_bar.empty()
+                if success_count > 0:
+                    st.success(f"🎉 成功匯入 {success_count} 筆歷史紀錄！")
+                    st.rerun()
 
 # 如果沒有上傳檔案，提供載入預設測試檔的按鈕，以方便使用者快速體驗
 fit_bytes = None
