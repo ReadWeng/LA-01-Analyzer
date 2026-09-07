@@ -1410,7 +1410,7 @@ else:
                         markers=True,
                         color_discrete_map=color_discrete_map,
                         category_orders={'date_str': dates_chrono},
-                        title='📈 最近五期乳酸紀錄趨勢 (雙色漸層 #D7CCC8 ➔ #4E342E)',
+                        title='📈 最近五期乳酸紀錄趨勢',
                         labels={'測試點順序': '該期量測順序 (點)', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'}
                     )
                     
@@ -1420,7 +1420,6 @@ else:
                         if trace.name == latest_date:
                             trace.line.width = 3.5
                             trace.marker.size = 9
-                            trace.name = f"{latest_date} (最新期)"
                         else:
                             trace.line.width = 2.0
                             trace.marker.size = 6
@@ -1488,27 +1487,18 @@ else:
                         
                         if diff > 0.1:
                             st.warning(
-                                f"⚠️ **系統建議：進行充分休息，或適度降低近期訓練強度！**\\n\\n"
-                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）高出 **+{diff:.2f} mmol/L (+{diff_pct:.1f}%)**。\\n"
-                                f"- **生理狀態評估**：相同或相近的測試條件下乳酸濃度偏高，顯示體內乳酸代謝清除速率減緩，身體很可能處於**疲勞累積、肌肉微受損或神經系統恢復未完全**的狀態。\\n"
-                                f"- **調整指引**：建議接下來 1~2 天安排**完整休息**或以 **Zone 1~2 進行低強度動態恢復**，切忌連續進行高強度無氧/間歇訓練，並特別注重睡眠品質與營養補給。"
+                                f"⚠️ **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）高出 **+{diff:.2f} mmol/L (+{diff_pct:.1f}%)**，顯示疲勞累積或恢復未完全，建議安排充分休息或降低近期訓練強度。"
                             )
                         elif diff < -0.1:
                             st.success(
-                                f"💪 **系統建議：生理與有氧代謝狀態良好，建議可維持或適度增加訓練強度！**\\n\\n"
-                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）低了 **{abs(diff):.2f} mmol/L ({diff_pct:.1f}%)**。\\n"
-                                f"- **生理狀態評估**：同等運動負荷下的乳酸生成量降低且清除效率更佳，代表**有氧代謝效率增強、粒線體氧化利用率提高**，體能正處於良好的上升與適應期！\\n"
-                                f"- **調整指引**：身體對當前負荷適應良好，建議可把握體能高峰期，在課表中**適度增加訓練強度、提升間歇負荷或加長專項速度耐力時間**，以持續尋求專項突破。"
+                                f"💪 **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）低了 **{abs(diff):.2f} mmol/L ({diff_pct:.1f}%)**，生理與有氧代謝狀態良好，建議可維持或適度增加訓練強度。"
                             )
                         else:
                             st.info(
-                                f"⚖️ **系統建議：生理狀態維持平穩，建議按原定課表規律訓練。**\\n\\n"
-                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，與前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）差異極微（**{diff:+.2f} mmol/L**）。\\n"
-                                f"- **生理狀態評估**：乳酸代謝反應處於穩定區間，體能與疲勞達到動態平衡。\\n"
-                                f"- **調整指引**：建議維持目前課表節奏穩定前進，持續觀察下一期生理數據之走向。"
+                                f"⚖️ **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，與前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）差異極微（**{diff:+.2f} mmol/L**），生理狀態維持平穩，建議按原定課表規律訓練。"
                             )
                     else:
-                        st.info(f"ℹ️ 目前僅有 1 期歷史紀錄 ({latest_date})，平均乳酸為 **{latest_mean:.2f} mmol/L**。待累積第 2 期以上紀錄後，系統將自動啟動近五期乳酸對比與訓練負荷調整建議！")
+                        st.info(f"ℹ️ 目前僅有 1 期歷史紀錄（{latest_date}），平均乳酸為 **{latest_mean:.2f} mmol/L**。待累積第 2 期以上紀錄後，系統將自動啟動近五期乳酸對比與訓練調整建議。")
 
     st.markdown("""
     ### 💡 本工具特色：
