@@ -1373,30 +1373,142 @@ else:
                 df_hist = pd.DataFrame(all_records)
                 if not df_hist.empty and 'record_time' in df_hist.columns:
                     df_hist['date_str'] = df_hist['record_time'].dt.strftime('%Y-%m-%d')
-                    top_5_dates = df_hist['date_str'].drop_duplicates().sort_values(ascending=False).head(5).values
-                    df_top5 = df_hist[df_hist['date_str'].isin(top_5_dates)].copy()
+                    
+                    # 取出最近五個不同日期，並按時間由舊至新排序
+                    unique_dates = df_hist['date_str'].drop_duplicates().sort_values(ascending=False).head(5).values
+                    dates_chrono = sorted(unique_dates)
+                    df_top5 = df_hist[df_hist['date_str'].isin(dates_chrono)].copy()
                     df_top5 = df_top5.sort_values('record_time')
                     
-                    # Calculate order for alignment
+                    # 計算各期量測順序
                     df_top5['測試點順序'] = df_top5.groupby('date_str').cumcount() + 1
                     
-                    fig = px.line(df_top5, x='測試點順序', y='lactate_mmol', color='date_str', markers=True,
-                                  title='📈 最近五期乳酸紀錄趨勢 (依量測順序)',
-                                  labels={'測試點順序': '該期量測順序', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'})
+                    # 雙色漸層色碼搭配：#D7CCC8 ➔ #4E342E
+                    def generate_gradient(start_hex, end_hex, n):
+                        if n <= 1:
+                            return [end_hex]
+                        r1, g1, b1 = int(start_hex[1:3], 16), int(start_hex[3:5], 16), int(start_hex[5:7], 16)
+                        r2, g2, b2 = int(end_hex[1:3], 16), int(end_hex[3:5], 16), int(end_hex[5:7], 16)
+                        colors = []
+                        for i in range(n):
+                            t = i / (n - 1)
+                            r = int(round(r1 + (r2 - r1) * t))
+                            g = int(round(g1 + (g2 - g1) * t))
+                            b = int(round(b1 + (b2 - b1) * t))
+                            colors.append(f"#{r:02X}{g:02X}{b:02X}")
+                        return colors
+                    
+                    num_dates = len(dates_chrono)
+                    gradient_colors = generate_gradient('#D7CCC8', '#4E342E', num_dates)
+                    color_discrete_map = {d: c for d, c in zip(dates_chrono, gradient_colors)}
+                    
+                    fig = px.line(
+                        df_top5,
+                        x='測試點順序',
+                        y='lactate_mmol',
+                        color='date_str',
+                        markers=True,
+                        color_discrete_map=color_discrete_map,
+                        category_orders={'date_str': dates_chrono},
+                        title='📈 最近五期乳酸紀錄趨勢 (雙色漸層 #D7CCC8 ➔ #4E342E)',
+                        labels={'測試點順序': '該期量測順序 (點)', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'}
+                    )
+                    
+                    # 最新一期特別強調線條寬度與標記
+                    latest_date = dates_chrono[-1]
+                    for trace in fig.data:
+                        if trace.name == latest_date:
+                            trace.line.width = 3.5
+                            trace.marker.size = 9
+                            trace.name = f"{latest_date} (最新期)"
+                        else:
+                            trace.line.width = 2.0
+                            trace.marker.size = 6
+                    
+                    is_dark_theme = (theme_str == "dark")
+                    axis_color = '#E0E0E0' if is_dark_theme else '#000000'
+                    font_color = '#FFFFFF' if is_dark_theme else '#000000'
                     
                     fig.update_layout(
-                        xaxis_title="量測順序",
+                        xaxis_title="該期量測順序 (點)",
                         yaxis_title="乳酸值 (mmol/L)",
                         xaxis=dict(tickmode='linear', tick0=1, dtick=1),
                         hovermode="x unified",
                         plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)'
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(color=font_color, size=14),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                            font=dict(size=12)
+                        )
                     )
-                    # Apply zero-grid style
-                    fig.update_xaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
-                    fig.update_yaxes(showgrid=False, showline=True, linewidth=1, linecolor='black', ticks='outside', tickcolor='black', ticklen=5)
+                    # 套用高對比無格線風格
+                    fig.update_xaxes(showgrid=False, showline=True, linewidth=2, linecolor=axis_color, ticks='outside', tickcolor=axis_color, ticklen=5)
+                    fig.update_yaxes(showgrid=False, showline=True, linewidth=2, linecolor=axis_color, ticks='outside', tickcolor=axis_color, ticklen=5)
                     
                     st.plotly_chart(fig, use_container_width=True)
+                    
+                    # -------------------------------------------------------------
+                    # 智能計算判定：最新一期 vs 前四期差異與訓練建議
+                    # -------------------------------------------------------------
+                    st.markdown("#### 🧠 近五期乳酸智能評估與訓練建議")
+                    
+                    prev_dates = dates_chrono[:-1]
+                    latest_vals = df_top5[df_top5['date_str'] == latest_date]['lactate_mmol'].dropna().tolist()
+                    latest_mean = float(np.mean(latest_vals)) if latest_vals else 0.0
+                    
+                    if prev_dates:
+                        prev_vals = df_top5[df_top5['date_str'].isin(prev_dates)]['lactate_mmol'].dropna().tolist()
+                        prev_mean = float(np.mean(prev_vals)) if prev_vals else 0.0
+                        diff = latest_mean - prev_mean
+                        diff_pct = (diff / prev_mean * 100.0) if prev_mean > 0 else 0.0
+                        
+                        col_m1, col_m2, col_m3 = st.columns(3)
+                        with col_m1:
+                            st.metric(
+                                label=f"最新期 ({latest_date}) 平均乳酸",
+                                value=f"{latest_mean:.2f} mmol/L"
+                            )
+                        with col_m2:
+                            st.metric(
+                                label=f"前 {len(prev_dates)} 期歷史基準平均",
+                                value=f"{prev_mean:.2f} mmol/L"
+                            )
+                        with col_m3:
+                            st.metric(
+                                label="最新期 vs 前期差異",
+                                value=f"{diff:+.2f} mmol/L",
+                                delta=f"{diff_pct:+.1f}%",
+                                delta_color="inverse"
+                            )
+                        
+                        if diff > 0.1:
+                            st.warning(
+                                f"⚠️ **系統建議：進行充分休息，或適度降低近期訓練強度！**\\n\\n"
+                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）高出 **+{diff:.2f} mmol/L (+{diff_pct:.1f}%)**。\\n"
+                                f"- **生理狀態評估**：相同或相近的測試條件下乳酸濃度偏高，顯示體內乳酸代謝清除速率減緩，身體很可能處於**疲勞累積、肌肉微受損或神經系統恢復未完全**的狀態。\\n"
+                                f"- **調整指引**：建議接下來 1~2 天安排**完整休息**或以 **Zone 1~2 進行低強度動態恢復**，切忌連續進行高強度無氧/間歇訓練，並特別注重睡眠品質與營養補給。"
+                            )
+                        elif diff < -0.1:
+                            st.success(
+                                f"💪 **系統建議：生理與有氧代謝狀態良好，建議可維持或適度增加訓練強度！**\\n\\n"
+                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）低了 **{abs(diff):.2f} mmol/L ({diff_pct:.1f}%)**。\\n"
+                                f"- **生理狀態評估**：同等運動負荷下的乳酸生成量降低且清除效率更佳，代表**有氧代謝效率增強、粒線體氧化利用率提高**，體能正處於良好的上升與適應期！\\n"
+                                f"- **調整指引**：身體對當前負荷適應良好，建議可把握體能高峰期，在課表中**適度增加訓練強度、提升間歇負荷或加長專項速度耐力時間**，以持續尋求專項突破。"
+                            )
+                        else:
+                            st.info(
+                                f"⚖️ **系統建議：生理狀態維持平穩，建議按原定課表規律訓練。**\\n\\n"
+                                f"- **數據判定**：最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，與前 {len(prev_dates)} 期基準平均（**{prev_mean:.2f} mmol/L**）差異極微（**{diff:+.2f} mmol/L**）。\\n"
+                                f"- **生理狀態評估**：乳酸代謝反應處於穩定區間，體能與疲勞達到動態平衡。\\n"
+                                f"- **調整指引**：建議維持目前課表節奏穩定前進，持續觀察下一期生理數據之走向。"
+                            )
+                    else:
+                        st.info(f"ℹ️ 目前僅有 1 期歷史紀錄 ({latest_date})，平均乳酸為 **{latest_mean:.2f} mmol/L**。待累積第 2 期以上紀錄後，系統將自動啟動近五期乳酸對比與訓練負荷調整建議！")
 
     st.markdown("""
     ### 💡 本工具特色：
