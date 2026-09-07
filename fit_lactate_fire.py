@@ -1399,7 +1399,7 @@ else:
                         return colors
                     
                     num_dates = len(dates_chrono)
-                    gradient_colors = generate_gradient('#D7CCC8', '#4E342E', num_dates)
+                    gradient_colors = generate_gradient('#E0F7FA', '#006064', num_dates)
                     color_discrete_map = {d: c for d, c in zip(dates_chrono, gradient_colors)}
                     
                     fig = px.line(
