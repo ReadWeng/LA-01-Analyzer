@@ -858,7 +858,9 @@ else:
         try:
             st.login()
         except Exception as e:
-            st.sidebar.error("Google 登入尚未設定完成，請先在 Streamlit Secrets 中設定 [auth]。")
+            st.sidebar.error(f"Google 登入尚未設定完成: {str(e)}")
+            if not hasattr(st, "secrets") or "auth" not in st.secrets:
+                st.sidebar.warning("⚠️ 診斷提示：Streamlit 尚未讀取到 Secrets 中的 [auth] 設定，請確認 Secrets 已點擊 Save 並至右下角選單點選 Reboot app。")
 
     st.sidebar.markdown("<div style='text-align:center; color:#8b949e; font-size:12px; margin: 6px 0;'>— 或使用信箱密碼 —</div>", unsafe_allow_html=True)
 
