@@ -6,3 +6,4 @@ fitparse
 fitdecode
 requests
 beautifulsoup4
+Authlib>=1.3.2
