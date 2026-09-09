@@ -1,17 +1,51 @@
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 import json
 
-# 檢查是否有從 Google 登入轉跳帶入的參數
+FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+
+def login_with_google_id_token(id_token):
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
+    payload = {
+        "postBody": f"id_token={id_token}&providerId=google.com",
+        "requestUri": "https://lactatecloud.firebaseapp.com",
+        "returnIdpCredential": True,
+        "returnSecureToken": True
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=8)
+        data = res.json()
+        if "localId" in data:
+            st.session_state["firebase_uid"] = data["localId"]
+            st.session_state["firebase_token"] = data["idToken"]
+            st.session_state["firebase_email"] = data.get("email", "")
+            return True, "成功"
+        else:
+            return False, data.get("error", {}).get("message", "未知錯誤")
+    except Exception as e:
+        return False, str(e)
+
+# 檢查 Streamlit 原生 Google OIDC 登入狀態
+if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+    if "firebase_uid" not in st.session_state:
+        g_id_token = None
+        if hasattr(st.user, "tokens") and isinstance(st.user.tokens, dict):
+            g_id_token = st.user.tokens.get("id") or st.user.tokens.get("id_token")
+        
+        if g_id_token:
+            ok, msg = login_with_google_id_token(g_id_token)
+            if not ok:
+                st.sidebar.error(f"Google 帳號同步 MyLactate 失敗: {msg}")
+        else:
+            st.session_state["firebase_email"] = getattr(st.user, "email", "")
+
+# 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:
     st.session_state["firebase_uid"] = st.query_params.get("google_uid")
     st.session_state["firebase_email"] = st.query_params.get("google_email", "")
     st.session_state["firebase_token"] = st.query_params.get("google_token", "")
     st.query_params.clear()
     st.rerun()
-
-FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
 
 def login_to_firebase(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
@@ -74,6 +108,11 @@ def logout_firebase():
         del st.session_state["firebase_email"]
     if "firebase_token" in st.session_state:
         del st.session_state["firebase_token"]
+    if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+        try:
+            st.logout()
+        except Exception:
+            pass
     st.query_params.clear()
     st.rerun()
 
@@ -806,92 +845,22 @@ def parse_fit_file_data(uploaded_file_bytes):
 
 # MyLactate 雲端登入區
 st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
-if "firebase_uid" in st.session_state:
-    st.sidebar.success(f"已登入: {st.session_state.get('firebase_email', '')}")
+if "firebase_uid" in st.session_state or (hasattr(st, "user") and getattr(st.user, "is_logged_in", False)):
+    logged_email = st.session_state.get('firebase_email') or getattr(st.user, 'email', '')
+    st.sidebar.success(f"已登入: {logged_email}")
     if st.sidebar.button("登出帳號", use_container_width=True):
         logout_firebase()
 else:
     st.sidebar.info("登入與 MyLactate 相同的帳號以讀取個人數據")
     
-    # 1. Google 帳號一鍵登入
-    google_btn_html = """
-    <div style="display: flex; justify-content: center; width: 100%; margin: 2px 0 6px 0;">
-        <button id="google-login-btn" style="
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 100%;
-            background-color: #ffffff;
-            color: #3c4043;
-            border: 1px solid #dadce0;
-            border-radius: 6px;
-            padding: 8px 10px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            box-shadow: 0 1px 2px rgba(60,64,67,0.3);
-            transition: background-color .2s;
-        " onmouseover="this.style.backgroundColor='#f8f9fa'" onmouseout="this.style.backgroundColor='#ffffff'">
-            <svg width="18" height="18" viewBox="0 0 18 18" style="margin-right: 8px; flex-shrink: 0;">
-                <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z"/>
-                <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
-                <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.547 0 9s.347 2.827.957 4.039l3.007-2.332z"/>
-                <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/>
-            </svg>
-            <span id="btn-text">使用 Google 帳號登入</span>
-        </button>
-    </div>
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
-    <script>
-      const firebaseConfig = {
-        apiKey: "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM",
-        authDomain: "lactatecloud.firebaseapp.com",
-        projectId: "lactatecloud"
-      };
-      if (!firebase.apps.length) {
-        firebase.initializeApp(firebaseConfig);
-      }
-      const btn = document.getElementById("google-login-btn");
-      const btnText = document.getElementById("btn-text");
-      btn.addEventListener("click", () => {
-        btn.disabled = true;
-        btnText.innerText = "登入中...";
-        const provider = new firebase.auth.GoogleAuthProvider();
-        firebase.auth().signInWithPopup(provider)
-          .then((result) => {
-            const user = result.user;
-            user.getIdToken().then((token) => {
-              try {
-                const targetUrl = new URL(window.top.location.href);
-                targetUrl.searchParams.set("google_uid", user.uid);
-                targetUrl.searchParams.set("google_email", user.email || "");
-                targetUrl.searchParams.set("google_token", token);
-                window.top.location.href = targetUrl.toString();
-              } catch (e) {
-                const search = new URLSearchParams(window.location.search);
-                search.set("google_uid", user.uid);
-                search.set("google_email", user.email || "");
-                search.set("google_token", token);
-                window.parent.location.search = search.toString();
-              }
-            });
-          })
-          .catch((error) => {
-            btn.disabled = false;
-            btnText.innerText = "使用 Google 帳號登入";
-            if (error && error.code !== "auth/popup-closed-by-user") {
-                alert("Google 登入失敗: " + (error.message || error));
-            }
-          });
-      });
-    </script>
-    """
-    with st.sidebar:
-        components.html(google_btn_html, height=52)
+    # 1. Google 帳號一鍵登入 (Streamlit 原生 OIDC 模式，不依賴 iframe 沙盒)
+    if st.sidebar.button("🌐 使用 Google 帳號登入", use_container_width=True):
+        try:
+            st.login()
+        except Exception as e:
+            st.sidebar.error("Google 登入尚未設定完成，請先在 Streamlit Secrets 中設定 [auth]。")
 
-    st.sidebar.markdown("<div style='text-align:center; color:#8b949e; font-size:12px; margin: 2px 0 6px 0;'>— 或使用信箱密碼 —</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:center; color:#8b949e; font-size:12px; margin: 6px 0;'>— 或使用信箱密碼 —</div>", unsafe_allow_html=True)
 
     with st.sidebar.form("mylactate_login_form"):
         email = st.text_input("電子郵件 (Email)")
