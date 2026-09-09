@@ -28,14 +28,42 @@ def login_with_google_id_token(id_token):
 # 檢查 Streamlit 原生 Google OIDC 登入狀態
 if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
     if "firebase_uid" not in st.session_state:
-        g_id_token = None
-        if hasattr(st.user, "tokens") and isinstance(st.user.tokens, dict):
-            g_id_token = st.user.tokens.get("id") or st.user.tokens.get("id_token")
+        g_token = None
+        # 從 st.user.tokens 提取 token (支援 dict 或 Mapping 物件)
+        tokens_obj = getattr(st.user, "tokens", None)
+        if tokens_obj is not None:
+            if hasattr(tokens_obj, "get"):
+                g_token = tokens_obj.get("id") or tokens_obj.get("id_token") or tokens_obj.get("access") or tokens_obj.get("access_token")
+            elif isinstance(tokens_obj, dict):
+                g_token = tokens_obj.get("id") or tokens_obj.get("id_token") or tokens_obj.get("access") or tokens_obj.get("access_token")
         
-        if g_id_token:
-            ok, msg = login_with_google_id_token(g_id_token)
-            if not ok:
-                st.sidebar.error(f"Google 帳號同步 MyLactate 失敗: {msg}")
+        # 兼容性：檢查 st.user 字典屬性
+        if not g_token and hasattr(st.user, "get"):
+            g_token = st.user.get("id_token") or st.user.get("id") or st.user.get("access_token")
+
+        if g_token:
+            is_jwt = isinstance(g_token, str) and g_token.count(".") == 2
+            post_body = f"id_token={g_token}&providerId=google.com" if is_jwt else f"access_token={g_token}&providerId=google.com"
+            url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
+            payload = {
+                "postBody": post_body,
+                "requestUri": "https://lactatecloud.firebaseapp.com",
+                "returnIdpCredential": True,
+                "returnSecureToken": True
+            }
+            try:
+                res = requests.post(url, json=payload, timeout=8)
+                data = res.json()
+                if "localId" in data:
+                    st.session_state["firebase_uid"] = data["localId"]
+                    st.session_state["firebase_token"] = data["idToken"]
+                    st.session_state["firebase_email"] = data.get("email", getattr(st.user, "email", ""))
+                    st.rerun()
+                else:
+                    err_msg = data.get("error", {}).get("message", "未知錯誤")
+                    st.sidebar.error(f"MyLactate 同步失敗: {err_msg}")
+            except Exception as e:
+                st.sidebar.error(f"連線失敗: {str(e)}")
         else:
             st.session_state["firebase_email"] = getattr(st.user, "email", "")
 
@@ -853,8 +881,51 @@ if "firebase_uid" in st.session_state or (hasattr(st, "user") and getattr(st.use
 else:
     st.sidebar.info("登入與 MyLactate 相同的帳號以讀取個人數據")
     
-    # 1. Google 帳號一鍵登入 (Streamlit 原生 OIDC 模式，不依賴 iframe 沙盒)
-    if st.sidebar.button("🌐 使用 Google 帳號登入", use_container_width=True):
+    # 1. Google 帳號一鍵登入 (官方質感樣式與 Google 彩色四色 Logo)
+    st.markdown("""
+    <style>
+    div.st-key-google_login_btn button {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        background-color: #ffffff !important;
+        color: #3c4043 !important;
+        border: 1px solid #dadce0 !important;
+        border-radius: 6px !important;
+        padding: 6px 14px !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        box-shadow: 0 1px 2px rgba(60,64,67,0.3) !important;
+        transition: all 0.2s ease !important;
+    }
+    div.st-key-google_login_btn button:hover {
+        background-color: #f8f9fa !important;
+        color: #202124 !important;
+        border-color: #dadce0 !important;
+        box-shadow: 0 1px 3px 1px rgba(60,64,67,0.15) !important;
+    }
+    div.st-key-google_login_btn button::before {
+        content: "";
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        margin-right: 10px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath fill='%234285F4' d='M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z'/%3E%3Cpath fill='%2334A853' d='M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z'/%3E%3Cpath fill='%23FBBC05' d='M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.547 0 9s.347 2.827.957 4.039l3.007-2.332z'/%3E%3Cpath fill='%23EA4335' d='M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z'/%3E%3C/svg%3E");
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        flex-shrink: 0;
+    }
+    div.st-key-google_login_btn button p {
+        color: #3c4043 !important;
+        font-weight: 500 !important;
+        font-size: 14px !important;
+        margin: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    if st.sidebar.button("使用 Google 帳號登入", key="google_login_btn", use_container_width=True):
         try:
             st.login()
         except Exception as e:
