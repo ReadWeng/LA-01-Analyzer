@@ -1,14 +1,22 @@
-
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 import json
+
+# 檢查是否有從 Google 登入轉跳帶入的參數
+if "google_uid" in st.query_params:
+    st.session_state["firebase_uid"] = st.query_params.get("google_uid")
+    st.session_state["firebase_email"] = st.query_params.get("google_email", "")
+    st.session_state["firebase_token"] = st.query_params.get("google_token", "")
+    st.query_params.clear()
+    st.rerun()
 
 FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
 
 def login_to_firebase(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
     payload = {
-        "email": email,
+        "email": email.strip(),
         "password": password,
         "returnSecureToken": True
     }
@@ -19,20 +27,77 @@ def login_to_firebase(email, password):
             st.session_state["firebase_uid"] = data["localId"]
             st.session_state["firebase_token"] = data["idToken"]
             st.session_state["firebase_email"] = email
-            st.success("Firebase 雲端登入成功！")
+            st.sidebar.success("MyLactate 雲端登入成功！")
             st.rerun()
         else:
             error_message = data.get("error", {}).get("message", "未知錯誤")
-            st.error(f"登入失敗: {error_message}")
+            if "INVALID_LOGIN_CREDENTIALS" in error_message or "EMAIL_NOT_FOUND" in error_message or "INVALID_PASSWORD" in error_message:
+                error_message = "帳號或密碼錯誤，請重新確認或點選下方忘記密碼。"
+            st.sidebar.error(f"登入失敗: {error_message}")
     except Exception as e:
-        st.error(f"網路連線失敗: {str(e)}")
+        st.sidebar.error(f"網路連線失敗: {str(e)}")
+
+def register_to_firebase(email, password):
+    if not email or not password:
+        st.sidebar.error("請輸入完整的電子郵件與密碼！")
+        return
+    if len(password) < 6:
+        st.sidebar.error("密碼長度須至少為 6 位數！")
+        return
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
+    payload = {
+        "email": email.strip(),
+        "password": password,
+        "returnSecureToken": True
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=5)
+        data = res.json()
+        if "localId" in data:
+            st.session_state["firebase_uid"] = data["localId"]
+            st.session_state["firebase_token"] = data["idToken"]
+            st.session_state["firebase_email"] = email
+            st.sidebar.success("MyLactate 帳號註冊成功並已登入！")
+            st.rerun()
+        else:
+            err = data.get("error", {}).get("message", "註冊失敗")
+            if "EMAIL_EXISTS" in err:
+                err = "此電子郵件已存在，請直接登入或使用忘記密碼。"
+            st.sidebar.error(f"註冊失敗: {err}")
+    except Exception as e:
+        st.sidebar.error(f"網路連線失敗: {str(e)}")
 
 def logout_firebase():
     if "firebase_uid" in st.session_state:
         del st.session_state["firebase_uid"]
     if "firebase_email" in st.session_state:
         del st.session_state["firebase_email"]
+    if "firebase_token" in st.session_state:
+        del st.session_state["firebase_token"]
+    st.query_params.clear()
     st.rerun()
+
+def reset_firebase_password(email):
+    if not email:
+        st.sidebar.error("請輸入欲重設密碼的電子郵件 (Email)！")
+        return
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_API_KEY}"
+    payload = {
+        "requestType": "PASSWORD_RESET",
+        "email": email.strip()
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=5)
+        data = res.json()
+        if "email" in data:
+            st.sidebar.success(f"密碼重設信件已寄出至 {email}，請查收信箱並設定新密碼！")
+        else:
+            err = data.get("error", {}).get("message", "未知錯誤")
+            if "EMAIL_NOT_FOUND" in err:
+                err = "此電子郵件尚未註冊！"
+            st.sidebar.error(f"發送重設信失敗: {err}")
+    except Exception as e:
+        st.sidebar.error(f"連線失敗: {str(e)}")
 
 import streamlit as st
 import pandas as pd
@@ -336,7 +401,7 @@ def import_historical_html_to_firebase(html_content, file_name):
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
     if not uid or not token:
-        return False, "請先登入 Firebase 帳號"
+        return False, "請先登入 MyLactate 帳號"
 
     # 1. Metadata
     time_m = re.search(r'活動開始時間.*?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', html_content, re.DOTALL)
@@ -490,7 +555,7 @@ def upload_report_to_firebase_storage(html_data, file_name):
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
     if not uid or not token:
-        return False, "請先登入 Firebase 帳號"
+        return False, "請先登入 MyLactate 帳號"
     
     object_name = f"users/{uid}/reports/{file_name}"
     object_name_encoded = urllib.parse.quote(object_name, safe='')
@@ -514,7 +579,7 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
     if not uid or not token:
-        st.error('請先登入 Firebase')
+        st.error('請先登入 MyLactate')
         return False
         
     try:
@@ -621,7 +686,7 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
             st.error(f"Firestore API Error: {response.text}")
             return []
     except Exception as e:
-        st.error(f"Firebase 連線失敗: {str(e)}")
+        st.error(f"MyLactate 連線失敗: {str(e)}")
     return []
 
 
@@ -739,21 +804,113 @@ def parse_fit_file_data(uploaded_file_bytes):
 # ----------------- 應用程式介面 -----------------
 
 
-# Firebase 雲端登入區
-st.sidebar.markdown("### ☁️ Firebase 雲端帳號")
+# MyLactate 雲端登入區
+st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
 if "firebase_uid" in st.session_state:
-    st.sidebar.success(f"已登入: {st.session_state['firebase_email']}")
-    if st.sidebar.button("登出帳號"):
+    st.sidebar.success(f"已登入: {st.session_state.get('firebase_email', '')}")
+    if st.sidebar.button("登出帳號", use_container_width=True):
         logout_firebase()
 else:
-    st.sidebar.info("登入與 LA-01 APP 相同的帳號以讀取個人數據")
-    with st.sidebar.form("firebase_login_form"):
+    st.sidebar.info("登入與 MyLactate 相同的帳號以讀取個人數據")
+    
+    # 1. Google 帳號一鍵登入
+    google_btn_html = """
+    <div style="display: flex; justify-content: center; width: 100%; margin: 2px 0 6px 0;">
+        <button id="google-login-btn" style="
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            background-color: #ffffff;
+            color: #3c4043;
+            border: 1px solid #dadce0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            box-shadow: 0 1px 2px rgba(60,64,67,0.3);
+            transition: background-color .2s;
+        " onmouseover="this.style.backgroundColor='#f8f9fa'" onmouseout="this.style.backgroundColor='#ffffff'">
+            <svg width="18" height="18" viewBox="0 0 18 18" style="margin-right: 8px; flex-shrink: 0;">
+                <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z"/>
+                <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+                <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.547 0 9s.347 2.827.957 4.039l3.007-2.332z"/>
+                <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/>
+            </svg>
+            <span id="btn-text">使用 Google 帳號登入</span>
+        </button>
+    </div>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script>
+      const firebaseConfig = {
+        apiKey: "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM",
+        authDomain: "lactatecloud.firebaseapp.com",
+        projectId: "lactatecloud"
+      };
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      const btn = document.getElementById("google-login-btn");
+      const btnText = document.getElementById("btn-text");
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        btnText.innerText = "登入中...";
+        const provider = new firebase.auth.GoogleAuthProvider();
+        firebase.auth().signInWithPopup(provider)
+          .then((result) => {
+            const user = result.user;
+            user.getIdToken().then((token) => {
+              try {
+                const targetUrl = new URL(window.top.location.href);
+                targetUrl.searchParams.set("google_uid", user.uid);
+                targetUrl.searchParams.set("google_email", user.email || "");
+                targetUrl.searchParams.set("google_token", token);
+                window.top.location.href = targetUrl.toString();
+              } catch (e) {
+                const search = new URLSearchParams(window.location.search);
+                search.set("google_uid", user.uid);
+                search.set("google_email", user.email || "");
+                search.set("google_token", token);
+                window.parent.location.search = search.toString();
+              }
+            });
+          })
+          .catch((error) => {
+            btn.disabled = false;
+            btnText.innerText = "使用 Google 帳號登入";
+            if (error && error.code !== "auth/popup-closed-by-user") {
+                alert("Google 登入失敗: " + (error.message || error));
+            }
+          });
+      });
+    </script>
+    """
+    with st.sidebar:
+        components.html(google_btn_html, height=52)
+
+    st.sidebar.markdown("<div style='text-align:center; color:#8b949e; font-size:12px; margin: 2px 0 6px 0;'>— 或使用信箱密碼 —</div>", unsafe_allow_html=True)
+
+    with st.sidebar.form("mylactate_login_form"):
         email = st.text_input("電子郵件 (Email)")
         password = st.text_input("密碼 (Password)", type="password")
-        submitted = st.form_submit_button("登入 Firebase")
+        submitted = st.form_submit_button("登入 MyLactate", use_container_width=True)
         if submitted:
             login_to_firebase(email, password)
             
+    with st.sidebar.expander("🔑 忘記密碼？點此重設"):
+        reset_email_input = st.text_input("註冊信箱 (Email)", key="reset_email_input")
+        if st.button("發送密碼重設信", use_container_width=True):
+            reset_firebase_password(reset_email_input)
+            
+    with st.sidebar.expander("📝 註冊新帳號"):
+        reg_email_input = st.text_input("電子郵件 (Email)", key="reg_email_input")
+        reg_pwd_input = st.text_input("設定密碼 (至少6位數)", type="password", key="reg_pwd_input")
+        if st.button("確認註冊並登入", use_container_width=True):
+            register_to_firebase(reg_email_input, reg_pwd_input)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 介面設定")
 chart_theme = st.sidebar.radio("圖表主題", ["深色模式 (Dark)", "淺色模式 (Light)"])
@@ -901,11 +1058,11 @@ uploaded_file = st.sidebar.file_uploader("上傳您的 FIT 檔 (.fit)", type=["f
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📥 歷史報告匯入工具")
 with st.sidebar.expander("匯入已分析的 HTML 報告", expanded=True):
-    st.caption("將之前產生的 HTML 分析報告直接上傳還原至 Firebase 雲端，自動轉換為 30 秒平均與乳酸紀錄。")
+    st.caption("將之前產生的 HTML 分析報告直接上傳還原至 MyLactate 雲端，自動轉換為 30 秒平均與乳酸紀錄。")
     uploaded_htmls = st.file_uploader("選擇 HTML 報告 (可多選)", type=["html"], accept_multiple_files=True, key="history_html_uploader")
     if uploaded_htmls:
         if not st.session_state.get('firebase_uid'):
-            st.warning("⚠️ 請先在上方登入 Firebase 帳號再進行匯入！")
+            st.warning("⚠️ 請先在上方登入 MyLactate 帳號再進行匯入！")
         else:
             if st.button("🚀 開始批次匯入至雲端", use_container_width=True):
                 success_count = 0
@@ -1001,9 +1158,9 @@ if fit_bytes is not None:
 
         col1, col2 = st.columns([1, 1])
         with col2:
-            if st.button('From Firebase Sync LA-01', use_container_width=True):
+            if st.button('From MyLactate Sync LA-01', use_container_width=True):
                 if "firebase_uid" not in st.session_state:
-                    st.error("請先在左側邊欄登入 Firebase 帳號！")
+                    st.error("請先在左側邊欄登入 MyLactate 帳號！")
                 else:
                     with st.spinner('Syncing...'):
                         cloud_records = fetch_firebase_lactate_records(start_time, duration_minutes)
@@ -1335,15 +1492,15 @@ if fit_bytes is not None:
                 )
 
     with save_cols[3]:
-        if st.button("☁️ 備份分析報告至 Firebase", use_container_width=True):
+        if st.button("☁️ 備份分析報告至 MyLactate", use_container_width=True):
             if not st.session_state.get('firebase_uid'):
-                st.error("請先於左側登入 Firebase")
+                st.error("請先於左側登入 MyLactate")
             else:
                 with st.spinner("上傳中..."):
                     fname = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
                     ok, msg = upload_report_to_firebase_storage(html_report_data, fname)
                     if ok:
-                        st.success("✅ 已上傳至 Firebase Storage！")
+                        st.success("✅ 已上傳至 MyLactate 雲端儲存空間！")
                     else:
                         st.error(f"上傳失敗: {msg}")
 
