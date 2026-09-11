@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import re
 import json
@@ -6,6 +7,26 @@ import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+
+def infer_session_type(power, hr, lactate):
+    """
+    根據乳酸、心率與負荷強度推斷運動強度分級 (不綁定特定運動項目，以強度等級呈現)
+    """
+    if lactate >= 12.0 or hr >= 168:
+        return "超高強度 (無氧刺激)"
+    elif lactate >= 8.0 or hr >= 158:
+        return "高強度 (無氧閾值)"
+    elif lactate >= 5.0 or hr >= 145:
+        return "中高強度 (節奏耐力)"
+    elif lactate >= 3.0 or hr >= 130:
+        return "中等強度 (基礎耐力)"
+    elif lactate > 0 or hr > 0:
+        if hr <= 125 and (lactate <= 2.2 if lactate > 0 else True):
+            return "低強度 (主動恢復)"
+        return "基礎有氧 (有氧耐力)"
+    else:
+        return "常規訓練"
+
 
 def fetch_firebase_recent_sessions(uid, token, limit=5):
     """
@@ -25,7 +46,7 @@ def fetch_firebase_recent_sessions(uid, token, limit=5):
             fit_docs = r_fit.json().get("documents", [])
             for doc in fit_docs:
                 f = doc.get("fields", {})
-                file_name = f.get("file_name", {}).get("stringValue", "FIT Activity")
+                file_name = f.get("file_name", {}).get("stringValue", "Activity")
                 st_val = f.get("start_time", {}).get("timestampValue")
                 start_dt = None
                 if st_val:
@@ -129,8 +150,7 @@ def fetch_firebase_recent_sessions(uid, token, limit=5):
 
 def fetch_local_sessions(folder="DataMindy", limit=5):
     """
-    從本機資料夾載入歷史場次 (支援 DataMindy/*.html)。
-    作為本機無網路時的完整測試與回退相容。
+    從本機歷史資料載入場次作為備援。
     """
     html_files = sorted(glob.glob(os.path.join(folder, "lactate_report_*.html")))
     sessions = []
@@ -201,44 +221,23 @@ def fetch_local_sessions(folder="DataMindy", limit=5):
         sessions = sorted(sessions, key=lambda x: x["start_time"])
         return sessions[-limit:]
         
-    return get_benchmark_mindy_sessions()
+    return get_benchmark_sessions()
 
 
-def get_benchmark_mindy_sessions():
-    """標準黃金範本 (Mindy 的 5 場騎乘/訓練場次)"""
+def get_benchmark_sessions():
+    """標準基準場次 (5 場不同強度與時長的訓練數據)"""
     return [
-        {"date": "08/22", "full_date": "2026-08-22", "type": "高強度騎乘", "duration_min": 32.1, "avg_power": 186.7, "max_power": 245.0, "avg_hr": 152.9, "max_hr": 178.0, "avg_lactate": 17.60, "max_lactate": 18.30},
-        {"date": "08/26", "full_date": "2026-08-26", "type": "耐力騎乘", "duration_min": 41.7, "avg_power": 184.3, "max_power": 230.0, "avg_hr": 132.1, "max_hr": 155.0, "avg_lactate": 9.57, "max_lactate": 10.00},
-        {"date": "08/29", "full_date": "2026-08-29", "type": "長距離騎乘", "duration_min": 96.1, "avg_power": 194.0, "max_power": 260.0, "avg_hr": 151.6, "max_hr": 182.0, "avg_lactate": 14.40, "max_lactate": 19.70},
-        {"date": "09/08", "full_date": "2026-09-08", "type": "高強度間歇", "duration_min": 33.1, "avg_power": 189.0, "max_power": 255.0, "avg_hr": 159.0, "max_hr": 181.0, "avg_lactate": 10.85, "max_lactate": 17.10},
-        {"date": "09/10", "full_date": "2026-09-10", "type": "中等強度騎乘", "duration_min": 60.0, "avg_power": 196.9, "max_power": 250.0, "avg_hr": 149.6, "max_hr": 170.0, "avg_lactate": 7.78, "max_lactate": 10.50},
+        {"date": "08/22", "full_date": "2026-08-22", "type": "超高強度 (無氧刺激)", "duration_min": 32.1, "avg_power": 186.7, "max_power": 245.0, "avg_hr": 152.9, "max_hr": 178.0, "avg_lactate": 17.60, "max_lactate": 18.30},
+        {"date": "08/26", "full_date": "2026-08-26", "type": "中等強度 (基礎耐力)", "duration_min": 41.7, "avg_power": 184.3, "max_power": 230.0, "avg_hr": 132.1, "max_hr": 155.0, "avg_lactate": 9.57, "max_lactate": 10.00},
+        {"date": "08/29", "full_date": "2026-08-29", "type": "中高強度 (節奏耐力)", "duration_min": 96.1, "avg_power": 194.0, "max_power": 260.0, "avg_hr": 151.6, "max_hr": 182.0, "avg_lactate": 14.40, "max_lactate": 19.70},
+        {"date": "09/08", "full_date": "2026-09-08", "type": "高強度 (無氧閾值)", "duration_min": 33.1, "avg_power": 189.0, "max_power": 255.0, "avg_hr": 159.0, "max_hr": 181.0, "avg_lactate": 10.85, "max_lactate": 17.10},
+        {"date": "09/10", "full_date": "2026-09-10", "type": "中高強度 (節奏耐力)", "duration_min": 60.0, "avg_power": 196.9, "max_power": 250.0, "avg_hr": 149.6, "max_hr": 170.0, "avg_lactate": 7.78, "max_lactate": 10.50},
     ]
 
 
-def infer_session_type(power, hr, lactate):
-    """根據功率、心率與乳酸自動推斷運動型態/強度"""
-    if power <= 0:
-        if hr < 125:
-            return "輕鬆跑步"
-        elif hr < 155:
-            return "有氧慢跑"
-        else:
-            return "節奏跑/間歇"
-    else:
-        if lactate >= 12.0 or hr >= 160:
-            return "高強度"
-        elif lactate <= 6.0 and hr <= 135:
-            return "輕鬆恢復"
-        elif power >= 190 and lactate <= 9.0:
-            return "中等強度騎乘"
-        else:
-            return "常規騎乘"
-
-
-def analyze_sessions_with_ai(sessions, athlete_name="Mindy", api_key=None):
+def analyze_sessions_with_ai(sessions, athlete_name="", api_key=None):
     """
-    結合生理學邏輯與 Gemini API 生成專業運動狀態分析報告。
-    若無 API Key 或連線失敗，則由內建運動生理學規則引擎自動產出高品質報告。
+    結合運動生理學邏輯與 Gemini API 生成最近運動狀態分析報告。
     """
     if not sessions:
         return {}
@@ -247,17 +246,21 @@ def analyze_sessions_with_ai(sessions, athlete_name="Mindy", api_key=None):
     end_d = sessions[-1]["full_date"]
     period_str = f"{start_d} – {end_d}"
 
-    cycling_sessions = [s for s in sessions if s.get("avg_power", 0) > 0]
+    has_power = any(s.get("avg_power", 0) > 0 for s in sessions)
     
     is_breakthrough = False
-    if len(cycling_sessions) >= 2:
-        latest_c = cycling_sessions[-1]
-        other_c = cycling_sessions[:-1]
-        max_p_others = max([s["avg_power"] for s in other_c])
-        min_lac_others = min([s["avg_lactate"] for s in other_c])
-        
-        if latest_c["avg_power"] >= max_p_others and latest_c["avg_lactate"] <= min_lac_others:
-            is_breakthrough = True
+    if len(sessions) >= 2:
+        latest = sessions[-1]
+        others = sessions[:-1]
+        if has_power:
+            max_p_others = max([s.get("avg_power", 0) for s in others])
+            min_lac_others = min([s.get("avg_lactate", 99) for s in others if s.get("avg_lactate", 0) > 0] or [99])
+            if latest.get("avg_power", 0) >= max_p_others and latest.get("avg_lactate", 0) <= min_lac_others:
+                is_breakthrough = True
+        else:
+            min_lac_others = min([s.get("avg_lactate", 99) for s in others if s.get("avg_lactate", 0) > 0] or [99])
+            if latest.get("avg_lactate", 0) <= min_lac_others:
+                is_breakthrough = True
 
     if api_key:
         ai_res = call_gemini_api(sessions, athlete_name, period_str, is_breakthrough, api_key)
@@ -268,7 +271,7 @@ def analyze_sessions_with_ai(sessions, athlete_name="Mindy", api_key=None):
 
 
 def call_gemini_api(sessions, athlete_name, period_str, is_breakthrough, api_key):
-    """呼叫 Google Gemini REST API 產出結構化運動生理週報分析"""
+    """呼叫 Google Gemini REST API 產出結構化最近運動狀態分析"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
@@ -276,7 +279,7 @@ def call_gemini_api(sessions, athlete_name, period_str, is_breakthrough, api_key
     for s in sessions:
         sessions_summary.append({
             "date": s["date"],
-            "type": s.get("type", "訓練"),
+            "intensity_grade": s.get("type", "訓練"),
             "duration_min": s.get("duration_min", 0),
             "avg_power_W": s.get("avg_power", 0),
             "avg_hr_bpm": s.get("avg_hr", 0),
@@ -284,30 +287,33 @@ def call_gemini_api(sessions, athlete_name, period_str, is_breakthrough, api_key
             "max_lactate_mmol": s.get("max_lactate", 0)
         })
 
-    prompt_text = f"""你是一位資深耐力運動生理科學家與鐵人三項教練。
-請根據運動員【{athlete_name}】最近幾場訓練數據（資料期間：{period_str}），撰寫一份嚴謹、具洞察力且符合運動生理學（Exercise Physiology）的「本週運動狀態分析報告」。
+    subject = f"運動員【{athlete_name}】" if athlete_name else "受測者"
+    prompt_text = f"""你是一位資深耐力運動生理科學家與國家級體能教練。
+請根據{subject}最近幾場訓練數據（資料期間：{period_str}），撰寫一份嚴謹、客觀具洞察力且符合運動生理學（Exercise Physiology）的「最近運動狀態與生理適應分析報告」。
+
+注意事項：
+1. 運動不限於單車騎乘，請一律使用「訓練」、「運動」或「強度等級」進行描述，不要硬套騎乘或跑步等特定項目。
+2. 標題請固定為「最近運動狀態與生理適應分析報告」，不要包含「本週」或「個人名字」。
+3. 第一節聚焦於「最近訓練強度節奏」分析。
+4. 第二節聚焦於「表現與代謝對比」：重點觀察負荷（功率或心率）與乳酸之關係。特別是代謝效率（Metabolic Efficiency），若出現負荷維持或提高且乳酸顯著降低，請說明其粒線體密度與乳酸清除轉運蛋白（MCT）適應的生理意義。
+5. 時長 vs 乳酸的分佈解讀。
+6. 總結與後續訓練處方建議。
 
 訓練數據列表：
 {json.dumps(sessions_summary, ensure_ascii=False, indent=2)}
 
-分析重點：
-1. 本週訓練節奏（高強度 vs 恢復 vs 中等強度分佈）
-2. 表現對比：重點觀察功率、心率與乳酸關係。特別是代謝效率（Metabolic Efficiency），若出現功率不減反增且乳酸顯著下降，請精闢指出其粒線體與乳酸清除能力提升的生理意義。
-3. 時長 vs 乳酸的分佈關聯
-4. 總結與後續訓練處方建議（下週課表微調）
-
 請直接輸出繁體中文 JSON 格式（不要包含 markdown 代碼塊標記，只輸出純 JSON）：
 {{
-  "title": "{athlete_name} 本週運動狀態分析報告",
-  "period_str": "{period_str}",
-  "week_rhythm_summary": "本週訓練節奏的一段說明文字",
+  "title": "最近運動狀態與生理適應分析報告",
+  "period_str": "資料期間：{period_str}",
+  "week_rhythm_summary": "最近訓練強度節奏的一段說明文字",
   "kpi_cards": [
-    {{"label": "{sessions[-3]['date'] if len(sessions)>=3 else '前場'} {sessions[-3].get('type','訓練') if len(sessions)>=3 else ''}", "value": "乳酸 {sessions[-3].get('avg_lactate',0) if len(sessions)>=3 else ''}"}},
-    {{"label": "{sessions[-2]['date'] if len(sessions)>=2 else '前場'} {sessions[-2].get('type','訓練') if len(sessions)>=2 else ''}", "value": "乳酸 {sessions[-2].get('avg_lactate',0) if len(sessions)>=2 else ''}"}},
-    {{"label": "{sessions[-1]['date']} {sessions[-1].get('type','訓練')}", "value": "乳酸 {sessions[-1].get('avg_lactate',0)}"}}
+    {{"label": "分析場次總數", "value": "{len(sessions)} 場訓練"}},
+    {{"label": "最高乳酸峰值", "value": "{max([s.get('max_lactate',0) for s in sessions])} mmol/L"}},
+    {{"label": "最新場次平均乳酸", "value": "{sessions[-1].get('avg_lactate',0)} mmol/L"}}
   ],
-  "comparison_intro": "表現對比引言說明",
-  "highlight_text": "本週最值得標記的關鍵發現（重點以 tag-blue 強調）",
+  "comparison_intro": "最近各場次客觀量化生理數據對比說明",
+  "highlight_text": "最近最值得標記的關鍵發現（請用 tag-blue 強調關鍵字）",
   "duration_summary": "時長 vs 乳酸的分佈關聯解讀說明",
   "overall_summary": "總結與教練專業建議文字"
 }}
@@ -339,58 +345,61 @@ def call_gemini_api(sessions, athlete_name, period_str, is_breakthrough, api_key
 
 def generate_rule_based_analysis(sessions, athlete_name, period_str, is_breakthrough):
     """
-    內建專業運動生理學規則引擎：產出標準結構化報告內容。
+    內建專業運動生理學規則引擎：產出「最近運動狀態與生理適應分析報告」。
     """
-    recent_3 = sessions[-3:] if len(sessions) >= 3 else sessions
     latest = sessions[-1]
     
-    kpis = []
-    for s in recent_3:
-        kpis.append({
-            "label": f"{s['date']}　{s.get('type', '訓練')}",
-            "value": f"乳酸 {s['avg_lactate']}"
-        })
+    # 建立統計指標卡片
+    max_la_all = max([s.get("max_lactate", 0) for s in sessions])
+    avg_la_all = round(float(np.mean([s.get("avg_lactate", 0) for s in sessions])), 2)
 
-    types_str = " → ".join([s.get("type", "訓練") for s in recent_3])
+    kpis = [
+        {"label": "分析場次總數", "value": f"{len(sessions)} 場訓練"},
+        {"label": "最高乳酸峰值", "value": f"{max_la_all} mmol/L"},
+        {"label": f"最新場次 ({latest['date']}) 平均乳酸", "value": f"{latest['avg_lactate']} mmol/L"}
+    ]
+
+    types_list = [s.get("type", "訓練") for s in sessions]
+    types_str = " → ".join(types_list)
+    
     week_rhythm = (
-        f"本週訓練呈現「{types_str}」的節奏配置：在高強度訓練刺激後，安排輕鬆恢復課表讓身體充分超補償，"
-        f"隨後回到有氧與中等強度訓練，兼顧體能刺激與疲勞排除。"
+        f"最近訓練涵蓋了 {len(sessions)} 場次，強度節奏呈現「{types_str}」的漸進分佈。"
+        f"在高強度負荷刺激後適時導入基礎耐力與主動恢復課表，兼顧了生理機能刺激與代謝疲勞之消除。"
     )
 
     if is_breakthrough:
+        has_p = latest.get("avg_power", 0) > 0
+        load_desc = f"平均功率（{latest['avg_power']}W）與心率（{latest['avg_hr']} bpm）" if has_p else f"平均心率（{latest['avg_hr']} bpm）"
         highlight = (
-            f"<strong>本週最值得標記的發現：</strong>{latest['date']} 這場騎乘的平均功率（{latest['avg_power']}W）"
-            f"是五場騎乘裡<span class=\"tag-blue\">最高</span>的，心率（{latest['avg_hr']} bpm）落在中間值，"
-            f"時長長達 {latest['duration_min']} 分鐘，但平均乳酸（{latest['avg_lactate']} mmol/L）卻是五場裡"
-            f"<span class=\"tag-blue\">最低</span>的。在強度不降反升、訓練時間拉長的情況下乳酸更低，"
-            f"是清楚的<strong>代謝效率進步訊號</strong>。"
+            f"<strong>最近最值得標記的關鍵發現：</strong>{latest['date']} 這場訓練中，{load_desc}"
+            f"處於良好發揮狀態，訓練時長達到 {latest['duration_min']} 分鐘，但平均乳酸（{latest['avg_lactate']} mmol/L）卻在所有場次中"
+            f"<span class=\"tag-blue\">顯著降低</span>。在負荷不減、時長延長的情況下乳酸累積更少，"
+            f"是典型且明確的<strong>有氧代謝效率提升訊號</strong>（代表粒線體利用率與乳酸再循環能力優化）。"
         )
     else:
         highlight = (
-            f"<strong>生理監控指標：</strong>{latest['date']} 訓練平均功率為 {latest['avg_power']}W，"
-            f"平均心率 {latest['avg_hr']} bpm，平均乳酸為 {latest['avg_lactate']} mmol/L。"
-            f"乳酸生成量與心血管負荷呈現合理相關性，心率與功率未見異常解耦，顯示目前身體代謝狀況穩定。"
+            f"<strong>生理監控指標：</strong>最新場次（{latest['date']}）平均心率為 {latest['avg_hr']} bpm，"
+            f"平均乳酸為 {latest['avg_lactate']} mmol/L，最高乳酸 {latest['max_lactate']} mmol/L。"
+            f"整體乳酸生成速率與運動負荷強度呈現平穩的一致性，未見代謝異常堆積，顯示自主神經與能量系統適應穩定。"
         )
 
     duration_summary = (
-        f"多數場次時長落在 30-45 分鐘，乳酸值分佈隨強度區間有明顯分佈；"
-        f"{latest['date']} 以 {latest['duration_min']} 分鐘的較長時長，搭配良好的乳酸控制，"
-        f"展現出抗疲勞性與有氧基底的穩定進步。"
+        f"在選取的 {len(sessions)} 場訓練中，運動時長分佈於 {min([s['duration_min'] for s in sessions])} ~ "
+        f"{max([s['duration_min'] for s in sessions])} 分鐘。各強度等級下的乳酸累積與時間呈現清晰的生理耐受區間；"
+        f"長時訓練下仍能維持穩定的乳酸水平，反映出良好的抗疲勞性。"
     )
 
     overall_summary = (
-        f"本週訓練安排合理，延續了先前觀察到的「硬練接輕鬆恢復」節奏。最重要的發現是 {latest['date']} 這場訓練："
-        f"在功率、心率都不低於平常水準、訓練時間更長的情況下，乳酸值創下新低，"
-        f"顯示近期的有氧代謝效率有實質進步。建議持續觀察接下來幾週類似強度、時長的訓練場次，"
-        f"確認這個改善是否能穩定維持。"
+        f"最近的訓練安排結構完整，各場次強度區分明確。特別是最新場次（{latest['date']}）展現出優異的乳酸代謝耐受度。"
+        f"建議後續週期延續此一「強弱交替、極化推進」的課表配置，維持基礎有氧容量的同時，穩健提升無氧閾值與高強度支撐力。"
     )
 
     return {
-        "title": f"{athlete_name} 本週運動狀態分析報告",
+        "title": "最近運動狀態與生理適應分析報告",
         "period_str": f"資料期間：{period_str}",
         "week_rhythm_summary": week_rhythm,
         "kpi_cards": kpis,
-        "comparison_intro": f"{athlete_name} 混合多元訓練。本節篩選出最近場次做客觀數據對比。",
+        "comparison_intro": f"本節將選取的 {len(sessions)} 場訓練數據進行客觀生理指標交叉對比。",
         "highlight_text": highlight,
         "duration_summary": duration_summary,
         "overall_summary": overall_summary
@@ -399,29 +408,46 @@ def generate_rule_based_analysis(sessions, athlete_name, period_str, is_breakthr
 
 def generate_weekly_report_html(analysis, sessions):
     """
-    動態生成與 mindy周報.html 完全一致的高質感 HTML 報告 (包含 Chart.js 圖表與完整響應式排版)。
+    動態生成「最近運動狀態與生理適應分析報告」HTML。
+    - 第一張圖完整呈現所有選取場次的強度與乳酸分佈。
+    - 拿掉特定運動（騎乘）字眼，全面以強度等級呈現。
+    - 標題與段落均為「最近」，不掛特定個人名字。
     """
-    recent_3 = sessions[-3:] if len(sessions) >= 3 else sessions
     latest_date = sessions[-1]["date"]
 
-    rhythm_labels_json = json.dumps([f"{s['date']}({s.get('type','訓練')})" for s in recent_3], ensure_ascii=False)
-    rhythm_data_json = json.dumps([s["avg_lactate"] for s in recent_3])
-    rhythm_colors = ['#eb6834', '#3fae5c', '#2a78d6', '#e34948', '#898781'][:len(recent_3)]
-    rhythm_colors_json = json.dumps(rhythm_colors)
+    # 1. 第一張圖：把「所有選取的報告數據」通通秀出來！
+    all_dates_labels = [f"{s['date']} ({s.get('type','訓練')})" for s in sessions]
+    rhythm_labels_json = json.dumps(all_dates_labels, ensure_ascii=False)
+    rhythm_data_json = json.dumps([s["avg_lactate"] for s in sessions])
+    
+    # 調色盤：為每根柱子配置美觀的深淺配色
+    palette = ['#eb6834', '#3fae5c', '#2a78d6', '#e34948', '#8e44ad', '#16a085', '#d35400', '#2980b9', '#7f8c8d', '#f39c12']
+    bar_colors = [palette[i % len(palette)] for i in range(len(sessions))]
+    rhythm_colors_json = json.dumps(bar_colors)
 
     sessions_json = json.dumps(sessions, ensure_ascii=False, default=str)
 
+    # KPI 卡片
     kpi_cards_html = ""
     for k in analysis.get("kpi_cards", []):
         kpi_cards_html += f"""
   <div class="kpi"><div class="label">{k['label']}</div><div class="value">{k['value']}</div></div>"""
 
+    # 第一表：全部選取的場次明細
     table1_rows = ""
-    for s in recent_3:
+    for s in sessions:
+        is_bold = (s["date"] == latest_date)
+        td_d = f"<strong>{s['date']}</strong>" if is_bold else s['date']
+        td_t = f"<strong>{s.get('type', '訓練')}</strong>" if is_bold else s.get('type', '訓練')
+        td_dur = f"<strong>{s['duration_min']}</strong>" if is_bold else str(s['duration_min'])
+        td_h = f"<strong>{s['avg_hr']}</strong>" if is_bold else str(s['avg_hr'])
+        td_la = f"<strong>{s['avg_lactate']}</strong>" if is_bold else str(s['avg_lactate'])
         table1_rows += f"""
-<tr><td>{s['date']}</td><td>{s.get('type', '常規訓練')}</td><td class="num">{s['avg_hr']}</td><td class="num">{s['avg_lactate']}</td></tr>"""
+<tr><td>{td_d}</td><td>{td_t}</td><td class="num">{td_dur}</td><td class="num">{td_h}</td><td class="num">{td_la}</td></tr>"""
 
+    # 第二表：歷史量化數據完整對比
     table2_rows = ""
+    has_power = any(s.get("avg_power", 0) > 0 for s in sessions)
     for s in sessions:
         is_bold = (s["date"] == latest_date)
         td_d = f"<strong>{s['date']}</strong>" if is_bold else s['date']
@@ -431,14 +457,17 @@ def generate_weekly_report_html(analysis, sessions):
         td_la = f"<strong>{s['avg_lactate']}</strong>" if is_bold else str(s['avg_lactate'])
         td_mla = f"<strong>{s['max_lactate']}</strong>" if is_bold else str(s['max_lactate'])
 
+        pwr_cell = f'<td class="num">{td_p}</td>' if has_power else ''
         table2_rows += f"""
-<tr><td>{td_d}</td><td class="num">{td_dur}</td><td class="num">{td_p}</td><td class="num">{td_h}</td><td class="num">{td_la}</td><td class="num">{td_mla}</td></tr>"""
+<tr><td>{td_d}</td><td class="num">{td_dur}</td>{pwr_cell}<td class="num">{td_h}</td><td class="num">{td_la}</td><td class="num">{td_mla}</td></tr>"""
+
+    pwr_header = '<th class="num">平均功率 (W)</th>' if has_power else ''
 
     html_template = f"""<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<title>{analysis.get('title', '運動狀態分析報告')}</title>
+<title>{analysis.get('title', '最近運動狀態與生理適應分析報告')}</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
   :root {{
@@ -462,8 +491,8 @@ def generate_weekly_report_html(analysis, sessions):
     padding: 14px 16px; font-size: 13.5px; color: #22456f; margin: 16px 0; line-height: 1.7;
   }}
   .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }}
-  .chart-box {{ position: relative; width: 100%; height: 280px; margin: 12px 0 8px; }}
-  .kpi-row {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }}
+  .chart-box {{ position: relative; width: 100%; height: 290px; margin: 12px 0 8px; }}
+  .kpi-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0; }}
   .kpi {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }}
   .kpi .label {{ font-size: 12px; color: var(--sub); margin-bottom: 4px; }}
   .kpi .value {{ font-size: 20px; font-weight: 700; color: #1a1917; }}
@@ -479,33 +508,33 @@ def generate_weekly_report_html(analysis, sessions):
 <div class="wrap">
 
 <header>
-  <h1>{analysis.get('title', '運動狀態分析報告')}</h1>
+  <h1>{analysis.get('title', '最近運動狀態與生理適應分析報告')}</h1>
   <div class="subtitle">{analysis.get('period_str', '')}</div>
 </header>
 
-<h2>一、本週訓練節奏</h2>
+<h2>一、最近訓練強度節奏 (全場次概況)</h2>
 <p>{analysis.get('week_rhythm_summary', '')}</p>
-<div class="chart-box"><canvas id="weekChart"></canvas></div>
+<div class="chart-box"><canvas id="allSessionsChart"></canvas></div>
 <div class="kpi-row">
 {kpi_cards_html}
 </div>
 
-<h2>二、訓練表現：對比歷史場次</h2>
+<h2>二、訓練表現與生理代謝對比</h2>
 <p>{analysis.get('comparison_intro', '')}</p>
-<div class="chart-box"><canvas id="cyclingCompare"></canvas></div>
+<div class="chart-box"><canvas id="intensityCompare"></canvas></div>
 
 <div class="highlight">
   {analysis.get('highlight_text', '')}
 </div>
 
-<h3>時長 vs 乳酸</h3>
+<h3>時長 vs 乳酸分佈</h3>
 <div class="chart-box"><canvas id="durationChart"></canvas></div>
 <p>{analysis.get('duration_summary', '')}</p>
 
 <h2>三、資料明細</h2>
-<h3>近期訓練記錄</h3>
+<h3>選取訓練場次列表</h3>
 <table>
-<thead><tr><th>日期</th><th>類型</th><th class="num">平均心率 (bpm)</th><th class="num">平均乳酸 (mmol/L)</th></tr></thead>
+<thead><tr><th>日期</th><th>強度等級</th><th class="num">時長 (分)</th><th class="num">平均心率 (bpm)</th><th class="num">平均乳酸 (mmol/L)</th></tr></thead>
 <tbody>
 {table1_rows}
 </tbody>
@@ -513,7 +542,7 @@ def generate_weekly_report_html(analysis, sessions):
 
 <h3>歷史場次量化數據對比</h3>
 <table>
-<thead><tr><th>日期</th><th class="num">時長 (分)</th><th class="num">平均功率 (W)</th><th class="num">平均心率 (bpm)</th><th class="num">平均乳酸 (mmol/L)</th><th class="num">最高乳酸</th></tr></thead>
+<thead><tr><th>日期</th><th class="num">時長 (分)</th>{pwr_header}<th class="num">平均心率 (bpm)</th><th class="num">平均乳酸 (mmol/L)</th><th class="num">最高乳酸</th></tr></thead>
 <tbody>
 {table2_rows}
 </tbody>
@@ -527,8 +556,11 @@ def generate_weekly_report_html(analysis, sessions):
 </div>
 
 <script>
-// 1. 本週節奏圖
-new Chart(document.getElementById('weekChart'), {{
+const sessions = {sessions_json};
+const latestDate = "{latest_date}";
+
+// 1. 第一張圖：完整秀出「所有選取的報告數據」
+new Chart(document.getElementById('allSessionsChart'), {{
   type: 'bar',
   data: {{
     labels: {rhythm_labels_json},
@@ -542,45 +574,59 @@ new Chart(document.getElementById('weekChart'), {{
   options: {{
     responsive: true, 
     maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }} }},
+    plugins: {{ 
+      legend: {{ display: false }},
+      tooltip: {{
+        callbacks: {{
+          afterLabel: function(context) {{
+            const s = sessions[context.dataIndex];
+            return `時長: ${{s.duration_min}}分 | 心率: ${{s.avg_hr}}bpm`;
+          }}
+        }}
+      }}
+    }},
     scales: {{ 
-      y: {{ title: {{ display: true, text: 'mmol/L' }}, grid: {{ color: 'rgba(137,135,129,0.15)' }} }}, 
-      x: {{ grid: {{ display: false }} }} 
+      y: {{ title: {{ display: true, text: '平均乳酸 (mmol/L)' }}, grid: {{ color: 'rgba(137,135,129,0.15)' }} }}, 
+      x: {{ grid: {{ display: false }}, ticks: {{ autoSkip: false, maxRotation: 25 }} }} 
     }}
   }}
 }});
 
-// 2. 歷史對比圖
-const sessions = {sessions_json};
-const latestDate = "{latest_date}";
+// 2. 負荷與乳酸雙軸對比圖
+const hasPower = sessions.some(s => s.avg_power > 0);
+const datasets = [];
 
-new Chart(document.getElementById('cyclingCompare'), {{
+if (hasPower) {{
+  datasets.push({{
+    label: '平均功率(W)', 
+    data: sessions.map(s => s.avg_power), 
+    backgroundColor: '#3fae5c', 
+    yAxisID: 'y1',
+    borderRadius: 4
+  }});
+}}
+
+datasets.push({{
+  label: '平均心率(bpm)', 
+  data: sessions.map(s => s.avg_hr), 
+  backgroundColor: '#eb6834', 
+  yAxisID: 'y1',
+  borderRadius: 4
+}});
+
+datasets.push({{
+  label: '平均乳酸(mmol/L)', 
+  data: sessions.map(s => s.avg_lactate), 
+  backgroundColor: sessions.map(s => s.date === latestDate ? '#2a78d6' : 'rgba(42,120,214,0.5)'), 
+  yAxisID: 'y',
+  borderRadius: 4
+}});
+
+new Chart(document.getElementById('intensityCompare'), {{
   type: 'bar',
   data: {{
     labels: sessions.map(s => s.date),
-    datasets: [
-      {{ 
-        label: '平均功率(W)', 
-        data: sessions.map(s => s.avg_power), 
-        backgroundColor: '#3fae5c', 
-        yAxisID:'y1',
-        borderRadius: 4
-      }},
-      {{ 
-        label: '平均心率(bpm)', 
-        data: sessions.map(s => s.avg_hr), 
-        backgroundColor: '#eb6834', 
-        yAxisID:'y1',
-        borderRadius: 4
-      }},
-      {{ 
-        label: '平均乳酸(mmol/L)', 
-        data: sessions.map(s => s.avg_lactate), 
-        backgroundColor: sessions.map(s => s.date === latestDate ? '#2a78d6' : 'rgba(42,120,214,0.5)'), 
-        yAxisID:'y',
-        borderRadius: 4
-      }}
-    ]
+    datasets: datasets
   }},
   options: {{
     responsive: true, 
@@ -594,7 +640,7 @@ new Chart(document.getElementById('cyclingCompare'), {{
     }},
     scales: {{
       y: {{ position:'left', title: {{ display: true, text: '乳酸 (mmol/L)' }}, grid: {{ color: 'rgba(137,135,129,0.15)' }} }},
-      y1: {{ position:'right', title: {{ display: true, text: '功率 (W) / 心率 (bpm)' }}, grid: {{ display: false }} }},
+      y1: {{ position:'right', title: {{ display: true, text: hasPower ? '功率 (W) / 心率 (bpm)' : '心率 (bpm)' }}, grid: {{ display: false }} }},
       x: {{ grid: {{ display: false }} }}
     }}
   }}
@@ -615,7 +661,17 @@ new Chart(document.getElementById('durationChart'), {{
     responsive: true, 
     maintainAspectRatio: false, 
     layout: {{ padding: 16 }},
-    plugins: {{ legend: {{ display: false }} }},
+    plugins: {{ 
+      legend: {{ display: false }},
+      tooltip: {{
+        callbacks: {{
+          label: function(context) {{
+            const s = sessions[context.dataIndex];
+            return `${{s.date}} [${{s.type}}]: ${{s.duration_min}}分, ${{s.avg_lactate}} mmol/L`;
+          }}
+        }}
+      }}
+    }},
     scales: {{
       x: {{ title: {{ display: true, text: '時長 (分鐘)' }}, grid: {{ color: 'rgba(137,135,129,0.15)' }} }},
       y: {{ title: {{ display: true, text: '平均乳酸 (mmol/L)' }}, grid: {{ color: 'rgba(137,135,129,0.15)' }} }}

@@ -11,3 +11,6 @@ env/
 *.log
 *.tmp
 test_*.html
+.streamlit/
+*.env
+.env

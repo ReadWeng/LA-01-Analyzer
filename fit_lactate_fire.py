@@ -1078,116 +1078,103 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
 elif app_mode == "🤖 AI 生理週報與多場次分析":
     import ai_weekly_report
     
-    st.markdown('<div class="title-container">🤖 AI 運動生理週報與多場次適應分析</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle-text">自動撈取 Firebase 雲端或本機最近訓練場次（FIT 功率、心率、時長）與 LA-01 乳酸數據，透過運動生理學 AI 深度洞察，自動生成高質感互動週報。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="title-container">🤖 最近運動狀態與生理適應分析</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle-text">自動由 Firebase 雲端載入最近訓練紀錄與 LA-01 乳酸量測數據，透過運動生理學模型與 AI 進行深度洞察，自動生成客觀分析報告。</div>', unsafe_allow_html=True)
 
     fb_uid = st.session_state.get('firebase_uid')
     fb_token = st.session_state.get('firebase_token')
     fb_email = st.session_state.get('firebase_email', '')
 
     with st.container():
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.markdown("#### 📁 數據來源設定")
-            data_source = st.radio(
-                "選擇數據載入來源：",
-                ["自動撈取 Firebase 雲端紀錄", "載入本機歷史資料庫 (DataMindy)"],
-                index=0 if fb_uid else 1,
-                key="weekly_data_source"
-            )
-            athlete_name = st.text_input("運動員姓名 / 暱稱", value="Mindy", key="weekly_athlete_name")
-            session_limit = st.slider("分析最近場次數量", min_value=3, max_value=10, value=5, step=1, key="weekly_session_limit")
-            
-            if data_source == "自動撈取 Firebase 雲端紀錄":
-                if fb_uid:
-                    st.caption(f"🟢 已連線至 Firebase (帳號: `{fb_email}`, UID: `{fb_uid[:8]}...`)")
-                else:
-                    st.warning("⚠️ 尚未登入 MyLactate 雲端帳號，請由左側側邊欄登入，或切換為「載入本機歷史資料庫」。")
-
-        with c2:
-            st.markdown("#### 🧠 AI 生理分析引擎設定")
-            gemini_key_env = os.environ.get("GEMINI_API_KEY", "")
-            saved_key = st.session_state.get("user_gemini_key", gemini_key_env)
-            user_key = st.text_input(
-                "Google Gemini API Key (選填)", 
-                value=saved_key, 
-                type="password",
-                placeholder="AIzaSy...",
-                help="輸入 Gemini API Key 可調用 Gemini 1.5 進行個人化教練深度點評。若未輸入，系統將使用內建【運動生理學專家規則引擎】自動計算。"
-            )
-            if user_key:
-                st.session_state["user_gemini_key"] = user_key
-            st.info("💡 **雙軌智慧引擎說明**：\n- **未填 Key**：內建運動生理學引擎，秒級自動計算代謝效率（Power/Lactate）、極化節奏與關鍵突破發現。\n- **填寫 Key**：呼叫 Gemini 1.5 生成專業教練語氣的個人化深度週報。")
+        session_limit = st.slider("分析最近場次數量", min_value=3, max_value=10, value=5, step=1, key="weekly_session_limit")
+        
+        if fb_uid:
+            st.success(f"🟢 已自動連線至 Firebase 雲端資料庫 (帳號: `{fb_email}`)，將自動撈取最近 {session_limit} 場運動與乳酸數據。")
+        else:
+            st.info("ℹ️ 尚未登入 MyLactate 雲端帳號；點擊下方按鈕將自動載入最近示範訓練數據以供檢視。若要載入您的個人雲端紀錄，請先由側邊欄登入。")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        generate_btn = st.button("🚀 開始自動分析並生成週報", type="primary", use_container_width=True, key="btn_gen_weekly")
+        generate_btn = st.button("🚀 開始自動分析並生成「最近運動生理報告」", type="primary", use_container_width=True, key="btn_gen_weekly")
 
     if generate_btn:
-        with st.spinner("正在撈取數據並執行運動生理學 AI 分析..."):
+        with st.spinner("正在自動撈取數據並執行運動生理學分析..."):
             sessions = []
-            if data_source == "自動撈取 Firebase 雲端紀錄":
-                if not fb_uid or not fb_token:
-                    st.error("請先登入 MyLactate 帳號以撈取 Firebase 數據！或先選擇「載入本機歷史資料庫 (DataMindy)」進行體驗。")
-                else:
-                    sessions = ai_weekly_report.fetch_firebase_recent_sessions(fb_uid, fb_token, limit=session_limit)
-                    if not sessions:
-                        st.warning("⚠️ 雲端 fit_records 目前尚未有足夠場次，已自動為您載入基準數據以供預覽週報效果！")
-                        sessions = ai_weekly_report.fetch_local_sessions(folder="DataMindy", limit=session_limit)
+            if fb_uid and fb_token:
+                sessions = ai_weekly_report.fetch_firebase_recent_sessions(fb_uid, fb_token, limit=session_limit)
+                if not sessions:
+                    st.warning("⚠️ 雲端尚未找到足夠的運動配對數據，已自動為您載入最近基準數據以供預覽報告！")
+                    sessions = ai_weekly_report.fetch_local_sessions(folder="DataMindy", limit=session_limit)
             else:
                 sessions = ai_weekly_report.fetch_local_sessions(folder="DataMindy", limit=session_limit)
 
             if not sessions:
-                st.error("無法取得有效的場次數據，請檢查資料來源。")
+                st.error("無法取得有效的場次數據，請檢查資料庫。")
             else:
                 st.session_state['weekly_sessions'] = sessions
-                api_key_to_use = user_key.strip() if user_key else None
-                analysis = ai_weekly_report.analyze_sessions_with_ai(sessions, athlete_name=athlete_name, api_key=api_key_to_use)
+                # 自動從 secrets 或環境變數讀取 Gemini API Key (不需在介面顯示)
+                gemini_key = ""
+                try:
+                    if "GEMINI_API_KEY" in st.secrets:
+                        gemini_key = st.secrets["GEMINI_API_KEY"]
+                except Exception:
+                    pass
+                if not gemini_key:
+                    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+
+                analysis = ai_weekly_report.analyze_sessions_with_ai(sessions, athlete_name="", api_key=gemini_key if gemini_key else None)
                 st.session_state['weekly_analysis'] = analysis
                 
                 report_html = ai_weekly_report.generate_weekly_report_html(analysis, sessions)
                 st.session_state['weekly_report_html'] = report_html
-                st.success(f"🎉 成功撈取 {len(sessions)} 場訓練數據並完成 AI 生理週報！")
+                st.success(f"🎉 成功撈取 {len(sessions)} 場訓練數據並完成「最近運動生理報告」！")
 
     if 'weekly_report_html' in st.session_state and 'weekly_sessions' in st.session_state:
         sessions = st.session_state['weekly_sessions']
         report_html = st.session_state['weekly_report_html']
         
         st.markdown("---")
-        st.markdown(f"### 📋 納入本次週報的最近 {len(sessions)} 場訓練")
+        st.markdown(f"### 📋 納入本次分析的最近 {len(sessions)} 場訓練")
         
-        df_disp = pd.DataFrame([{
-            "日期": s["date"],
-            "運動型態": s.get("type", "常規訓練"),
-            "時長 (分)": s["duration_min"],
-            "平均功率 (W)": s["avg_power"],
-            "平均心率 (bpm)": s["avg_hr"],
-            "平均乳酸 (mmol/L)": s["avg_lactate"],
-            "最高乳酸 (mmol/L)": s["max_lactate"]
-        } for s in sessions])
+        has_power = any(s.get("avg_power", 0) > 0 for s in sessions)
+        df_rows = []
+        for s in sessions:
+            row = {
+                "日期": s["date"],
+                "強度等級": s.get("type", "常規訓練"),
+                "時長 (分)": s["duration_min"]
+            }
+            if has_power:
+                row["平均功率 (W)"] = s["avg_power"]
+            row["平均心率 (bpm)"] = s["avg_hr"]
+            row["平均乳酸 (mmol/L)"] = s["avg_lactate"]
+            row["最高乳酸 (mmol/L)"] = s["max_lactate"]
+            df_rows.append(row)
+
+        df_disp = pd.DataFrame(df_rows)
         st.dataframe(df_disp, use_container_width=True)
 
-        st.markdown("### 📊 本週運動狀態分析報告互動預覽")
+        st.markdown("### 📊 最近運動狀態分析報告互動預覽")
         
         col_down1, col_down2 = st.columns([1, 1])
         with col_down1:
             st.download_button(
-                label="📥 下載本週狀態分析週報 (HTML 網頁版)",
+                label="📥 下載最近運動狀態分析報告 (HTML 網頁版)",
                 data=report_html,
-                file_name=f"lactate_weekly_report_{athlete_name}_{datetime.now().strftime('%Y%m%d')}.html",
+                file_name=f"lactate_report_recent_{datetime.now().strftime('%Y%m%d')}.html",
                 mime="text/html",
                 use_container_width=True
             )
         with col_down2:
             if fb_uid and fb_token:
-                if st.button("☁️ 儲存此週報至 Firebase 雲端庫", use_container_width=True, key="btn_save_weekly_fb"):
-                    fn = f"weekly_report_{athlete_name}_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+                if st.button("☁️ 儲存此報告至 Firebase 雲端庫", use_container_width=True, key="btn_save_weekly_fb"):
+                    fn = f"recent_report_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
                     ok, msg = upload_report_to_firebase_storage(report_html, fn)
                     if ok:
-                        st.success(f"週報已成功儲存至 Firebase 雲端！(檔案: {fn})")
+                        st.success(f"報告已成功儲存至 Firebase 雲端！(檔案: {fn})")
                     else:
                         st.error(f"儲存失敗: {msg}")
 
-        components.html(report_html, height=1150, scrolling=True)
+        components.html(report_html, height=1200, scrolling=True)
 
     st.stop()
 
