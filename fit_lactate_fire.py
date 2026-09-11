@@ -962,7 +962,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🛠️ 整合分析工具模式")
 app_mode = st.sidebar.radio(
     "功能模式選擇",
-    ["單期分析與資料登錄", "多期數據整合儀表板 (LacV5)", "🤖 AI 生理週報與多場次分析"],
+    ["單期分析與資料登錄", "多期數據整合儀表板 (LacV5)"],
     key="app_mode_select"
 )
 
@@ -1073,109 +1073,6 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
         
         components.html(html_report_data, height=900, scrolling=True)
         
-    st.stop()
-
-elif app_mode == "🤖 AI 生理週報與多場次分析":
-    import ai_weekly_report
-    
-    st.markdown('<div class="title-container">🤖 最近運動狀態與生理適應分析</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle-text">自動由 Firebase 雲端載入最近訓練紀錄與 LA-01 乳酸量測數據，透過運動生理學模型與 AI 進行深度洞察，自動生成客觀分析報告。</div>', unsafe_allow_html=True)
-
-    fb_uid = st.session_state.get('firebase_uid')
-    fb_token = st.session_state.get('firebase_token')
-    fb_email = st.session_state.get('firebase_email', '')
-
-    with st.container():
-        session_limit = st.slider("分析最近場次數量", min_value=3, max_value=10, value=5, step=1, key="weekly_session_limit")
-        
-        if fb_uid:
-            st.success(f"🟢 已自動連線至 Firebase 雲端資料庫 (帳號: `{fb_email}`)，將自動撈取最近 {session_limit} 場運動與乳酸數據。")
-        else:
-            st.info("ℹ️ 尚未登入 MyLactate 雲端帳號；點擊下方按鈕將自動載入最近示範訓練數據以供檢視。若要載入您的個人雲端紀錄，請先由側邊欄登入。")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        generate_btn = st.button("🚀 開始自動分析並生成「最近運動生理報告」", type="primary", use_container_width=True, key="btn_gen_weekly")
-
-    if generate_btn:
-        with st.spinner("正在自動撈取數據並執行運動生理學分析..."):
-            sessions = []
-            if fb_uid and fb_token:
-                sessions = ai_weekly_report.fetch_firebase_recent_sessions(fb_uid, fb_token, limit=session_limit)
-                if not sessions:
-                    st.warning("⚠️ 雲端尚未找到足夠的運動配對數據，已自動為您載入最近基準數據以供預覽報告！")
-                    sessions = ai_weekly_report.fetch_local_sessions(folder="DataMindy", limit=session_limit)
-            else:
-                sessions = ai_weekly_report.fetch_local_sessions(folder="DataMindy", limit=session_limit)
-
-            if not sessions:
-                st.error("無法取得有效的場次數據，請檢查資料庫。")
-            else:
-                st.session_state['weekly_sessions'] = sessions
-                # 自動從 secrets 或環境變數讀取 Gemini API Key (不需在介面顯示)
-                gemini_key = ""
-                try:
-                    if "GEMINI_API_KEY" in st.secrets:
-                        gemini_key = st.secrets["GEMINI_API_KEY"]
-                except Exception:
-                    pass
-                if not gemini_key:
-                    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-
-                analysis = ai_weekly_report.analyze_sessions_with_ai(sessions, athlete_name="", api_key=gemini_key if gemini_key else None)
-                st.session_state['weekly_analysis'] = analysis
-                
-                report_html = ai_weekly_report.generate_weekly_report_html(analysis, sessions)
-                st.session_state['weekly_report_html'] = report_html
-                st.success(f"🎉 成功撈取 {len(sessions)} 場訓練數據並完成「最近運動生理報告」！")
-
-    if 'weekly_report_html' in st.session_state and 'weekly_sessions' in st.session_state:
-        sessions = st.session_state['weekly_sessions']
-        report_html = st.session_state['weekly_report_html']
-        
-        st.markdown("---")
-        st.markdown(f"### 📋 納入本次分析的最近 {len(sessions)} 場訓練")
-        
-        has_power = any(s.get("avg_power", 0) > 0 for s in sessions)
-        df_rows = []
-        for s in sessions:
-            row = {
-                "日期": s["date"],
-                "強度等級": s.get("type", "常規訓練"),
-                "時長 (分)": s["duration_min"]
-            }
-            if has_power:
-                row["平均功率 (W)"] = s["avg_power"]
-            row["平均心率 (bpm)"] = s["avg_hr"]
-            row["平均乳酸 (mmol/L)"] = s["avg_lactate"]
-            row["最高乳酸 (mmol/L)"] = s["max_lactate"]
-            df_rows.append(row)
-
-        df_disp = pd.DataFrame(df_rows)
-        st.dataframe(df_disp, use_container_width=True)
-
-        st.markdown("### 📊 最近運動狀態分析報告互動預覽")
-        
-        col_down1, col_down2 = st.columns([1, 1])
-        with col_down1:
-            st.download_button(
-                label="📥 下載最近運動狀態分析報告 (HTML 網頁版)",
-                data=report_html,
-                file_name=f"lactate_report_recent_{datetime.now().strftime('%Y%m%d')}.html",
-                mime="text/html",
-                use_container_width=True
-            )
-        with col_down2:
-            if fb_uid and fb_token:
-                if st.button("☁️ 儲存此報告至 Firebase 雲端庫", use_container_width=True, key="btn_save_weekly_fb"):
-                    fn = f"recent_report_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
-                    ok, msg = upload_report_to_firebase_storage(report_html, fn)
-                    if ok:
-                        st.success(f"報告已成功儲存至 Firebase 雲端！(檔案: {fn})")
-                    else:
-                        st.error(f"儲存失敗: {msg}")
-
-        components.html(report_html, height=1200, scrolling=True)
-
     st.stop()
 
 
