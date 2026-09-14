@@ -1075,6 +1075,52 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
         
     st.stop()
 
+if app_mode == "AI 運動生理週報與下一次處方":
+    st.markdown('<div class="title-container" style="display: flex; align-items: center;"><h1 style="margin: 0; color: #00f2fe;">🩸 AI 運動生理週報與下一次處方</h1></div>', unsafe_allow_html=True)
+    st.caption("以客觀血乳酸動力學、代謝效率比與 5~7 天累積負荷為核心之運動科學診斷")
+
+    uid = st.session_state.get('firebase_uid')
+    token = st.session_state.get('firebase_token')
+
+    if not uid:
+        st.warning("⚠️ 請先於左側側邊欄登入 MyLactate 雲端帳號，以載入您的歷史訓練與乳酸數據。")
+    else:
+        athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
+        col_ctl1, col_ctl2 = st.columns([2, 1])
+        with col_ctl1:
+            days_range = st.slider("分析天數範圍 (天)", min_value=3, max_value=14, value=7, key="ai_report_days")
+        with col_ctl2:
+            st.write("")
+            st.write("")
+            btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
+
+        import ai_weekly_report as awr
+        import streamlit.components.v1 as components
+        from datetime import datetime
+
+        if btn_gen or "cached_weekly_report_html" in st.session_state:
+            if btn_gen or "cached_weekly_report_html" not in st.session_state:
+                with st.spinner("🧠 正在透過運動生理學引擎運算並呼叫 AI 生成處方..."):
+                    report_data = awr.generate_weekly_report_data(
+                        athlete_name=athlete_name,
+                        uid=uid,
+                        token=token,
+                        days_limit=days_range
+                    )
+                    html_report = awr.render_modern_html_report(report_data)
+                    st.session_state["cached_weekly_report_html"] = html_report
+
+            st.download_button(
+                label="💾 下載完整 HTML 報告",
+                data=st.session_state["cached_weekly_report_html"],
+                file_name=f"lactate_weekly_report_{datetime.now().strftime('%Y%m%d')}.html",
+                mime="text/html"
+            )
+            components.html(st.session_state["cached_weekly_report_html"], height=950, scrolling=True)
+
+    st.stop()
+
+
 
 import base64
 try:
