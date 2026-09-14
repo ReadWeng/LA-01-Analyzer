@@ -29,7 +29,7 @@ def run_cmd(command, cwd=None, capture=True):
 
 def sync_from_parent(repo_dir):
     parent_dir = os.path.dirname(os.path.abspath(repo_dir))
-    files_to_sync = ["fit_lactate_fire.py", "ai_weekly_report.py"]
+    files_to_sync = ["fit_lactate_fire.py", "ai_weekly_report.py", "weekly_physio_engine.py", "ai_coach_generator.py", "run_weekly_dev.py"]
     for fname in files_to_sync:
         parent_file = os.path.join(parent_dir, fname)
         target_file = os.path.join(repo_dir, fname)
