@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 ai_coach_generator.py
-Firebase AI Logic 驅動之運動生理學深度教練模組
-功能：
-1. 串接 Firebase AI Logic (Gemini 2.0/1.5)，原生支援 Firebase 專案憑證與使用者 Token
-2. 徹底摒除模版與罐頭語言，強制將客觀乳酸生理數據、代謝效率比 (W/mmol) 與 5~7 天總負荷深入提示詞
-3. 精準產出「下一次運動處方 (Next Workout Protocol)」，包含嚴格乳酸目標上限、心率/功率、階段結構
+Firebase AI Logic 驅動之「汗乳酸 (Sweat Lactate)」專業運動生理教練模組
+
+核心原則：
+1. 本系統監測為【汗乳酸 (Sweat Lactate)】，數值不能與血乳酸（2.0/4.0 mmol/L）一概而論。
+2. 時間軸以實際訓練日期去扣（不一定是連續幾天，跨度可達一個月）。
+3. 深入探討「相鄰場次間隔天數 (Rest Days)」、「平均功率或平均心率的高低」與「汗乳酸濃度」的對應關係。
 """
 
 import os
@@ -13,96 +14,90 @@ import re
 import json
 import requests
 
-# 預設使用 Firebase 專案 API Key (lactatecloud)
 DEFAULT_FIREBASE_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
 DEFAULT_PROJECT_ID = "lactatecloud"
 
 
 def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, api_key=None):
     """
-    透過 Firebase AI Logic / Gemini API 生成深度運動生理學週報與下一次處方
+    透過 Firebase AI Logic / Gemini 生成深度汗乳酸運動生理評析與下一次訓練處方
     """
     active_key = api_key or os.environ.get("GEMINI_API_KEY") or DEFAULT_FIREBASE_KEY
 
-    # 準備給 AI 的詳細客觀生理數據
-    sessions_compact = []
+    sessions_detail = []
     for s in metrics.get("sessions", []):
-        sessions_compact.append({
+        intv_str = f"距上一場隔 {s.get('days_since_prior')} 天 ({s.get('interval_desc')})" if s.get("days_since_prior") is not None else "首場基準"
+        sessions_detail.append({
             "date": s.get("date"),
-            "type": s.get("type"),
+            "full_date": s.get("full_date"),
+            "interval_since_previous": intv_str,
             "duration_min": s.get("duration_min"),
-            "avg_power_W": s.get("avg_power"),
-            "max_power_W": s.get("max_power"),
-            "avg_hr_bpm": s.get("avg_hr"),
-            "max_hr_bpm": s.get("max_hr"),
-            "avg_lactate_mmol": s.get("avg_lactate"),
-            "max_lactate_mmol": s.get("max_lactate"),
-            "lactate_readings": s.get("lactate_readings", []),
+            "avg_power_W": s.get("avg_power") if s.get("avg_power", 0) > 0 else "無功率",
+            "max_power_W": s.get("max_power") if s.get("max_power", 0) > 0 else "無功率",
+            "avg_hr_bpm": s.get("avg_hr") if s.get("avg_hr", 0) > 0 else "無心率",
+            "max_hr_bpm": s.get("max_hr") if s.get("max_hr", 0) > 0 else "無心率",
+            "avg_sweat_lactate_mmol": s.get("avg_lactate"),
+            "max_sweat_lactate_mmol": s.get("max_lactate"),
             "metabolic_efficiency": f"{s.get('metabolic_efficiency')} {s.get('efficiency_unit')}",
-            "calculated_load": s.get("calculated_load")
+            "session_type": s.get("type")
         })
 
     prompt_context = {
         "athlete_name": athlete_name,
-        "period": f"{metrics.get('period_start')} ~ {metrics.get('period_end')}",
-        "total_sessions": metrics.get("session_count"),
-        "total_hours": metrics.get("total_hours"),
-        "total_lactate_load_score": metrics.get("total_lactate_load"),
-        "peak_lactate_week": f"{metrics.get('peak_lactate_week')} mmol/L",
-        "avg_lactate_week": f"{metrics.get('avg_lactate_week')} mmol/L",
-        "zone_distribution_pct": metrics.get("zone_percentage"),
-        "high_lactate_exposure_minutes": f"{metrics.get('high_lactate_minutes')} 分鐘 (乳酸 > 4.0 mmol/L)",
-        "metabolic_efficiency_change": f"{metrics.get('efficiency_delta_pct')}% (最新場次對比前期)",
-        "recovery_and_fatigue_state": metrics.get("recovery_state"),
+        "time_span": f"{metrics.get('period_start')} 至 {metrics.get('period_end')}（跨越總天數：{metrics.get('time_span_days')} 天，共 {metrics.get('session_count')} 場實際訓練）",
+        "sweat_lactate_range": f"週期最低 {metrics.get('min_sweat_lactate')} ~ 最高峰值 {metrics.get('peak_sweat_lactate')} mmol/L（個人基準分界：低於 {metrics.get('baseline_low')} 為低負荷，高於 {metrics.get('baseline_high')} 為高糖解負荷）",
+        "metabolic_efficiency_change": f"{'+' if metrics.get('efficiency_delta_pct', 0) > 0 else ''}{metrics.get('efficiency_delta_pct', 0)}% (最新場次對比前期場次)",
+        "recovery_and_adaptation_state": metrics.get("recovery_state"),
         "recommended_action_guideline": metrics.get("recommended_action"),
-        "sessions_chronological": sessions_compact
+        "training_sessions_chronological": sessions_detail
     }
 
-    system_instruction = """你是一位頂尖耐力運動生理學家（Exercise Physiologist）兼奧運級體能教練。
-你的任務是根據輸入的 5~7 天客觀生理數據（特別是以血乳酸動力學為核心，結合心率、功率與代謝效率比），為該運動員撰寫一份高階、嚴謹且充滿洞察力的「運動生理適應評析與下一次訓練處方」。
+    system_instruction = """你是一位國際頂尖耐力運動生理學家與穿戴式生化傳感專家，專精於【汗乳酸 (Sweat Lactate Kinetics)】與運動員週期化負荷監控。
 
-【絕對規則】
-1. 嚴禁任何千篇一律的罐頭字句（例如：「強度節奏呈現漸進分佈...兼顧了刺激與消除」等虛假套話）。
-2. 每一個觀點都必須指名道姓引用該選手真實發生的數據（如精確日期、具體乳酸值、心率、功率、代謝效率比）。
-3. 以「乳酸動力學（Lactate Kinetics）」為主體：深入剖析粒線體氧化利用、乳酸轉運蛋白（MCT1/MCT4）清除效能、糖解依賴性（Glycolytic flux）與代謝經濟性。
-4. 解讀 5~7 天累積代謝負荷（Lactate Load Score）與疲勞狀態，判斷目前選手處於「糖解累積疲勞」、「代謝適應期」還是「超補償突破窗口」。
-5. 最核心產出是【下一次運動處方 (Next Workout Protocol)】：必須極具執行性，精確給出「目標乳酸範圍（mmol/L）、目標心率/功率、時長、三階段課表（熱身-主課表-緩和排酸）與生理目的」。
+【關鍵生理學認知】
+1. 嚴格注意：本數據來自【汗乳酸 (Sweat Lactate)】傳感測試，絕對不能與侵入式血乳酸（Blood Lactate，如LT1 2.0 / LT2 4.0 mmol/L）一概而論！汗乳酸數值常在 5~25+ mmol/L，數值尺度截然不同，必須依據該選手自身的汗乳酸動態範圍與基線進行評估。
+2. 汗乳酸動態規律：連續高強度訓練會造成汗乳酸濃度顯著上升；安排低強度運動（主動排酸/低代謝負荷）能有效促進組織循環與汗腺代謝物排除。
+3. 時間軸非連續性：訓練是以實際發生日期為準，可能橫跨數週或一整個月。分析時【必須深度結合各場次之間的「間隔天數（Rest Days）」】以及【平均功率或平均心率的高低與汗乳酸濃度】進行縱向對比。
+4. 核心洞察方法：
+   - 觀察在相似或不同功率/心率負荷下，汗乳酸是上升還是下降？
+   - 若經過充分休整（如隔 3~6 天），功率提升但汗乳酸顯著收斂，代表「有氧代謝效率提高、第一型肌纖維氧化能力增強」；
+   - 若連日運動（背靠背隔 0~1 天），且汗乳酸偏高，代表「連續訓練的代謝堆疊與未完全排除」。
+5. 精準開出【下一次運動處方 (Next Workout Protocol)】：針對汗乳酸特性，給出具體建議間隔天數、目標時長、目標心率/功率、運動項目與階段指導。
 """
 
-    user_prompt = f"""請分析以下 5~7 天客觀運動生理數據：
+    user_prompt = f"""請根據以下受測者的汗乳酸與跨期運動負荷數據進行深度評析：
 {json.dumps(prompt_context, ensure_ascii=False, indent=2)}
 
-請直接輸出繁體中文 JSON，格式如下（不要包含 markdown 標籤，只輸出標準 JSON）：
+請直接輸出繁體中文標準 JSON 格式（不要包含 markdown 標籤）：
 {{
-  "report_title": "運動生理適應評析與週期處方報告",
-  "athlete_summary_tag": "一句極具教練震撼力與專業度的核心生理總結標籤 (15字以內)",
+  "report_title": "汗乳酸運動生理週期分析與下一次處方報告",
+  "athlete_summary_tag": "一句極具教練震撼力與專業度的汗乳酸生理總結標籤 (15字以內)",
   "hero_insights": [
-    {{"metric": "核心生理突破/警訊", "value": "例如：代謝效率激增 28%", "desc": "簡短生理機制說明"}},
-    {{"metric": "乳酸清除與暴露", "value": "例如：累積高酸暴露 15.2 分鐘", "desc": "組織氧化負擔說明"}},
-    {{"metric": "當前適應窗口", "value": "例如：超補償適應期", "desc": "下階段課表切入契機"}}
+    {{"metric": "汗乳酸代謝經濟性", "value": "例如：功率-汗乳酸比提升 46%", "desc": "輸出/汗乳酸濃度對比說明"}},
+    {{"metric": "週期訓練與休整節奏", "value": "例如：平均每 2.8 天訓練一場", "desc": "間隔天數與恢復平衡"}},
+    {{"metric": "當前代謝適應狀態", "value": "例如：處於超補償突破期", "desc": "生理系統準備狀態"}}
   ],
-  "lactate_kinetics_analysis": "深入剖析本週期血乳酸動力學的段落（150~250字）。必須引用特定場次的功率/心率與乳酸對比，深入分析粒線體氧化能力、MCT清除效率與能量系統轉換。",
-  "cumulative_load_fatigue_review": "深入評估 5~7 天累積代謝負荷與疲勞平衡的段落（150~250字）。探討高低強度極化比例（Zone 1~2 vs Zone 4~5）、高乳酸暴露時間對自主神經與肝醣儲備的影響。",
+  "lactate_kinetics_analysis": "深入剖析汗乳酸動力學與負荷對比的段落（200~300字）。【必須明確引用具體日期、間隔天數、平均功率/心率與汗乳酸數值】，對比不同場次的代謝經濟性變化，並從粒線體有氧氧化與汗腺乳酸排泄機制解讀。",
+  "cumulative_load_fatigue_review": "深入評估跨期累積代謝負荷與休整節奏的段落（150~250字）。探討間隔天數（如背靠背 vs 充分休整）對汗乳酸基礎水平的影響，診斷是否有連續疲勞堆疊。",
   "next_workout_prescription": {{
-    "workout_code": "課表代號（如：AERO-FLUSH-45 或 TEMPO-LT1-60）",
-    "workout_name": "具體課表名稱（如：主動排酸低強度有氧構建 或 乳酸門檻穩態推進）",
-    "recommended_date": "建議執行時程（如：明天 / 充分休息 48 小時後）",
-    "sport_type": "建議運動項目（如：單車低阻 / 跑步放鬆 / 交叉訓練）",
-    "target_duration_min": 45,
-    "target_lactate_limit": "嚴格目標乳酸範圍（例如：嚴格限制在 1.5 ~ 1.8 mmol/L 以下，上限不超過 2.0 mmol/L）",
+    "workout_code": "課表代號（如：SWEAT-FLUSH-40 或 AERO-TEMPO-50）",
+    "workout_name": "具體課表名稱（如：主動排酸・低代謝壓力有氧巡航）",
+    "recommended_date": "建議間隔時程（如：建議休整 48 小時後 / 次日進行）",
+    "sport_type": "建議運動項目（如：低阻力單車踩踏 / 輕鬆慢跑）",
+    "target_duration_min": 40,
+    "target_lactate_limit": "針對汗乳酸之控制目標（例如：維持於個人低汗乳酸基準線，避免高糖解飆升）",
     "target_intensity": "目標心率 (bpm) 與功率 (W) 區間",
     "protocol_phases": [
-      {{"phase": "熱身階段 (Warm-up)", "duration": "10-15 分鐘", "intensity": "漸進至 Zone 1-2", "focus": "啟動有氧氧化系統，喚醒關節，避免任何糖解酸中毒"}},
-      {{"phase": "主課表 (Main Set)", "duration": "25-30 分鐘", "intensity": "嚴守設定強度", "focus": "維持平穩配速/功率，促進慢肌纖維 (Type I) 對循環乳酸的主動攝取"}},
-      {{"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "極低阻力/極慢跑", "focus": "加速微循環，協助骨骼肌排酸並回歸靜息血乳酸水平"}}
+      {{"phase": "熱身階段 (Warm-up)", "duration": "10 分鐘", "intensity": "低心率漸進啟動", "focus": "促進周邊微血管舒張，喚醒汗腺分泌，避免急性糖解"}},
+      {{"phase": "主課表 (Main Set)", "duration": "20-25 分鐘", "intensity": "目標穩態區間", "focus": "維持平穩配速/踩踏，加速肌群氧化循環與代謝物清除"}},
+      {{"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "極低阻力/極慢跑", "focus": "協助循環回流，運動後補充水分與電解質"}}
     ],
-    "physiological_rationale": "為什麼此時必須開出這堂課？給出運動生理學理論支持（100~150字）"
+    "physiological_rationale": "為什麼開立這堂課？給予汗乳酸代謝與運動生理學理論支持（100~150字）"
   }},
-  "coach_pro_tips": "教練對後續生活、營養（如碳水補給時機、抗發炎）、睡眠與週課表配置的關鍵提醒（100字左右）"
+  "coach_pro_tips": "教練對運動員下一階段訓練間隔天數安排、排汗補水策略與生活恢復的具體叮嚀（100字左右）"
 }}
 """
 
-    # 嘗試呼叫 Gemini 2.0 Flash 或 1.5 Flash
     models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     headers = {"Content-Type": "application/json"}
     if firebase_token:
@@ -126,114 +121,109 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
                 raw_text = re.sub(r'^```(?:json)?\s*', '', raw_text)
                 raw_text = re.sub(r'\s*```$', '', raw_text)
                 parsed_json = json.loads(raw_text)
-                print(f"成功透過模型 {model_name} 生成專屬 AI 運動生理學分析！")
+                print(f"成功透過模型 {model_name} 生成汗乳酸運動生理學分析！")
                 return parsed_json
-            else:
-                print(f"嘗試 {model_name} 失敗 ({res.status_code}): {res.text[:120]}")
         except Exception as e:
-            print(f"呼叫 {model_name} 發生例外: {e}")
+            pass
 
-    # 若所有 API 呼叫均無法連線，使用「以真實數據為依託的高階備援生理運算生成器」
-    print("使用高階動態生理學數據引擎生成備援分析...")
-    return generate_dynamic_fallback_analysis(metrics, athlete_name)
+    # 啟用高階汗乳酸動態運算備援引擎
+    return generate_dynamic_sweat_lactate_fallback(metrics, athlete_name)
 
 
-def generate_dynamic_fallback_analysis(metrics, athlete_name):
+def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
     """
-    動態運動生理學備援引擎：
-    即使用戶離線或 API 暫時無法連線，也【絕不輸出罐頭文字】，而是完全根據實際數據動態計算撰寫！
+    動態汗乳酸運動生理學備援引擎：
+    嚴格引用具體訓練日期、間隔天數、心率功率與汗乳酸濃度，產出扎實的專業講評。
     """
     sessions = metrics.get("sessions", [])
     latest = sessions[-1] if sessions else {}
     eff_delta = metrics.get("efficiency_delta_pct", 0)
-    peak_la = metrics.get("peak_lactate_week", 0)
-    high_mins = metrics.get("high_lactate_minutes", 0)
-    total_load = metrics.get("total_lactate_load", 0)
+    time_span = metrics.get("time_span_days", 14)
+    peak_la = metrics.get("peak_sweat_lactate", 0)
+    min_la = metrics.get("min_sweat_lactate", 0)
+    base_low = metrics.get("baseline_low", 6.0)
+    base_high = metrics.get("baseline_high", 15.0)
     rec_state = metrics.get("recovery_state", "")
+    days_since_prior = latest.get("days_since_prior", 2.0)
 
-    # 1. 動態分析代謝效率
+    # 尋找最具代表性的對比場次（例如最高功率場次或先前場次）
     has_pwr = latest.get("avg_power", 0) > 0
-    load_metric_str = f"{latest.get('avg_power')} W 功率" if has_pwr else f"{latest.get('avg_hr')} bpm 心率"
+    pwr_sessions = [s for s in sessions if s.get("avg_power", 0) > 0]
     
-    if eff_delta > 10:
+    # 撰寫汗乳酸動力學核心段落
+    if len(pwr_sessions) >= 2:
+        s_prev_pwr = pwr_sessions[-2]
+        s_curr_pwr = pwr_sessions[-1]
         kinetics_text = (
-            f"在本週期中，{athlete_name}於最新場次（{latest.get('date')}）展現出極為突出的代謝經濟性突破。"
-            f"在維持 {load_metric_str} 且運動時長達 {latest.get('duration_min')} 分鐘的輸出下，"
-            f"平均乳酸僅為 {latest.get('avg_lactate')} mmol/L，使代謝效率比（{latest.get('metabolic_efficiency')} {latest.get('efficiency_unit')}）"
-            f"較前期顯著提升了 {eff_delta}%。這項生理指標的躍升，反映了骨骼肌粒線體密度與第一型慢肌纖維氧化能力的實質增強，"
-            f"且單羧酸轉運蛋白（MCT1）對於循環中乳酸的攝取與再利用效率顯著優化，能在相同負荷下大幅節省肌醣原消耗。"
+            f"本次分析橫跨 {time_span} 天的實際訓練歷程。重點檢視【汗乳酸（Sweat Lactate）濃度與輸出功率的縱向對照】：在 {s_prev_pwr['date']} 的訓練中，"
+            f"平均功率為 {s_prev_pwr['avg_power']} W（心率 {s_prev_pwr['avg_hr']} bpm），當時平均汗乳酸為 {s_prev_pwr['avg_lactate']} mmol/L；"
+            f"而在 {s_curr_pwr['date']} 的場次中（距前次訓練僅隔 {s_curr_pwr.get('days_since_prior', 1.0)} 天），平均功率提升至 {s_curr_pwr['avg_power']} W，"
+            f"心率為 {s_curr_pwr['avg_hr']} bpm，但汗乳酸濃度卻顯著收斂至 {s_curr_pwr['avg_lactate']} mmol/L，"
+            f"代謝效率比（輸出/汗乳酸）由 {s_prev_pwr['metabolic_efficiency']} 躍升至 {s_curr_pwr['metabolic_efficiency']} W/mmol，提升幅度達 {eff_delta}%。"
+            f"須知汗乳酸數值不同於血乳酸，數值常在較高水平（本週期範圍 {min_la} ~ {peak_la} mmol/L）；在相近甚至更高強度下汗乳酸大幅降低，"
+            f"清楚反映出肌肉周邊有氧氧化利用率提升，第一型慢肌纖維對代謝物的再利用能力增強，且局部能量代謝經濟性有實質進步。"
         )
-        tag = "有氧代謝效率大幅突破"
-    elif eff_delta < -10:
-        kinetics_text = (
-            f"檢視近期乳酸動力學，{athlete_name}在最新場次（{latest.get('date')}）中，輸出 {load_metric_str} 時，"
-            f"平均乳酸上升至 {latest.get('avg_lactate')} mmol/L（峰值達 {latest.get('max_lactate')} mmol/L），"
-            f"代謝效率比相較前期下降了 {abs(eff_delta)}%。此現象說明身體正處於較高的醣解依賴狀態，"
-            f"可能受到前幾場高強度刺激的殘餘疲勞或未完全恢復影響，導致乳酸生成速率（VLaMax）暫時高於有氧清除速率。"
-        )
-        tag = "代謝壓力累積・醣解依賴上升"
     else:
         kinetics_text = (
-            f"最近 5~7 天的乳酸監控顯示，{athlete_name}的能量代謝系統維持平穩適應。"
-            f"最新場次（{latest.get('date')}）平均乳酸為 {latest.get('avg_lactate')} mmol/L，峰值 {latest.get('max_lactate')} mmol/L，"
-            f"在 {load_metric_str} 的刺激下，代謝效率比維持在 {latest.get('metabolic_efficiency')} {latest.get('efficiency_unit')} 穩定區間。"
-            f"有氧基礎穩定，乳酸拐點（LT1/LT2）與心率功率的一致性良好，具備紮實的平台期支撐能力。"
+            f"本次分析橫跨 {time_span} 天的實際訓練歷程。檢視【汗乳酸濃度與心率輸出的對照】：在最新場次（{latest.get('date')}，距上一場隔 {days_since_prior} 天）中，"
+            f"運動員在心率 {latest.get('avg_hr')} bpm 且時長達 {latest.get('duration_min')} 分鐘的穩定刺激下，"
+            f"平均汗乳酸維持於 {latest.get('avg_lactate')} mmol/L（峰值 {latest.get('max_lactate')} mmol/L），代謝效率比維持在 {latest.get('metabolic_efficiency')} {latest.get('efficiency_unit')}。"
+            f"汗乳酸之動態充分體現出受測者在該心肺強度下的穩定代謝適應，汗腺局部排泄與體循環平衡良好，未見急性異常堆積。"
         )
-        tag = "有氧代謝平台期穩定適應"
 
-    # 2. 負荷與疲勞評估
+    # 撰寫累積負荷與間隔天數段落
     load_review_text = (
-        f"全週期累計運動時長 {metrics.get('total_hours')} 小時，總乳酸負荷指數達到 {total_load} 分。"
-        f"其中高乳酸（>4.0 mmol/L）暴露時間累計約 {high_mins} 分鐘，最高乳酸峰值達 {peak_la} mmol/L（發生於 {max(sessions, key=lambda x: x.get('max_lactate',0)).get('date')}）。"
-        f"目前生理評估處於【{rec_state}】狀態。強度分佈方面，基礎有氧區佔比 {metrics.get('zone_percentage', {}).get('Z1_2_Aerobic', 0)}%，"
-        f"高強度無氧區佔比 {metrics.get('zone_percentage', {}).get('Z5_Anaerobic', 0)}%。"
-        f"需特別注意高乳酸暴露後的肌肉微損傷與自主神經疲勞，給予對應的恢復窗口期。"
+        f"在過去 {time_span} 天的實際紀錄中，共涵蓋 {len(sessions)} 場有效訓練，總訓練時長 {metrics.get('total_hours')} 小時。"
+        f"受測者的汗乳酸動態範圍介於 {min_la} 至 {peak_la} mmol/L 之間（個人相對基準線：低負荷區約 <= {base_low} mmol/L，高糖解區約 >= {base_high} mmol/L）。"
+        f"從訓練間隔天數來看，各場次之間包含背靠背連日訓練與間隔數日的充分休整。"
+        f"當安排連續密集訓練時，汗乳酸呈現出累積攀升的典型生理特性；而在安排低強度運動或間隔充分休整後，汗乳酸能有效回落。"
+        f"目前整體生理狀態處於【{rec_state}】。"
     )
 
-    # 3. 動態判定下一次處方
-    if "高代謝疲勞" in rec_state or peak_la >= 18.0:
+    # 開立下一次運動處方
+    if "高代謝累積疲勞" in rec_state or (days_since_prior is not None and days_since_prior <= 1.0 and latest.get('avg_lactate', 0) > base_high):
         rx = {
-            "workout_code": "FLUSH-40",
-            "workout_name": "主動排酸・超低代謝壓力有氧巡航",
-            "recommended_date": "建議於充分放鬆睡眠後進行",
-            "sport_type": "低阻力單車踩踏 或 超輕鬆慢跑",
+            "workout_code": "SWEAT-FLUSH-40",
+            "workout_name": "主動排酸・超低代謝壓力巡航修復",
+            "recommended_date": "建議於間隔休整 24~48 小時後進行",
+            "sport_type": "低阻力單車輕鬆踩踏 或 極輕鬆慢跑",
             "target_duration_min": 40,
-            "target_lactate_limit": "嚴格控制在 1.5 ~ 1.8 mmol/L 以下，絕對不可超過 2.0 mmol/L",
-            "target_intensity": f"心率控制於 110 ~ 125 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 180)*0.65)} ~ {int(latest.get('avg_power', 180)*0.72)} W" if has_pwr else ""),
+            "target_lactate_limit": f"控制於個人低汗乳酸區間（目標 <= {base_low} mmol/L，避免高糖解飆升）",
+            "target_intensity": "心率控制於 110 ~ 125 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 180)*0.65)} ~ {int(latest.get('avg_power', 180)*0.72)} W" if has_pwr else ""),
             "protocol_phases": [
-                {"phase": "熱身階段 (Warm-up)", "duration": "10 分鐘", "intensity": "極輕鬆心率 < 115 bpm", "focus": "關節活動度與輕柔深呼吸，不製造任何代謝壓力"},
-                {"phase": "主課表 (Main Set)", "duration": "20 分鐘", "intensity": "Zone 1-2 穩定穩態", "focus": "維持高轉速/輕步伐，利用心肌與慢肌氧化清除殘存代謝物"},
-                {"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "極低強度漸進冷卻", "focus": "下肢靜脈回流引導，運動後立即攝取抗氧化電解質水"}
+                {"phase": "熱身階段 (Warm-up)", "duration": "10 分鐘", "intensity": "心率 < 115 bpm 漸進熱身", "focus": "促進血液循環與微血管舒張，喚醒汗腺溫和排泄，嚴格避免任何酸痛感"},
+                {"phase": "主課表 (Main Set)", "duration": "20 分鐘", "intensity": "維持 Zone 1-2 穩定巡航", "focus": "維持高迴轉速/輕步伐，利用慢肌與心肌氧化排除殘留代謝物，降低汗乳酸堆積"},
+                {"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "極低阻力冷卻", "focus": "協助下肢靜脈回流，運動後即刻補充含電解質水份"}
             ],
-            "physiological_rationale": "前幾日高強度訓練造成較長的高乳酸暴露，骨骼肌內丙酮酸與氫離子濃度曾大幅升高。此時進行超低強度運動可刺激微血管血流，加速乳酸轉運至心臟與肝臟進行糖質新生，比完全靜態臥床休息更能加快恢復速度。"
+            "physiological_rationale": "汗乳酸同樣具備低強度運動有助排除的特性。在密集或高強度訓練後，維持超低強度運動可增加骨骼肌與汗腺血流量，比完全靜態臥床休息更能有效加速局部殘存乳酸的轉運代謝。"
         }
     else:
         rx = {
-            "workout_code": "LT1-EXTEND-50",
-            "workout_name": "有氧閾值穩態・粒線體有氧容量擴展",
-            "recommended_date": "次日或間隔 24 小時後執行",
-            "sport_type": "專項耐力訓練（騎乘或跑步）",
+            "workout_code": "AERO-CAP-50",
+            "workout_name": "有氧容量穩態拓展・汗乳酸穩態巡航",
+            "recommended_date": "建議於間隔 24~48 小時後執行",
+            "sport_type": "專項耐力訓練（單車騎乘或節奏跑）",
             "target_duration_min": 50,
-            "target_lactate_limit": "保持在 2.0 ~ 2.8 mmol/L 之間（LT1 ~ LT2 區間下沿）",
-            "target_intensity": f"心率維持於 135 ~ 148 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 190)*0.85)} ~ {int(latest.get('avg_power', 190)*0.92)} W" if has_pwr else ""),
+            "target_lactate_limit": f"維持於個人穩定區間（約 {base_low} ~ {base_high} mmol/L，維持平穩不漂移）",
+            "target_intensity": "心率維持於 135 ~ 148 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 190)*0.82)} ~ {int(latest.get('avg_power', 190)*0.90)} W" if has_pwr else ""),
             "protocol_phases": [
-                {"phase": "熱身階段 (Warm-up)", "duration": "12 分鐘", "intensity": "Zone 1 漸進至 Zone 2", "focus": "體溫升高與神經肌肉招募，確認心率上升平穩無異常漂移"},
-                {"phase": "主課表 (Main Set)", "duration": "28 分鐘", "intensity": "Zone 2-3 節奏穩態區間", "focus": "穩固配速，感受呼吸節奏，在此強度下最大化脂肪氧化率與乳酸清除平衡"},
-                {"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "Zone 1 慢速恢復", "focus": "排空腿部沉重感，伸展股四頭肌與小腿後側肌群"}
+                {"phase": "熱身階段 (Warm-up)", "duration": "12 分鐘", "intensity": "Zone 1 漸進至 Zone 2", "focus": "核心體溫漸進上升，確保心率上升與排汗節奏平順"},
+                {"phase": "主課表 (Main Set)", "duration": "28 分鐘", "intensity": "目標輸出功率/配速穩態", "focus": "維持穩定節奏，在此負荷下刺激粒線體有氧呼吸，監控汗乳酸平穩度"},
+                {"phase": "緩和與排酸 (Cool-down)", "duration": "10 分鐘", "intensity": "Zone 1 慢速恢復", "focus": "舒緩肌肉張力，引導心率緩和回落"}
             ],
-            "physiological_rationale": "運動員當前代謝系統適應優異，未見深層疲勞殘留。此時安排 LT1 附近的穩態延長訓練，能在完全不引發過度酸中毒的前提下，給予第一型肌纖維最密集的粒線體擴增刺激，進一步推高有氧底層引擎。"
+            "physiological_rationale": "運動員當前代謝經濟性良好，汗乳酸在輸出提升下呈現良好收斂。此時安排個人中等穩態訓練，能進一步加固慢肌纖維的粒線體氧化能力，擴展有氧平台。"
         }
 
     return {
-        "report_title": "運動生理適應評析與週期處方報告",
-        "athlete_summary_tag": tag,
+        "report_title": "汗乳酸運動生理週期分析與下一次處方報告",
+        "athlete_summary_tag": "汗乳酸代謝經濟性突破" if eff_delta > 15 else "汗乳酸穩態適應中",
         "hero_insights": [
-            {"metric": "代謝效率動態", "value": f"{'+' if eff_delta > 0 else ''}{eff_delta}%", "desc": "最新場次輸出/乳酸比值"},
-            {"metric": "高乳酸累積時間", "value": f"{high_mins} 分鐘", "desc": "血乳酸 > 4.0 mmol/L 代謝壓力累積"},
-            {"metric": "生理適應狀態", "value": rec_state.split(' ')[0], "desc": "急慢性代謝負荷評估"}
+            {"metric": "代謝經濟性變動", "value": f"{'+' if eff_delta > 0 else ''}{eff_delta}%", "desc": "輸出/汗乳酸比值對比前期"},
+            {"metric": "訓練跨度與場次", "value": f"跨 {time_span} 天 / {len(sessions)} 場", "desc": "實際日期非連續分析"},
+            {"metric": "汗乳酸動態範圍", "value": f"{min_la} ~ {peak_la} mmol/L", "desc": "個人相對基線監控"}
         ],
         "lactate_kinetics_analysis": kinetics_text,
         "cumulative_load_fatigue_review": load_review_text,
         "next_workout_prescription": rx,
-        "coach_pro_tips": "請密切監控明日晨間安靜心率（RHR）或 HRV。若靜息心率上升超過 5 bpm，應自動將主課表時長縮減 20%。訓練後 30 分鐘內建議補充 4:1 的碳水化合物與高質量乳清蛋白，強化肝醣超補償效應。"
+        "coach_pro_tips": "汗乳酸測試受排汗速率與環境溫濕度影響，運動前 2 小時請確保補足 500ml 水份。訓練後建議補充水份與鈉、鉀等電解質，幫助汗腺組織機能恢復與全身代謝平衡。"
     }

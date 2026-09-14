@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 ai_weekly_report.py
-以運動生理學與血乳酸為核心的現代化 AI 運動週報生成器
-整合：
-- weekly_physio_engine: 5~7天客觀數據解析、乳酸動力學、代謝效率比、總負荷計算
-- ai_coach_generator: Firebase AI Logic 驅動之深度生理剖析與下一次運動處方
-- 現代科技感 (Dark Carbon & Neon Accent) 運動儀表板 HTML 渲染
+以「汗乳酸 (Sweat Lactate)」為核心的現代化運動生理週期分析與下一次處方報告
+
+領域認知整合：
+1. 汗乳酸動態具有高強度刺激上升、低強度有助排出的特性，但數值不能與血乳酸一概而論。
+2. 跨期分析以實際訓練日期為準（可橫跨一整個月，計算相鄰場次間隔天數）。
+3. 縱向探討平均功率或平均心率與汗乳酸濃度的對照（代謝經濟性與疲勞累積）。
 """
 
 import os
@@ -20,23 +21,22 @@ import ai_coach_generator as acg
 
 def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7):
     """
-    抓取數據、進行生理負荷計算，並呼叫 Firebase AI Logic 生成完整報告資料
-    支援本地檔案資料夾 (如 DataMindy) 或 Firebase 登入者資料
+    抓取數據（以實際場次數量為準）、進行汗乳酸與間隔運算，並呼叫 Firebase AI Logic
     """
     if uid and token:
-        sessions = wpe.fetch_firestore_dataset(uid, token, days_limit=days_limit)
+        sessions = wpe.fetch_firestore_dataset(uid, token, session_limit=days_limit)
     elif os.path.isdir(source):
-        sessions = wpe.fetch_local_dataset(source, days_limit=days_limit)
+        sessions = wpe.fetch_local_dataset(source, session_limit=days_limit)
     else:
         sessions = wpe.get_benchmark_dataset()
 
     if not sessions:
         sessions = wpe.get_benchmark_dataset()
 
-    # 1. 運動生理學與負荷運算
+    # 1. 運動生理學與跨期負荷運算
     metrics = wpe.calculate_comprehensive_load(sessions)
 
-    # 2. 透過 Firebase AI Logic 產出深度評析與處方
+    # 2. 透過 Firebase AI Logic 產出深度汗乳酸評析與處方
     ai_analysis = acg.call_firebase_ai_logic(metrics, athlete_name=athlete_name, firebase_token=token, api_key=api_key)
 
     return {
@@ -49,7 +49,7 @@ def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=N
 
 def render_modern_html_report(report_data):
     """
-    將生理運算數據與 AI 處方渲染為現代科技感 HTML 儀表板
+    將汗乳酸運算數據與 AI 處方渲染為現代科技感 HTML 儀表板
     """
     athlete = report_data.get("athlete_name", "選手")
     metrics = report_data.get("metrics", {})
@@ -66,7 +66,6 @@ def render_modern_html_report(report_data):
     powers = [s.get("avg_power", 0) for s in sessions]
     hrs = [s.get("avg_hr", 0) for s in sessions]
     durations = [s.get("duration_min", 0) for s in sessions]
-    loads = [s.get("calculated_load", 0) for s in sessions]
 
     has_power = any(p > 0 for p in powers)
     secondary_intensity = powers if has_power else hrs
@@ -74,12 +73,15 @@ def render_modern_html_report(report_data):
     secondary_color = "#00f2fe" if has_power else "#ff5252"
 
     zone_pct = metrics.get("zone_percentage", {})
-    polar_labels = ["Zone 1-2 基礎有氧 (<2.0 mmol/L)", "Zone 3 節奏耐力 (2.0-4.0)", "Zone 4 閾值無氧 (4.0-8.0)", "Zone 5+ 超高強度 (>8.0)"]
+    polar_labels = [
+        f"低代謝負荷 (主動排酸 <= {metrics.get('baseline_low', 6.0)} mmol/L)",
+        f"中等代謝負荷 (節奏穩態 {metrics.get('baseline_low', 6.0)}-{metrics.get('baseline_high', 15.0)})",
+        f"高代謝負荷 (高糖解輸出 > {metrics.get('baseline_high', 15.0)})"
+    ]
     polar_values = [
-        zone_pct.get("Z1_2_Aerobic", 0),
-        zone_pct.get("Z3_Tempo", 0),
-        zone_pct.get("Z4_Threshold", 0),
-        zone_pct.get("Z5_Anaerobic", 0)
+        zone_pct.get("Low_Recovery", 0),
+        zone_pct.get("Tempo_Aerobic", 0),
+        zone_pct.get("High_Glycolytic", 0)
     ]
 
     # 處方階段 HTML
@@ -88,7 +90,7 @@ def render_modern_html_report(report_data):
         phases_html += f"""
         <div class="phase-card">
             <div class="phase-header">
-                <span class="phase-step">STEP 0{idx+1}</span>
+                <span class="phase-step">PHASE 0{idx+1}</span>
                 <span class="phase-name">{p.get('phase', '')}</span>
                 <span class="phase-dur">⏱️ {p.get('duration', '')}</span>
             </div>
@@ -103,17 +105,19 @@ def render_modern_html_report(report_data):
         eff_str = f"{s.get('metabolic_efficiency', 0)} {s.get('efficiency_unit', '')}" if s.get('metabolic_efficiency', 0) > 0 else "—"
         pwr_str = f"{s.get('avg_power', 0)} W" if s.get('avg_power', 0) > 0 else "—"
         hr_str = f"{s.get('avg_hr', 0)} bpm" if s.get('avg_hr', 0) > 0 else "—"
+        intv_badge = f"<span class='intv-pill'>{s.get('interval_desc')}</span>"
         table_rows_html += f"""
         <tr>
-            <td style="font-weight: 600; color: #ffffff;">{s.get('date')}</td>
+            <td style="font-weight: 700; color: #ffffff;">{s.get('date')}</td>
+            <td>{intv_badge}</td>
             <td><span class="type-pill">{s.get('type')}</span></td>
             <td class="num">{s.get('duration_min')} 分</td>
-            <td class="num" style="color: #00f2fe;">{pwr_str}</td>
-            <td class="num" style="color: #ff5252;">{hr_str}</td>
-            <td class="num" style="color: #ffab00; font-weight: 600;">{s.get('avg_lactate')}</td>
+            <td class="num" style="color: #00f2fe; font-weight: 600;">{pwr_str}</td>
+            <td class="num" style="color: #ff5252; font-weight: 600;">{hr_str}</td>
+            <td class="num" style="color: #ffab00; font-weight: 700;">{s.get('avg_lactate')}</td>
             <td class="num" style="color: #ff5252; font-weight: 700;">{s.get('max_lactate')}</td>
-            <td class="num" style="color: #00e676;">{eff_str}</td>
-            <td class="num" style="color: #64b5f6; font-weight: 600;">{s.get('calculated_load')}</td>
+            <td class="num" style="color: #00e676; font-weight: 700;">{eff_str}</td>
+            <td class="num" style="color: #64b5f6;">{s.get('calculated_load')}</td>
         </tr>
         """
 
@@ -133,7 +137,7 @@ def render_modern_html_report(report_data):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{athlete}：{ai.get('report_title', '運動生理適應評析與週期處方報告')}</title>
+    <title>{athlete}：{ai.get('report_title', '汗乳酸運動生理週期分析與處方報告')}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -230,13 +234,14 @@ def render_modern_html_report(report_data):
         }}
         .summary-banner {{
             margin-top: 18px;
-            padding: 12px 18px;
+            padding: 14px 18px;
             background: rgba(0, 230, 118, 0.08);
             border-left: 4px solid var(--neon-emerald);
             border-radius: 8px;
             font-size: 0.95rem;
             color: #e2e8f0;
             font-weight: 500;
+            line-height: 1.6;
         }}
 
         /* Hero KPIs */
@@ -268,7 +273,7 @@ def render_modern_html_report(report_data):
             font-weight: 600;
         }}
         .kpi-value {{
-            font-size: 2rem;
+            font-size: 1.9rem;
             font-weight: 800;
             color: #ffffff;
             line-height: 1.2;
@@ -312,7 +317,7 @@ def render_modern_html_report(report_data):
         .rx-meta-row {{
             display: flex;
             flex-wrap: wrap;
-            gap: 20px;
+            gap: 16px;
             margin: 18px 0 24px;
             padding-bottom: 18px;
             border-bottom: 1px solid var(--border);
@@ -332,7 +337,7 @@ def render_modern_html_report(report_data):
             margin-bottom: 4px;
         }}
         .rx-meta-val {{
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             font-weight: 700;
             color: var(--neon-cyan);
         }}
@@ -388,6 +393,7 @@ def render_modern_html_report(report_data):
             font-size: 0.9rem;
             color: #cbd5e1;
             margin-top: 18px;
+            line-height: 1.6;
         }}
 
         /* Analysis Sections */
@@ -477,7 +483,7 @@ def render_modern_html_report(report_data):
         }}
         .chart-container {{
             position: relative;
-            height: 300px;
+            height: 310px;
             width: 100%;
         }}
 
@@ -512,6 +518,15 @@ def render_modern_html_report(report_data):
             border-radius: 6px;
             color: #e2e8f0;
         }}
+        .intv-pill {{
+            font-size: 0.75rem;
+            background: rgba(0, 242, 254, 0.1);
+            color: var(--neon-cyan);
+            border: 1px solid rgba(0, 242, 254, 0.2);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+        }}
 
         /* Footer */
         footer {{
@@ -529,37 +544,37 @@ def render_modern_html_report(report_data):
         <!-- Header -->
         <header>
             <div class="top-meta">
-                <div class="athlete-tag">🏃 選手：{athlete} &nbsp;|&nbsp; 週期：{metrics.get('period_start')} – {metrics.get('period_end')}</div>
+                <div class="athlete-tag">💧 汗乳酸動態監控 &nbsp;|&nbsp; 選手：{athlete} &nbsp;|&nbsp; 週期：{metrics.get('period_start')} – {metrics.get('period_end')}</div>
                 <div class="recovery-pill">● {metrics.get('recovery_state')}</div>
             </div>
-            <h1>🩸 {ai.get('report_title', '運動生理適應評析與週期處方報告')}</h1>
-            <div class="subtitle">以客觀血乳酸動力學、代謝效率比 (Metabolic Efficiency) 與 5~7 天累積負荷為核心之運動科學診斷</div>
+            <h1>💧 {ai.get('report_title', '汗乳酸運動生理週期分析與處方報告')}</h1>
+            <div class="subtitle">以非侵入式汗乳酸動力學 (Sweat Lactate)、跨期實際間隔天數與輸出負荷（功率/心率）對比為核心之運動科學診斷</div>
             <div class="summary-banner">
-                💡 <strong>本週核心生理標籤：</strong>{ai.get('athlete_summary_tag', '代謝效率穩定適應')} &nbsp;—&nbsp; {metrics.get('recommended_action')}
+                💡 <strong>週期核心生理洞察：</strong>{ai.get('athlete_summary_tag', '汗乳酸代謝經濟性突破')} &nbsp;—&nbsp; {metrics.get('recommended_action')}
             </div>
         </header>
 
         <!-- Hero KPIs -->
         <div class="kpi-grid">
             <div class="kpi-card">
-                <div class="kpi-label">⏱️ 週期總訓練量</div>
+                <div class="kpi-label">⏱️ 週期實際跨度與訓練量</div>
                 <div class="kpi-value" style="color: var(--neon-cyan);">{metrics.get('total_hours')} <span style="font-size: 1rem; color: var(--text-secondary);">小時</span></div>
-                <div class="kpi-sub">共 {metrics.get('session_count')} 場訓練</div>
+                <div class="kpi-sub">跨越 {metrics.get('time_span_days')} 天，共 {metrics.get('session_count')} 場實際訓練</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">⚡ 乳酸加權總負荷</div>
-                <div class="kpi-value" style="color: var(--neon-amber);">{metrics.get('total_lactate_load')} <span style="font-size: 1rem; color: var(--text-secondary);">分</span></div>
-                <div class="kpi-sub">含 {metrics.get('high_lactate_minutes')} 分鐘高乳酸暴露</div>
+                <div class="kpi-label">💧 汗乳酸動態範圍</div>
+                <div class="kpi-value" style="color: var(--neon-amber);">{metrics.get('min_sweat_lactate')} ~ {metrics.get('peak_sweat_lactate')} <span style="font-size: 0.95rem; color: var(--text-secondary);">mmol/L</span></div>
+                <div class="kpi-sub">平均濃度 {metrics.get('avg_sweat_lactate')} mmol/L（非血乳酸標準）</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">🩸 週期最高乳酸峰值</div>
-                <div class="kpi-value" style="color: var(--neon-crimson);">{metrics.get('peak_lactate_week')} <span style="font-size: 1rem; color: var(--text-secondary);">mmol/L</span></div>
-                <div class="kpi-sub">週期平均 {metrics.get('avg_lactate_week')} mmol/L</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-label">📈 最新代謝效率變化</div>
+                <div class="kpi-label">📈 輸出/汗乳酸代謝經濟性</div>
                 <div class="kpi-value" style="color: var(--neon-emerald);">{'+' if metrics.get('efficiency_delta_pct', 0) > 0 else ''}{metrics.get('efficiency_delta_pct', 0)}%</div>
-                <div class="kpi-sub">目前：{metrics.get('latest_efficiency')} {metrics.get('efficiency_unit')}</div>
+                <div class="kpi-sub">最新輸出效率：{metrics.get('latest_efficiency')} {metrics.get('efficiency_unit')}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">⚡ 汗乳酸加權累積負荷</div>
+                <div class="kpi-value" style="color: #64b5f6;">{metrics.get('total_sweat_load')} <span style="font-size: 1rem; color: var(--text-secondary);">分</span></div>
+                <div class="kpi-sub">距上一場隔 {metrics.get('days_since_prior', 0)} 天休整</div>
             </div>
         </div>
 
@@ -571,23 +586,23 @@ def render_modern_html_report(report_data):
         <!-- 🔥 NEXT WORKOUT PROTOCOL (下一次運動處方卡片) -->
         <div class="rx-card">
             <div class="rx-badge">⚡ NEXT WORKOUT PROTOCOL ・ 下一次訓練處方</div>
-            <div class="rx-title">{rx.get('workout_code', 'TARGET-RX')} : {rx.get('workout_name', '個人化運動處方')}</div>
+            <div class="rx-title">{rx.get('workout_code', 'SWEAT-RX')} : {rx.get('workout_name', '汗乳酸巡航處方')}</div>
             
             <div class="rx-meta-row">
                 <div class="rx-meta-item">
-                    <div class="rx-meta-label">🎯 嚴格乳酸上限</div>
-                    <div class="rx-meta-val" style="color: var(--neon-crimson); font-size: 0.95rem;">{rx.get('target_lactate_limit', '< 2.0 mmol/L')}</div>
+                    <div class="rx-meta-label">🎯 汗乳酸目標控制</div>
+                    <div class="rx-meta-val" style="color: var(--neon-amber); font-size: 0.95rem;">{rx.get('target_lactate_limit', '維持於個人低汗乳酸基準線')}</div>
                 </div>
                 <div class="rx-meta-item">
                     <div class="rx-meta-label">⏱️ 目標時長</div>
-                    <div class="rx-meta-val">{rx.get('target_duration_min', 45)} 分鐘</div>
+                    <div class="rx-meta-val">{rx.get('target_duration_min', 40)} 分鐘</div>
                 </div>
                 <div class="rx-meta-item">
                     <div class="rx-meta-label">⚡ 強度指引 (心率/功率)</div>
                     <div class="rx-meta-val" style="font-size: 0.95rem;">{rx.get('target_intensity', 'Zone 1-2')}</div>
                 </div>
                 <div class="rx-meta-item">
-                    <div class="rx-meta-label">🏃 建議項目與時間</div>
+                    <div class="rx-meta-label">🏃 建議項目與休整時程</div>
                     <div class="rx-meta-val" style="font-size: 0.95rem; color: var(--neon-emerald);">{rx.get('sport_type', '耐力運動')} ({rx.get('recommended_date', '次日')})</div>
                 </div>
             </div>
@@ -600,7 +615,7 @@ def render_modern_html_report(report_data):
             </div>
 
             <div class="rx-rationale">
-                <strong>🧬 運動生理學開立依據：</strong>{rx.get('physiological_rationale', '')}
+                <strong>🧬 運動生理學處方依據：</strong>{rx.get('physiological_rationale', '')}
             </div>
         </div>
 
@@ -608,7 +623,7 @@ def render_modern_html_report(report_data):
         <div class="section-box">
             <div class="section-header">
                 <span class="section-icon">🔬</span>
-                <span class="section-title">一、血乳酸動力學與能量系統適應評析</span>
+                <span class="section-title">一、汗乳酸動力學與輸出負荷對照評析</span>
             </div>
             <div class="prose">
                 {ai.get('lactate_kinetics_analysis', '')}
@@ -616,7 +631,7 @@ def render_modern_html_report(report_data):
 
             <div class="section-header" style="margin-top: 24px;">
                 <span class="section-icon">⚖️</span>
-                <span class="section-title">二、5~7 天累積代謝負荷與疲勞平衡診斷</span>
+                <span class="section-title">二、跨期實際間隔天數與代謝累積負荷平衡</span>
             </div>
             <div class="prose">
                 {ai.get('cumulative_load_fatigue_review', '')}
@@ -624,7 +639,7 @@ def render_modern_html_report(report_data):
 
             <div class="section-header" style="margin-top: 24px;">
                 <span class="section-icon">🩺</span>
-                <span class="section-title">三、教練專業叮嚀 (Recovery & Pro Tips)</span>
+                <span class="section-title">三、教練專業叮嚀 (Recovery & Hydration Tips)</span>
             </div>
             <div class="prose" style="color: #93c5fd; background: rgba(59, 130, 246, 0.08); padding: 14px 18px; border-radius: 10px; border-left: 3px solid #3b82f6;">
                 {ai.get('coach_pro_tips', '')}
@@ -635,8 +650,8 @@ def render_modern_html_report(report_data):
         <div class="charts-row">
             <div class="chart-card">
                 <div class="chart-title">
-                    <span>📊 週期乳酸趨勢 vs 運動負荷強度</span>
-                    <span style="font-size: 0.75rem; color: var(--text-muted);">雙軸對照監控</span>
+                    <span>📊 跨期汗乳酸趨勢 vs 運動負荷 (功率/心率)</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">縱向代謝經濟性對照</span>
                 </div>
                 <div class="chart-container">
                     <canvas id="trendChart"></canvas>
@@ -644,7 +659,7 @@ def render_modern_html_report(report_data):
             </div>
             <div class="chart-card">
                 <div class="chart-title">
-                    <span>🧭 週強度極化分佈 (%)</span>
+                    <span>🧭 汗乳酸代謝負荷分佈 (%)</span>
                     <span style="font-size: 0.75rem; color: var(--text-muted);">時長佔比</span>
                 </div>
                 <div class="chart-container">
@@ -657,21 +672,22 @@ def render_modern_html_report(report_data):
         <div class="section-box">
             <div class="section-header">
                 <span class="section-icon">📋</span>
-                <span class="section-title">四、週期運動與採血數據明細矩陣</span>
+                <span class="section-title">四、跨期實際訓練場次與汗乳酸數據矩陣</span>
             </div>
             <div style="overflow-x: auto;">
                 <table>
                     <thead>
                         <tr>
-                            <th>日期</th>
+                            <th>訓練日期</th>
+                            <th>距前次間隔</th>
                             <th>強度層級</th>
                             <th class="num">時長</th>
                             <th class="num">平均功率</th>
                             <th class="num">平均心率</th>
-                            <th class="num">平均乳酸</th>
-                            <th class="num">峰值乳酸</th>
-                            <th class="num">代謝效率</th>
-                            <th class="num">負荷指數</th>
+                            <th class="num">平均汗乳酸</th>
+                            <th class="num">峰值汗乳酸</th>
+                            <th class="num">代謝效率比</th>
+                            <th class="num">單場負荷</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -682,7 +698,7 @@ def render_modern_html_report(report_data):
         </div>
 
         <footer>
-            🩸 Powered by Firebase AI Logic & Sports Physiology Engine &nbsp;|&nbsp; LactateCloud Science System &nbsp;|&nbsp; 報告產出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            💧 Powered by Sweat Lactate Kinetics Engine & Firebase AI Logic &nbsp;|&nbsp; LactateCloud Sports System &nbsp;|&nbsp; 報告產出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         </footer>
     </div>
 
@@ -703,7 +719,7 @@ def render_modern_html_report(report_data):
                 datasets: [
                     {{
                         type: 'line',
-                        label: '峰值乳酸 (mmol/L)',
+                        label: '峰值汗乳酸 (mmol/L)',
                         data: maxLa,
                         borderColor: '#ff5252',
                         backgroundColor: '#ff5252',
@@ -714,9 +730,9 @@ def render_modern_html_report(report_data):
                     }},
                     {{
                         type: 'bar',
-                        label: '平均乳酸 (mmol/L)',
+                        label: '平均汗乳酸 (mmol/L)',
                         data: avgLa,
-                        backgroundColor: 'rgba(255, 171, 0, 0.65)',
+                        backgroundColor: 'rgba(255, 171, 0, 0.7)',
                         borderRadius: 6,
                         yAxisID: 'yLactate'
                     }},
@@ -749,7 +765,7 @@ def render_modern_html_report(report_data):
                     yLactate: {{
                         type: 'linear',
                         position: 'left',
-                        title: {{ display: true, text: '乳酸 (mmol/L)', color: '#ffab00' }},
+                        title: {{ display: true, text: '汗乳酸 (mmol/L)', color: '#ffab00' }},
                         grid: {{ color: 'rgba(255, 255, 255, 0.05)' }},
                         ticks: {{ color: '#ffab00' }}
                     }},
@@ -772,10 +788,9 @@ def render_modern_html_report(report_data):
                 datasets: [{{
                     data: polarValues,
                     backgroundColor: [
-                        '#00e676', // Z1-2
-                        '#00f2fe', // Z3
-                        '#ffab00', // Z4
-                        '#ff5252'  // Z5
+                        '#00e676', // Low
+                        '#00f2fe', // Tempo
+                        '#ff5252'  // High
                     ],
                     borderWidth: 0
                 }}]
@@ -789,7 +804,7 @@ def render_modern_html_report(report_data):
                         labels: {{ color: '#94a3b8', font: {{ size: 10 }}, boxWidth: 10 }}
                     }}
                 }},
-                cutout: '68%'
+                cutout: '65%'
             }}
         }});
     </script>
@@ -804,12 +819,11 @@ def save_report_html(report_data, output_path="modern_weekly_report.html"):
     html_content = render_modern_html_report(report_data)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"現代化運動週報已成功產出並儲存至：{output_path}")
+    print(f"現代化汗乳酸運動週報已儲存至：{output_path}")
     return output_path
 
 
 if __name__ == "__main__":
-    # 獨立除錯模式
-    print("正在執行獨立 AI 運動週報生成...")
-    data = generate_weekly_report_data(source="DataMindy", athlete_name="Mindy")
+    print("正在生成汗乳酸運動生理分析週報...")
+    data = generate_weekly_report_data(source="DataMindy", athlete_name="Mindy", days_limit=6)
     save_report_html(data, "modern_weekly_report.html")

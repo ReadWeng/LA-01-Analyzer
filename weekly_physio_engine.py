@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 weekly_physio_engine.py
-運動生理學與乳酸負荷運算核心引擎
-功能：
-1. 支援從本地 HTML/FIT 或 Firebase Firestore 抓取 5~7 天訓練與乳酸數據
-2. 精準解析時長、心率、功率與各採血時間點乳酸值（修正跨行正則表達式缺失問題）
-3. 計算運動生理學核心指標：
-   - 代謝效率比 (Metabolic Efficiency Ratio: W/mmol 或 HR/mmol)
-   - 高乳酸暴露累積量 (Lactate AUC / 代謝壓力負荷)
-   - 乳酸加權訓練負荷 (Lactate-Weighted TRIMP / Load Score)
-   - 5~7 天極化區間時間佔比 (Zone 1-2, Zone 3-4, Zone 5+)
-   - 疲勞與恢復狀態指標 (Recovery & Adaptation Status)
+汗乳酸 (Sweat Lactate) 運動生理學與跨期負荷運算核心引擎
+
+領域特性：
+1. 監控對象為【汗乳酸 (Sweat Lactate)】，數值尺度不可與侵入式血乳酸（2.0/4.0 mmol/L）一概而論。
+   汗乳酸數值常在 5 ~ 25+ mmol/L，需以受測者個人相對歷史 Baseline 與動態分佈評估。
+2. 支援以「實際訓練場次（Sessions）」為主軸，不侷限於連續 5~7 天，時間跨度可橫跨 2~4 週甚至整個月。
+3. 精確計算「相鄰場次間隔天數 (Rest/Interval Days)」，探討休息充分度對汗乳酸生成的影響。
+4. 核心分析：縱向對比各場次的「平均功率 / 平均心率」與「汗乳酸濃度」，評估代謝經濟性（W/mmol, bpm/mmol）與疲勞累積。
 """
 
 import os
@@ -54,34 +52,32 @@ def parse_duration_to_minutes(text):
     return 0.0
 
 
-def infer_session_type(power, hr, avg_lactate, max_lactate):
+def infer_session_type_sweat(power, hr, avg_lactate, max_lactate, baseline_low=6.0, baseline_high=15.0):
     """
-    依乳酸值為主體、心率與功率為輔，判斷生理強度層級
-    - Zone 1-2 (主動恢復 / 基礎有氧): 乳酸 < 2.0 mmol/L
-    - Zone 3 (節奏有氧 / LT1 臨界): 乳酸 2.0 ~ 4.0 mmol/L
-    - Zone 4 (乳酸閾值 / 無氧臨界 LT2): 乳酸 4.0 ~ 8.0 mmol/L
-    - Zone 5+ (超高強度 / 無氧耐受刺激): 乳酸 > 8.0 mmol/L
+    根據受測者的汗乳酸動態範圍與心率/功率推斷強度層級
+    汗乳酸特性：
+    - 低濃度區 (主動恢復 / 基礎代謝): 汗乳酸 <= baseline_low
+    - 中等濃度區 (節奏耐力 / 穩定有氧): baseline_low < 汗乳酸 <= baseline_high
+    - 高濃度區 (高醣解刺激 / 無氧耐受): 汗乳酸 > baseline_high
     """
     la = max_lactate if max_lactate > 0 else avg_lactate
-    if la >= 12.0 or hr >= 170:
-        return "Zone 5+ 超高強度 (無氧耐受刺激)"
-    elif la >= 8.0 or hr >= 160:
-        return "Zone 5 高強度 (無氧醣解刺激)"
-    elif la >= 4.0 or hr >= 148:
-        return "Zone 4 閾值強度 (無氧臨界 LT2)"
-    elif la >= 2.5 or hr >= 135:
-        return "Zone 3 節奏耐力 (有氧閾值 LT1~LT2)"
+    
+    if la >= (baseline_high * 1.3) or hr >= 170:
+        return "超高代謝負荷 (強烈醣解/無氧耐受刺激)"
+    elif la >= baseline_high or hr >= 158:
+        return "高代謝負荷 (高糖解輸出/閾值刺激)"
+    elif la >= baseline_low or hr >= 140:
+        return "中等代謝負荷 (節奏耐力/穩定有氧)"
     elif la > 0 or hr > 0:
-        if (la <= 1.8 if la > 0 else True) and (hr <= 125 if hr > 0 else True):
-            return "Zone 1 主動恢復 (低代謝壓力)"
-        return "Zone 2 基礎有氧 (脂肪氧化/粒線體構建)"
-    return "一般常規訓練"
+        if hr <= 125 or la <= baseline_low:
+            return "低代謝負荷 (主動排酸/低強度修復)"
+        return "基礎有氧負荷 (脂肪氧化/有氧構建)"
+    return "常規運動訓練"
 
 
 def parse_local_html_report(fpath):
     """
-    強健解析單份 lactate_report_*.html
-    修正原本正則表達式跨行失靈造成心率為 0 或時長為預設值的問題
+    強健解析單份 lactate_report_*.html 獲取汗乳酸與運動指標
     """
     try:
         with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
@@ -126,7 +122,7 @@ def parse_local_html_report(fpath):
                 avg_p = float(plain_p.group(1))
                 max_p = float(plain_p.group(2))
 
-        # 4. 心率 (使用 re.DOTALL 解決跨行問題)
+        # 4. 心率
         avg_h, max_h = 0.0, 0.0
         h_m = re.search(r'心率.*?<div[^>]*kpi-value[^>]*>.*?(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*bpm', content, re.DOTALL | re.IGNORECASE)
         if h_m:
@@ -138,7 +134,7 @@ def parse_local_html_report(fpath):
                 avg_h = float(plain_h.group(1))
                 max_h = float(plain_h.group(2))
 
-        # 5. 乳酸採樣點解析
+        # 5. 汗乳酸採樣點解析
         la_readings = []
         table_m = re.search(r'<table[^>]*summary-table[^>]*>(.*?)</table>', content, re.DOTALL | re.IGNORECASE)
         if not table_m:
@@ -153,15 +149,14 @@ def parse_local_html_report(fpath):
                     try:
                         time_pt = float(re.search(r'(\d+(?:\.\d+)?)', clean_vals[0]).group(1))
                         la_pt = float(re.search(r'(\d+(?:\.\d+)?)', clean_vals[1]).group(1))
-                        if 0.4 <= la_pt <= 35.0:
+                        if 0.2 <= la_pt <= 60.0:  # 汗乳酸範圍寬廣，可達更高濃度
                             la_readings.append({"time_min": time_pt, "lactate": la_pt})
                     except Exception:
                         pass
 
-        # 若未從表格抓到，嘗試全文字搜尋
         if not la_readings:
             all_la_matches = re.findall(r'(\d+(?:\.\d+)?)\s*mmol/L', content)
-            la_vals = [float(x) for x in all_la_matches if 0.5 <= float(x) <= 35.0]
+            la_vals = [float(x) for x in all_la_matches if 0.4 <= float(x) <= 60.0]
             for i, v in enumerate(la_vals):
                 la_readings.append({"time_min": round((i + 1) * (duration_min / (len(la_vals) + 1)), 1), "lactate": v})
 
@@ -186,16 +181,18 @@ def parse_local_html_report(fpath):
             "avg_lactate": avg_la,
             "max_lactate": max_la,
             "initial_lactate": init_la,
-            "final_lactate": final_la,
-            "type": infer_session_type(avg_p, avg_h, avg_la, max_la)
+            "final_lactate": final_la
         }
     except Exception as e:
         print(f"解析 {fpath} 發生錯誤: {e}")
         return None
 
 
-def fetch_local_dataset(folder_path="DataMindy", days_limit=7):
-    """從本地資料夾載入歷史 HTML 報告並篩選最近 5~7 天數據"""
+def fetch_local_dataset(folder_path="DataMindy", session_limit=7):
+    """
+    從本地資料夾載入歷史 HTML 報告，篩選最近有效訓練場次 (Sessions)
+    以實際運動日為準，不限定連續天數
+    """
     html_files = sorted(glob.glob(os.path.join(folder_path, "lactate_report_*.html")))
     sessions = []
     for fp in html_files:
@@ -207,12 +204,12 @@ def fetch_local_dataset(folder_path="DataMindy", days_limit=7):
         return get_benchmark_dataset()
 
     sessions = sorted(sessions, key=lambda x: x["start_time"])
-    return sessions[-days_limit:]
+    return sessions[-session_limit:]
 
 
-def fetch_firestore_dataset(uid, token, days_limit=7):
+def fetch_firestore_dataset(uid, token, session_limit=7):
     """
-    從 Firebase Firestore 抓取登入者真實 fit_records 與 lactate_records
+    從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄
     """
     if not uid or not token:
         return []
@@ -261,7 +258,7 @@ def fetch_firestore_dataset(uid, token, days_limit=7):
                     "lactate_readings": []
                 })
     except Exception as e:
-        print(f"Error fetching fit_records from Firestore: {e}")
+        print(f"Error fetching fit_records: {e}")
 
     # 2. 抓取 lactate_records
     la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
@@ -291,9 +288,9 @@ def fetch_firestore_dataset(uid, token, days_limit=7):
                     except Exception:
                         pass
     except Exception as e:
-        print(f"Error fetching lactate_records from Firestore: {e}")
+        print(f"Error fetching lactate_records: {e}")
 
-    # 3. 配對乳酸數據
+    # 3. 配對汗乳酸數據
     for s in fit_sessions:
         s_time = s["start_time"]
         matched_la = []
@@ -314,62 +311,66 @@ def fetch_firestore_dataset(uid, token, days_limit=7):
         s["final_lactate"] = raw_las[-1] if raw_las else 0.0
         s["date"] = s_time.strftime("%m/%d") if s_time else "近期"
         s["full_date"] = s_time.strftime("%Y-%m-%d") if s_time else "2026-09-10"
-        s["type"] = infer_session_type(s["avg_power"], s["avg_hr"], s["avg_lactate"], s["max_lactate"])
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     valid = sorted(valid, key=lambda x: x["start_time"])
-    return valid[-days_limit:] if valid else get_benchmark_dataset()
+    return valid[-session_limit:] if valid else get_benchmark_dataset()
 
 
 def calculate_comprehensive_load(sessions):
     """
-    計算運動生理學綜合負荷與代謝動力學指標
+    計算運動生理學綜合負荷、汗乳酸動力學、真實間隔天數與代謝經濟性指標
     """
     if not sessions:
         return {}
 
+    # 1. 計算相鄰兩場訓練之間的真實間隔天數 (Days since prior session)
+    for i, s in enumerate(sessions):
+        if i == 0:
+            s["days_since_prior"] = None  # 第一場無前置對比
+            s["interval_desc"] = "首場基準"
+        else:
+            prev_dt = sessions[i - 1]["start_time"]
+            curr_dt = s["start_time"]
+            diff_days = round((curr_dt - prev_dt).total_seconds() / 86400.0, 1)
+            s["days_since_prior"] = diff_days
+            if diff_days <= 1.0:
+                s["interval_desc"] = "連日訓練 (背靠背)"
+            elif diff_days <= 3.0:
+                s["interval_desc"] = f"間隔 {diff_days:.0f} 天"
+            else:
+                s["interval_desc"] = f"充分休整 (隔 {diff_days:.0f} 天)"
+
+    # 總跨越天數
+    time_span_days = (sessions[-1]["start_time"] - sessions[0]["start_time"]).days + 1
     total_duration_min = sum(s.get("duration_min", 0) for s in sessions)
     total_hours = round(total_duration_min / 60.0, 1)
 
-    total_lactate_load = 0.0
-    zone_duration = {"Z1_2_Aerobic": 0.0, "Z3_Tempo": 0.0, "Z4_Threshold": 0.0, "Z5_Anaerobic": 0.0}
-
-    for s in sessions:
-        dur_hrs = s.get("duration_min", 0) / 60.0
-        la = s.get("max_lactate", 0) if s.get("max_lactate", 0) > 0 else s.get("avg_lactate", 0)
-        
-        if la < 2.0:
-            weight = 1.0
-            zone_duration["Z1_2_Aerobic"] += s.get("duration_min", 0)
-        elif la < 4.0:
-            weight = 1.6
-            zone_duration["Z3_Tempo"] += s.get("duration_min", 0)
-        elif la < 8.0:
-            weight = 2.8
-            zone_duration["Z4_Threshold"] += s.get("duration_min", 0)
-        else:
-            weight = 4.2
-            zone_duration["Z5_Anaerobic"] += s.get("duration_min", 0)
-
-        intensity_boost = 1.0
-        if s.get("avg_hr", 0) > 155:
-            intensity_boost += 0.2
-        if s.get("avg_power", 0) > 200:
-            intensity_boost += 0.2
-
-        session_load = round(dur_hrs * 100.0 * weight * intensity_boost, 1)
-        s["calculated_load"] = session_load
-        total_lactate_load += session_load
-
-    zone_pct = {}
-    if total_duration_min > 0:
-        for k, v in zone_duration.items():
-            zone_pct[k] = round((v / total_duration_min) * 100.0, 1)
+    # 2. 分析受測者本週期的個人汗乳酸動態範圍 (Relative Sweat Lactate Range)
+    all_las = [s.get("avg_lactate", 0) for s in sessions if s.get("avg_lactate", 0) > 0]
+    if all_las:
+        min_la = min(all_las)
+        max_la = max([s.get("max_lactate", 0) for s in sessions])
+        median_la = float(np.median(all_las))
     else:
-        zone_pct = {"Z1_2_Aerobic": 0.0, "Z3_Tempo": 0.0, "Z4_Threshold": 0.0, "Z5_Anaerobic": 0.0}
+        min_la, max_la, median_la = 2.0, 15.0, 7.0
 
+    baseline_low = round(min_la * 1.35, 1)      # 低代謝壓力門檻
+    baseline_high = round(median_la * 1.35, 1)   # 高糖解刺激門檻
+
+    # 3. 為每場次標定汗乳酸強度等級，並計算代謝效率比
     efficiency_trend = []
     for s in sessions:
+        s["type"] = infer_session_type_sweat(
+            s.get("avg_power", 0),
+            s.get("avg_hr", 0),
+            s.get("avg_lactate", 0),
+            s.get("max_lactate", 0),
+            baseline_low=baseline_low,
+            baseline_high=baseline_high
+        )
+        
+        # 代謝經濟性 (Output per Sweat Lactate)
         p = s.get("avg_power", 0)
         h = s.get("avg_hr", 0)
         la = s.get("avg_lactate", 0) if s.get("avg_lactate", 0) > 0 else 1.0
@@ -387,6 +388,7 @@ def calculate_comprehensive_load(sessions):
         s["efficiency_unit"] = unit
         efficiency_trend.append(eff)
 
+    # 4. 代謝效率變化率 (最新場次 vs 前期場次)
     eff_delta_pct = 0.0
     latest = sessions[-1]
     if len(sessions) >= 2 and latest.get("metabolic_efficiency", 0) > 0:
@@ -395,40 +397,74 @@ def calculate_comprehensive_load(sessions):
             mean_prior = np.mean(prior_effs)
             eff_delta_pct = round(((latest["metabolic_efficiency"] - mean_prior) / mean_prior) * 100.0, 1)
 
-    high_la_minutes = 0.0
-    for s in sessions:
-        if s.get("max_lactate", 0) >= 4.0:
-            high_la_ratio = min(1.0, (s["max_lactate"] - 3.5) / 10.0)
-            high_la_minutes += s.get("duration_min", 0) * high_la_ratio
+    # 5. 汗乳酸加權負荷積分與極化區間計算
+    total_sweat_load = 0.0
+    zone_duration = {"Low_Recovery": 0.0, "Tempo_Aerobic": 0.0, "High_Glycolytic": 0.0}
 
-    if total_lactate_load >= 650 or high_la_minutes >= 60 or latest.get("avg_lactate", 0) >= 10.0:
-        recovery_state = "高代謝疲勞 (需主動排酸/低強度修復)"
-        state_color = "#ff5252"
-        recommended_action = "限制強度在 Zone 1~2，乳酸嚴格控制在 2.0 mmol/L 以下，加速組織清理與肝醣回補。"
-    elif total_lactate_load >= 400 or latest.get("avg_lactate", 0) >= 7.0:
-        recovery_state = "良性累積疲勞 (適應刺激期)"
-        state_color = "#ffab00"
-        recommended_action = "維持中等負荷，可進行技術性微間歇或節奏耐力，監控乳酸平穩度。"
+    for s in sessions:
+        dur_hrs = s.get("duration_min", 0) / 60.0
+        la = s.get("avg_lactate", 0)
+        
+        if la <= baseline_low:
+            w = 1.0
+            zone_duration["Low_Recovery"] += s.get("duration_min", 0)
+        elif la <= baseline_high:
+            w = 1.8
+            zone_duration["Tempo_Aerobic"] += s.get("duration_min", 0)
+        else:
+            w = 3.5
+            zone_duration["High_Glycolytic"] += s.get("duration_min", 0)
+
+        # 間隔天數微調係數：若連日運動（間隔<=1天），疲勞累積加成
+        interval_factor = 1.2 if (s.get("days_since_prior") is not None and s.get("days_since_prior") <= 1.0) else 1.0
+        
+        session_load = round(dur_hrs * 100.0 * w * interval_factor, 1)
+        s["calculated_load"] = session_load
+        total_sweat_load += session_load
+
+    zone_pct = {}
+    if total_duration_min > 0:
+        for k, v in zone_duration.items():
+            zone_pct[k] = round((v / total_duration_min) * 100.0, 1)
     else:
-        recovery_state = "恢復充足 (處於超補償/突破窗口)"
+        zone_pct = {"Low_Recovery": 0.0, "Tempo_Aerobic": 0.0, "High_Glycolytic": 0.0}
+
+    # 6. 疲勞與恢復狀態判定 (結合最新場次間隔天數與汗乳酸水平)
+    days_since_last = latest.get("days_since_prior", 2.0) or 2.0
+    latest_la = latest.get("avg_lactate", 0)
+
+    if (days_since_last <= 1.0 and latest_la >= baseline_high) or total_sweat_load >= 1200:
+        recovery_state = "高代謝累積疲勞 (連日刺激/需排酸修復)"
+        state_color = "#ff5252"
+        recommended_action = "近期間隔密集或高酸負荷累積，建議安排 1~2 天超低強度主動恢復（有助促進汗腺與局部循環代謝物排出），或徹底休息。"
+    elif eff_delta_pct >= 15.0 and latest_la <= baseline_high:
+        recovery_state = "代謝適應優異 (處於超補償突破期)"
         state_color = "#00e676"
-        recommended_action = "神經與代謝狀態優異，具備進行高質量閾值測試或高強度間歇的生理儲備。"
+        recommended_action = "在相同或更高負荷下汗乳酸明顯收斂，有氧經濟性與抗疲勞性提升，可維持規律進展課表。"
+    else:
+        recovery_state = "良性代謝適應 (負荷平穩)"
+        state_color = "#ffab00"
+        recommended_action = "生理指標維持平穩，汗乳酸與心率功率呈現穩定對應，可按預定節奏進行課表。"
 
     return {
         "period_start": sessions[0]["full_date"],
         "period_end": sessions[-1]["full_date"],
+        "time_span_days": time_span_days,
         "session_count": len(sessions),
         "total_duration_min": round(total_duration_min, 1),
         "total_hours": total_hours,
-        "total_lactate_load": round(total_lactate_load, 1),
-        "peak_lactate_week": max([s.get("max_lactate", 0) for s in sessions]),
-        "avg_lactate_week": round(float(np.mean([s.get("avg_lactate", 0) for s in sessions])), 2),
+        "total_sweat_load": round(total_sweat_load, 1),
+        "peak_sweat_lactate": max_la,
+        "avg_sweat_lactate": round(float(np.mean(all_las)), 2) if all_las else 0.0,
+        "min_sweat_lactate": min_la,
+        "baseline_low": baseline_low,
+        "baseline_high": baseline_high,
         "zone_duration_min": zone_duration,
         "zone_percentage": zone_pct,
-        "high_lactate_minutes": round(high_la_minutes, 1),
         "latest_efficiency": latest.get("metabolic_efficiency", 0),
         "efficiency_unit": latest.get("efficiency_unit", "W/mmol"),
         "efficiency_delta_pct": eff_delta_pct,
+        "days_since_prior": days_since_last,
         "recovery_state": recovery_state,
         "state_color": state_color,
         "recommended_action": recommended_action,
@@ -437,43 +473,58 @@ def calculate_comprehensive_load(sessions):
 
 
 def get_benchmark_dataset():
-    """標準基準模擬數據（完整 5 場，包含真實心率、功率與採樣乳酸）"""
+    """標準基準模擬數據（跨月 5 場，包含真實心率、功率與採樣汗乳酸）"""
     return [
         {
-            "source_file": "2026-08-31-mock.html",
-            "start_time": datetime(2026, 8, 31, 20, 14),
-            "date": "08/31",
-            "full_date": "2026-08-31",
-            "duration_min": 56.3,
-            "avg_power": 178.0,
-            "max_power": 240.0,
-            "avg_hr": 138.0,
-            "max_hr": 158.0,
-            "lactate_readings": [{"time_min": 15, "lactate": 2.2}, {"time_min": 35, "lactate": 5.4}, {"time_min": 50, "lactate": 7.22}],
-            "lactate_values": [2.2, 5.4, 7.22],
-            "avg_lactate": 4.95,
-            "max_lactate": 7.22,
-            "initial_lactate": 2.2,
-            "final_lactate": 7.22,
-            "type": "Zone 3 節奏耐力 (有氧閾值 LT1~LT2)"
+            "source_file": "2026-08-22-mock.html",
+            "start_time": datetime(2026, 8, 22, 7, 32),
+            "date": "08/22",
+            "full_date": "2026-08-22",
+            "duration_min": 32.1,
+            "avg_power": 186.7,
+            "max_power": 245.0,
+            "avg_hr": 152.9,
+            "max_hr": 178.0,
+            "lactate_readings": [{"time_min": 10, "lactate": 14.5}, {"time_min": 30, "lactate": 18.3}],
+            "lactate_values": [14.5, 18.3],
+            "avg_lactate": 16.4,
+            "max_lactate": 18.3,
+            "initial_lactate": 14.5,
+            "final_lactate": 18.3
         },
         {
-            "source_file": "2026-09-02-mock.html",
-            "start_time": datetime(2026, 9, 2, 19, 30),
-            "date": "09/02",
-            "full_date": "2026-09-02",
-            "duration_min": 42.0,
-            "avg_power": 195.0,
-            "max_power": 275.0,
-            "avg_hr": 162.0,
+            "source_file": "2026-08-26-mock.html",
+            "start_time": datetime(2026, 8, 26, 18, 30),
+            "date": "08/26",
+            "full_date": "2026-08-26",
+            "duration_min": 41.7,
+            "avg_power": 184.3,
+            "max_power": 230.0,
+            "avg_hr": 132.1,
+            "max_hr": 155.0,
+            "lactate_readings": [{"time_min": 15, "lactate": 8.5}, {"time_min": 35, "lactate": 10.0}],
+            "lactate_values": [8.5, 10.0],
+            "avg_lactate": 9.25,
+            "max_lactate": 10.0,
+            "initial_lactate": 8.5,
+            "final_lactate": 10.0
+        },
+        {
+            "source_file": "2026-08-29-mock.html",
+            "start_time": datetime(2026, 8, 29, 5, 51),
+            "date": "08/29",
+            "full_date": "2026-08-29",
+            "duration_min": 96.1,
+            "avg_power": 194.0,
+            "max_power": 260.0,
+            "avg_hr": 151.6,
             "max_hr": 182.0,
-            "lactate_readings": [{"time_min": 10, "lactate": 3.5}, {"time_min": 25, "lactate": 9.8}, {"time_min": 40, "lactate": 25.5}],
-            "lactate_values": [3.5, 9.8, 25.5],
-            "avg_lactate": 12.93,
-            "max_lactate": 25.5,
-            "initial_lactate": 3.5,
-            "final_lactate": 25.5,
-            "type": "Zone 5+ 超高強度 (無氧耐受刺激)"
+            "lactate_readings": [{"time_min": 25, "lactate": 11.2}, {"time_min": 60, "lactate": 15.6}, {"time_min": 90, "lactate": 19.7}],
+            "lactate_values": [11.2, 15.6, 19.7],
+            "avg_lactate": 15.5,
+            "max_lactate": 19.7,
+            "initial_lactate": 11.2,
+            "final_lactate": 19.7
         },
         {
             "source_file": "2026-09-08-mock.html",
@@ -485,31 +536,12 @@ def get_benchmark_dataset():
             "max_power": 255.0,
             "avg_hr": 159.0,
             "max_hr": 181.0,
-            "lactate_readings": [{"time_min": 10, "lactate": 4.2}, {"time_min": 20, "lactate": 11.5}, {"time_min": 32, "lactate": 17.1}],
-            "lactate_values": [4.2, 11.5, 17.1],
-            "avg_lactate": 10.93,
+            "lactate_readings": [{"time_min": 10, "lactate": 9.8}, {"time_min": 25, "lactate": 14.5}, {"time_min": 32, "lactate": 17.1}],
+            "lactate_values": [9.8, 14.5, 17.1],
+            "avg_lactate": 13.8,
             "max_lactate": 17.1,
-            "initial_lactate": 4.2,
-            "final_lactate": 17.1,
-            "type": "Zone 5 高強度 (無氧醣解刺激)"
-        },
-        {
-            "source_file": "2026-09-09-mock.html",
-            "start_time": datetime(2026, 9, 9, 21, 37),
-            "date": "09/09",
-            "full_date": "2026-09-09",
-            "duration_min": 45.0,
-            "avg_power": 140.0,
-            "max_power": 180.0,
-            "avg_hr": 124.0,
-            "max_hr": 139.0,
-            "lactate_readings": [{"time_min": 15, "lactate": 1.6}, {"time_min": 30, "lactate": 1.9}, {"time_min": 45, "lactate": 2.1}],
-            "lactate_values": [1.6, 1.9, 2.1],
-            "avg_lactate": 1.87,
-            "max_lactate": 2.1,
-            "initial_lactate": 1.6,
-            "final_lactate": 2.1,
-            "type": "Zone 1 主動恢復 (低代謝壓力)"
+            "initial_lactate": 9.8,
+            "final_lactate": 17.1
         },
         {
             "source_file": "2026-09-10-mock.html",
@@ -521,12 +553,11 @@ def get_benchmark_dataset():
             "max_power": 282.0,
             "avg_hr": 149.6,
             "max_hr": 160.0,
-            "lactate_readings": [{"time_min": 15, "lactate": 3.8}, {"time_min": 35, "lactate": 6.8}, {"time_min": 58, "lactate": 10.5}],
-            "lactate_values": [3.8, 6.8, 10.5],
-            "avg_lactate": 7.03,
+            "lactate_readings": [{"time_min": 15, "lactate": 6.2}, {"time_min": 35, "lactate": 7.8}, {"time_min": 58, "lactate": 10.5}],
+            "lactate_values": [6.2, 7.8, 10.5],
+            "avg_lactate": 8.17,
             "max_lactate": 10.5,
-            "initial_lactate": 3.8,
-            "final_lactate": 10.5,
-            "type": "Zone 4 閾值強度 (無氧臨界 LT2)"
+            "initial_lactate": 6.2,
+            "final_lactate": 10.5
         }
     ]
