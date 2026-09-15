@@ -67,10 +67,20 @@ def render_modern_html_report(report_data):
     hrs = [s.get("avg_hr", 0) for s in sessions]
     durations = [s.get("duration_min", 0) for s in sessions]
 
-    has_power = any(p > 0 for p in powers)
-    secondary_intensity = powers if has_power else hrs
-    secondary_label = "平均功率 (W)" if has_power else "平均心率 (bpm)"
-    secondary_color = "#00f2fe" if has_power else "#ff5252"
+    # 嚴格遵循原則：若功率有任何缺失（任一場次無功率或完全無功率），直接用心率畫線做比較，不秀功率圖
+    has_full_power = all(p > 0 for p in powers) if powers else False
+    if has_full_power:
+        secondary_intensity = powers
+        secondary_label = "平均功率 (W)"
+        secondary_color = "#00f2fe"
+        chart_title_metric = "平均功率"
+        chart_subtitle = "縱向汗乳酸 vs 平均功率 (W) 代謝經濟性對照"
+    else:
+        secondary_intensity = hrs
+        secondary_label = "平均心率 (bpm)"
+        secondary_color = "#ff5252"
+        chart_title_metric = "平均心率"
+        chart_subtitle = "縱向汗乳酸 vs 平均心率 (bpm) 對照（功率缺失，直接用心率畫線比較）"
 
     zone_pct = metrics.get("zone_percentage", {})
     polar_labels = [
@@ -650,8 +660,8 @@ def render_modern_html_report(report_data):
         <div class="charts-row">
             <div class="chart-card">
                 <div class="chart-title">
-                    <span>📊 跨期汗乳酸趨勢 vs 運動負荷 (功率/心率)</span>
-                    <span style="font-size: 0.75rem; color: var(--text-muted);">縱向代謝經濟性對照</span>
+                    <span>📊 跨期汗乳酸趨勢 vs 運動負荷 ({chart_title_metric})</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">{chart_subtitle}</span>
                 </div>
                 <div class="chart-container">
                     <canvas id="trendChart"></canvas>
@@ -774,7 +784,8 @@ def render_modern_html_report(report_data):
                         position: 'right',
                         title: {{ display: true, text: '{secondary_label}', color: '{secondary_color}' }},
                         grid: {{ display: false }},
-                        ticks: {{ color: '{secondary_color}' }}
+                        ticks: {{ color: '{secondary_color}' }},
+                        suggestedMin: { '0' if has_full_power else '60' }
                     }}
                 }}
             }}

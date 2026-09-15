@@ -358,11 +358,14 @@ def calculate_comprehensive_load(sessions):
     baseline_low = round(min_la * 1.35, 1)      # 低代謝壓力門檻
     baseline_high = round(median_la * 1.35, 1)   # 高糖解刺激門檻
 
+    # 檢查功率是否完整（若有任一場次缺失或完全無功率，即判定為功率有缺失）
+    has_full_power = all(s.get("avg_power", 0) > 0 for s in sessions) if sessions else False
+
     # 3. 為每場次標定汗乳酸強度等級，並計算代謝效率比
     efficiency_trend = []
     for s in sessions:
         s["type"] = infer_session_type_sweat(
-            s.get("avg_power", 0),
+            s.get("avg_power", 0) if has_full_power else 0,
             s.get("avg_hr", 0),
             s.get("avg_lactate", 0),
             s.get("max_lactate", 0),
@@ -375,7 +378,8 @@ def calculate_comprehensive_load(sessions):
         h = s.get("avg_hr", 0)
         la = s.get("avg_lactate", 0) if s.get("avg_lactate", 0) > 0 else 1.0
         
-        if p > 0:
+        # 若功率有缺失，直接統一用心率 (bpm/mmol) 做比較，保持跨場次評估單位一致且不秀功率
+        if has_full_power and p > 0:
             eff = round(p / la, 1)  # W per mmol
             unit = "W/mmol"
         elif h > 0:
@@ -465,6 +469,8 @@ def calculate_comprehensive_load(sessions):
         "efficiency_unit": latest.get("efficiency_unit", "W/mmol"),
         "efficiency_delta_pct": eff_delta_pct,
         "days_since_prior": days_since_last,
+        "has_full_power": has_full_power,
+        "intensity_label": "平均功率 (W)" if has_full_power else "平均心率 (bpm)",
         "recovery_state": recovery_state,
         "state_color": state_color,
         "recommended_action": recommended_action,
