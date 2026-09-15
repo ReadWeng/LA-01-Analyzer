@@ -235,10 +235,19 @@ def fetch_firestore_dataset(uid, token, session_limit=7):
                     except Exception:
                         pass
 
-                avg_pwr = float(f.get("avg_power", {}).get("integerValue", 0))
-                max_pwr = float(f.get("max_power", {}).get("integerValue", 0))
-                avg_hr = float(f.get("avg_hr", {}).get("integerValue", 0))
-                max_hr = float(f.get("max_hr", {}).get("integerValue", 0))
+                def _get_fs_val(obj, default=0.0):
+                    if not obj:
+                        return default
+                    if "doubleValue" in obj:
+                        return float(obj["doubleValue"])
+                    if "integerValue" in obj:
+                        return float(obj["integerValue"])
+                    return default
+
+                avg_pwr = _get_fs_val(f.get("avg_power", {}), 0.0)
+                max_pwr = _get_fs_val(f.get("max_power", {}), 0.0)
+                avg_hr = _get_fs_val(f.get("avg_hr", {}), 0.0)
+                max_hr = _get_fs_val(f.get("max_hr", {}), 0.0)
 
                 ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
                 duration_min = 0.0
@@ -359,7 +368,15 @@ def calculate_comprehensive_load(sessions):
     baseline_high = round(median_la * 1.35, 1)   # 高糖解刺激門檻
 
     # 檢查功率是否完整（若有任一場次缺失或完全無功率，即判定為功率有缺失）
-    has_full_power = all(s.get("avg_power", 0) > 0 for s in sessions) if sessions else False
+    has_full_power = (
+        len(sessions) > 0
+        and all(
+            s.get("avg_power") is not None
+            and float(s.get("avg_power", 0)) > 0
+            and not np.isnan(float(s.get("avg_power", 0)))
+            for s in sessions
+        )
+    )
 
     # 3. 為每場次標定汗乳酸強度等級，並計算代謝效率比
     efficiency_trend = []

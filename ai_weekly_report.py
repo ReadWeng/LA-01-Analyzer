@@ -68,7 +68,15 @@ def render_modern_html_report(report_data):
     durations = [s.get("duration_min", 0) for s in sessions]
 
     # 嚴格遵循原則：若功率有任何缺失（任一場次無功率或完全無功率），直接用心率畫線做比較，不秀功率圖
-    has_full_power = all(p > 0 for p in powers) if powers else False
+    has_full_power = (
+        len(sessions) > 0
+        and all(
+            s.get("avg_power") is not None
+            and float(s.get("avg_power", 0)) > 0
+            and not np.isnan(float(s.get("avg_power", 0)))
+            for s in sessions
+        )
+    )
     if has_full_power:
         secondary_intensity = powers
         secondary_label = "平均功率 (W)"

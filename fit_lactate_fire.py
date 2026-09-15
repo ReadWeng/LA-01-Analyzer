@@ -1109,19 +1109,26 @@ if app_mode == "AI 運動生理週報與下一次處方":
     import streamlit.components.v1 as components
     from datetime import datetime
 
-    if btn_gen or "cached_weekly_report_html" in st.session_state:
-        if btn_gen or "cached_weekly_report_html" not in st.session_state:
-            with st.spinner("🧠 正在透過汗乳酸生理學引擎運算並呼叫 AI 生成處方..."):
-                report_data = awr.generate_weekly_report_data(
-                    source=source_type,
-                    athlete_name=athlete_name,
-                    uid=uid,
-                    token=token,
-                    days_limit=session_range
-                )
-                html_report = awr.render_modern_html_report(report_data)
-                st.session_state["cached_weekly_report_html"] = html_report
+    # 自動快取失效機制（當調整場次、切換身分或引擎升級時自動重算，避免舊快取鎖死）
+    REPORT_VERSION = "20260915_v3_force_hr_sync"
+    current_cache_key = f"{source_type}_{athlete_name}_{session_range}_{REPORT_VERSION}"
+    if st.session_state.get("cached_report_key") != current_cache_key:
+        st.session_state.pop("cached_weekly_report_html", None)
 
+    if btn_gen or "cached_weekly_report_html" not in st.session_state:
+        with st.spinner("🧠 正在透過汗乳酸生理學引擎運算並呼叫 AI 生成處方..."):
+            report_data = awr.generate_weekly_report_data(
+                source=source_type,
+                athlete_name=athlete_name,
+                uid=uid,
+                token=token,
+                days_limit=session_range
+            )
+            html_report = awr.render_modern_html_report(report_data)
+            st.session_state["cached_weekly_report_html"] = html_report
+            st.session_state["cached_report_key"] = current_cache_key
+
+    if "cached_weekly_report_html" in st.session_state:
         st.download_button(
             label="💾 下載完整 HTML 報告",
             data=st.session_state["cached_weekly_report_html"],
