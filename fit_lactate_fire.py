@@ -662,21 +662,32 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
             point = {
                 'mapValue': {
                     'fields': {
-                        'elapsed_minutes': {'doubleValue': round(row.get('elapsed_minutes', 0), 2)}
+                        'elapsed_minutes': {'doubleValue': round(float(row.get('elapsed_minutes', 0)), 2)}
                     }
                 }
             }
             if pd.notna(row.get('heart_rate')):
-                point['mapValue']['fields']['heart_rate'] = {'doubleValue': round(row['heart_rate'], 1)}
+                point['mapValue']['fields']['heart_rate'] = {'doubleValue': round(float(row['heart_rate']), 1)}
             if pd.notna(row.get('power')):
-                point['mapValue']['fields']['power'] = {'doubleValue': round(row['power'], 1)}
+                point['mapValue']['fields']['power'] = {'doubleValue': round(float(row['power']), 1)}
             if pd.notna(row.get('core_temp')):
-                point['mapValue']['fields']['core_temp'] = {'doubleValue': round(row['core_temp'], 2)}
+                point['mapValue']['fields']['core_temp'] = {'doubleValue': round(float(row['core_temp']), 2)}
             if 'cadence' in row and pd.notna(row.get('cadence')):
-                point['mapValue']['fields']['cadence'] = {'doubleValue': round(row['cadence'], 1)}
+                point['mapValue']['fields']['cadence'] = {'doubleValue': round(float(row['cadence']), 1)}
+            # GPS 經緯度、海拔高度、累計距離
+            if 'lat' in row and pd.notna(row.get('lat')) and abs(row['lat']) <= 90:
+                point['mapValue']['fields']['lat'] = {'doubleValue': round(float(row['lat']), 6)}
+            if 'lng' in row and pd.notna(row.get('lng')) and abs(row['lng']) <= 180:
+                point['mapValue']['fields']['lng'] = {'doubleValue': round(float(row['lng']), 6)}
+            if 'altitude' in row and pd.notna(row.get('altitude')):
+                point['mapValue']['fields']['altitude'] = {'doubleValue': round(float(row['altitude']), 1)}
+            if 'distance' in row and pd.notna(row.get('distance')):
+                point['mapValue']['fields']['distance'] = {'doubleValue': round(float(row['distance']), 1)}
             time_series.append(point)
             
         # JSON payload for Firestore
+        has_gps = ('lat' in df.columns and df['lat'].notna().any() and
+                   'lng' in df.columns and df['lng'].notna().any())
         payload = {
             'fields': {
                 'file_name': {'stringValue': str(file_name)},
@@ -685,11 +696,21 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
                 'max_power': {'integerValue': str(int(max_power))},
                 'avg_hr': {'integerValue': str(int(avg_hr))},
                 'max_hr': {'integerValue': str(int(max_hr))},
+                'has_gps': {'booleanValue': bool(has_gps)},
                 'time_series': {'arrayValue': {'values': time_series}}
             }
         }
         if max_core is not None:
             payload['fields']['max_core'] = {'doubleValue': float(max_core)}
+        if 'distance' in df.columns and df['distance'].notna().any():
+            tot_dist = float(df['distance'].dropna().iloc[-1])
+            if tot_dist > 0:
+                payload['fields']['total_distance_m'] = {'doubleValue': round(tot_dist, 1)}
+        if 'altitude' in df.columns and df['altitude'].notna().any():
+            alt_series = df['altitude'].dropna()
+            if len(alt_series) > 0:
+                payload['fields']['min_altitude'] = {'doubleValue': round(float(alt_series.min()), 1)}
+                payload['fields']['max_altitude'] = {'doubleValue': round(float(alt_series.max()), 1)}
             
         url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
         headers = {"Authorization": f"Bearer {token}"}
@@ -834,8 +855,52 @@ def parse_fit_file_data(uploaded_file_bytes):
     if df['core_temp'].notna().any():
         df['core_temp'] = df['core_temp'].ffill().bfill()
         
+    # 解析 GPS 經緯度 (Garmin semicircles 轉 WGS84 度數)
+    def _to_deg(val):
+        if pd.isna(val) or val is None:
+            return np.nan
+        try:
+            val = float(val)
+            if abs(val) > 180:
+                return round(val * (180.0 / 2147483648.0), 6)
+            return round(val, 6)
+        except Exception:
+            return np.nan
+
+    if 'position_lat' in df.columns:
+        df['lat'] = df['position_lat'].apply(_to_deg)
+    elif 'latitude' in df.columns:
+        df['lat'] = df['latitude'].apply(_to_deg)
+    else:
+        df['lat'] = np.nan
+
+    if 'position_long' in df.columns:
+        df['lng'] = df['position_long'].apply(_to_deg)
+    elif 'longitude' in df.columns:
+        df['lng'] = df['longitude'].apply(_to_deg)
+    else:
+        df['lng'] = np.nan
+
+    # 解析海拔高度 (公尺，優先 enhanced_altitude)
+    if 'enhanced_altitude' in df.columns and df['enhanced_altitude'].notna().any():
+        df['altitude'] = df['enhanced_altitude'].apply(lambda x: round(float(x), 1) if pd.notna(x) else np.nan)
+    elif 'altitude' in df.columns and df['altitude'].notna().any():
+        df['altitude'] = df['altitude'].apply(lambda x: round(float(x), 1) if pd.notna(x) else np.nan)
+    else:
+        df['altitude'] = np.nan
+
+    # 解析累積距離 (公尺)
+    if 'distance' in df.columns and df['distance'].notna().any():
+        df['distance'] = df['distance'].apply(lambda x: round(float(x), 1) if pd.notna(x) else np.nan)
+    else:
+        df['distance'] = np.nan
+
     # 保留乾淨的欄位
-    df_clean = df[['timestamp', 'elapsed_minutes', 'heart_rate', 'power', 'core_temp', 'skin_temperature', 'temperature']].copy()
+    available_cols = ['timestamp', 'elapsed_minutes', 'heart_rate', 'power', 'core_temp', 'skin_temperature', 'temperature', 'lat', 'lng', 'altitude', 'distance']
+    if 'cadence' in df.columns:
+        available_cols.append('cadence')
+    keep_cols = [c for c in available_cols if c in df.columns]
+    df_clean = df[keep_cols].copy()
     
     # 2. 解析 Laps
     laps = []
@@ -1233,7 +1298,10 @@ if fit_bytes is not None:
         max_core = df['core_temp'].max() if df['core_temp'].notna().any() else None
         
         # 顯示 metadata 資訊與關鍵指標
-        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{file_name}`")
+        has_gps_flag = ('lat' in df.columns and df['lat'].notna().any() and 'lng' in df.columns and df['lng'].notna().any())
+        tot_dist_km = (df['distance'].dropna().iloc[-1] / 1000.0) if ('distance' in df.columns and df['distance'].notna().any()) else 0.0
+        gps_badge = f" | **📍 GPS 軌跡**: 已擷取 ({tot_dist_km:.2f} km)" if has_gps_flag else ""
+        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{file_name}`{gps_badge}")
         
         kpi_cols = st.columns(4)
         with kpi_cols[0]:

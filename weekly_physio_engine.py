@@ -264,6 +264,10 @@ def fetch_firestore_dataset(uid, token, session_limit=7):
                     "max_power": round(max_pwr, 1),
                     "avg_hr": round(avg_hr, 1),
                     "max_hr": round(max_hr, 1),
+                    "has_gps": f.get("has_gps", {}).get("booleanValue", False),
+                    "total_distance_m": _get_fs_val(f.get("total_distance_m", {}), 0.0),
+                    "min_altitude": _get_fs_val(f.get("min_altitude", {}), 0.0),
+                    "max_altitude": _get_fs_val(f.get("max_altitude", {}), 0.0),
                     "lactate_readings": []
                 })
     except Exception as e:
