@@ -628,15 +628,16 @@ def import_historical_html_to_firebase(html_content, file_name):
         fit_payload["fields"]["max_core"] = {"doubleValue": float(max_core)}
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+    fit_doc_id = f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
+    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records/{fit_doc_id}"
     try:
-        r_fit = requests.post(fit_url, headers=headers, json=fit_payload, timeout=15)
+        r_fit = requests.patch(fit_url, headers=headers, json=fit_payload, timeout=15)
         if r_fit.status_code not in [200, 201]:
             return False, f"上傳 fit_records 失敗 ({r_fit.status_code}): {r_fit.text}"
     except Exception as e:
         return False, f"連線至 fit_records 失敗: {e}"
 
-    # 5. Summary table -> lactate_records
+    # 5. Summary table -> lactate_records (使用確定性唯一 ID，防止重複登記)
     la_count = 0
     table_m = re.search(r'<table[^>]*>(.*?)</table>', html_content, re.DOTALL)
     if table_m:
@@ -660,8 +661,9 @@ def import_historical_html_to_firebase(html_content, file_name):
                             "source": {"stringValue": "html_import"}
                         }
                     }
-                    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
-                    requests.post(la_url, headers=headers, json=la_payload, timeout=10)
+                    la_doc_id = f"la_{record_time.strftime('%Y%m%d_%H%M%S')}"
+                    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{la_doc_id}"
+                    requests.patch(la_url, headers=headers, json=la_payload, timeout=10)
                     la_count += 1
                 except Exception as e:
                     pass
@@ -767,11 +769,13 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
                 payload['fields']['min_altitude'] = {'doubleValue': round(float(alt_series.min()), 1)}
                 payload['fields']['max_altitude'] = {'doubleValue': round(float(alt_series.max()), 1)}
             
-        url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        clean_fit_time = start_time.strftime('%Y%m%d_%H%M%S') if start_time else datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        doc_id = f"fit_{clean_fit_time}"
+        url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records/{doc_id}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        response = requests.patch(url, headers=headers, json=payload, timeout=10)
         
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             return True
         else:
             st.error(f'Upload failed: {response.text}')
@@ -822,6 +826,16 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
                         "record_time": record_time
                     })
                     
+            # 去重：同一時間點（同分鐘）只保留一筆
+            dedup_records = []
+            seen_r_times = set()
+            for r in records:
+                rk = r["record_time"].strftime("%Y%m%d_%H%M")
+                if rk not in seen_r_times:
+                    seen_r_times.add(rk)
+                    dedup_records.append(r)
+            records = dedup_records
+
             # Sort by absolute time
             records = sorted(records, key=lambda x: x["record_time"])
             return records

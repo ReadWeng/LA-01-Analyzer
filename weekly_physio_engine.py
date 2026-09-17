@@ -344,6 +344,28 @@ def fetch_local_dataset(folder_path="DataMindy", session_limit=7, sport_filter="
     if not sessions:
         return get_benchmark_dataset()
 
+    # 依開始時間去重 (相差 <= 180 秒視為同一場次)
+    unique_local = []
+    seen_local_times = []
+    for s in sessions:
+        s_dt = s.get("start_time")
+        if not s_dt:
+            continue
+        matched_idx = -1
+        for idx, ex_dt in enumerate(seen_local_times):
+            if abs((s_dt - ex_dt).total_seconds()) <= 180:
+                matched_idx = idx
+                break
+        if matched_idx == -1:
+            seen_local_times.append(s_dt)
+            unique_local.append(s)
+        else:
+            existing = unique_local[matched_idx]
+            if len(s.get("lactate_readings", [])) > len(existing.get("lactate_readings", [])):
+                unique_local[matched_idx] = s
+                seen_local_times[matched_idx] = s_dt
+    sessions = unique_local
+
     # 依運動專項篩選
     if sport_filter and sport_filter != "all":
         sessions = [s for s in sessions if s.get("sport") == sport_filter]
@@ -481,6 +503,16 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
     except Exception as e:
         print(f"Error fetching lactate_records: {e}")
 
+    # 2.1 乳酸紀錄時間去重 (同一分鐘僅保留一筆最新/最高精度值)
+    dedup_lactate = []
+    seen_la_times = set()
+    for la in all_lactate:
+        la_key = la["record_time"].strftime("%Y%m%d_%H%M")
+        if la_key not in seen_la_times:
+            seen_la_times.add(la_key)
+            dedup_lactate.append(la)
+    all_lactate = dedup_lactate
+
     # 3. 配對汗乳酸數據
     for s in fit_sessions:
         s_time = s["start_time"]
@@ -512,6 +544,30 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     
+    # 4. 針對資料庫中可能存在的歷史重複訓練場次進行去重 (Deduplication)
+    # 若同一次訓練被重複登記 (開始時間相差 <= 180 秒)，自動去重，合併保留數據最完整的一筆
+    unique_sessions = []
+    seen_session_times = []
+    for s in valid:
+        s_dt = s["start_time"]
+        matched_idx = -1
+        for idx, ex_dt in enumerate(seen_session_times):
+            if abs((s_dt - ex_dt).total_seconds()) <= 180:
+                matched_idx = idx
+                break
+        if matched_idx == -1:
+            seen_session_times.append(s_dt)
+            unique_sessions.append(s)
+        else:
+            # 發現重複登記！比較完整度評分：優先保留乳酸採樣點更多、時長更完整或平均功率有值的紀錄
+            existing = unique_sessions[matched_idx]
+            curr_score = len(s.get("lactate_readings", [])) * 10 + (1 if s.get("avg_power", 0) > 0 else 0) + (1 if s.get("duration_min", 0) > 0 else 0)
+            ex_score = len(existing.get("lactate_readings", [])) * 10 + (1 if existing.get("avg_power", 0) > 0 else 0) + (1 if existing.get("duration_min", 0) > 0 else 0)
+            if curr_score > ex_score:
+                unique_sessions[matched_idx] = s
+                seen_session_times[matched_idx] = s_dt
+    valid = unique_sessions
+
     # 依運動專項篩選
     if sport_filter and sport_filter != "all":
         valid = [s for s in valid if s.get("sport") == sport_filter]
