@@ -1259,7 +1259,7 @@ if st.session_state.get('firebase_uid'):
                 else:
                     st.error(msg)
         with col_b2:
-            sync_btn = st.button("🔄 同步前後1週", use_container_width=True, key="btn_sync_icu")
+            sync_btn = st.button("🔄 同步", use_container_width=True, key="btn_sync_icu")
 
         if sync_btn:
             if not api_key_val:
