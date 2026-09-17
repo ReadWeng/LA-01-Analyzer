@@ -1216,7 +1216,7 @@ st.sidebar.markdown("---")
 if st.session_state.get('firebase_uid'):
     with st.sidebar.expander("🔗 運動手錶雲端綁定 (Garmin / COROS)", expanded=False):
         st.markdown("**支援 Garmin Connect、COROS 等設備**")
-        st.caption("透過 Intervals.icu 自動同步乳酸日前 5 天日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
+        st.caption("透過 Intervals.icu 自動同步開始收乳酸前 1 週至後 1 週日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
 
         icu_uid = st.session_state.get('firebase_uid')
         icu_token = st.session_state.get('firebase_token')
@@ -1259,26 +1259,28 @@ if st.session_state.get('firebase_uid'):
                 else:
                     st.error(msg)
         with col_b2:
-            sync_btn = st.button("🔄 同步前5天", use_container_width=True, key="btn_sync_icu")
+            sync_btn = st.button("🔄 同步前後1週", use_container_width=True, key="btn_sync_icu")
 
         if sync_btn:
             if not api_key_val:
                 st.warning("請先輸入 API Key！")
             else:
-                with st.spinner("正在計算乳酸日期並同步前 5 天訓練數據至 Firebase..."):
+                with st.spinner("正在計算乳酸日期並同步前 1 週與後 1 週日常訓練數據至 Firebase..."):
                     import intervals_client as ic
                     s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
                         uid=icu_uid,
                         firebase_token=icu_token,
                         intervals_api_key=api_key_val,
                         athlete_id=ath_id_val,
-                        lookback_days=5
+                        lookback_days=7,
+                        lookahead_days=7
                     )
                     st.session_state["intervals_api_key"] = api_key_val
                     st.session_state["intervals_athlete_id"] = ath_id_val
                     if s_count > 0:
                         st.success(s_msg)
                         st.session_state.pop("cached_weekly_report_html", None)
+                        st.session_state.pop(f"date_bounds_{icu_uid}", None)
                         st.rerun()
                     else:
                         st.info(s_msg)
@@ -1422,16 +1424,35 @@ if app_mode == "AI 運動生理週報與下一次處方":
     athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
     st.success(f"👤 已連結個人雲端帳號：**{st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
 
-    col_ctl1, col_ctl2, col_ctl3 = st.columns([2, 2, 1])
+    import importlib
+    import weekly_physio_engine as wpe
+    import ai_weekly_report as awr
+    importlib.reload(wpe)
+    importlib.reload(awr)
+    import streamlit.components.v1 as components
+    from datetime import datetime
+
+    col_ctl1, col_ctl2, col_ctl3 = st.columns([3, 2, 1])
     with col_ctl1:
-        lactate_session_target = st.slider(
-            "分析含乳酸關鍵測驗場次 (場)",
-            min_value=3,
-            max_value=10,
-            value=5,
-            help="系統將鎖定最近 N 場具有乳酸採樣的關鍵測驗，並自動將這幾場測驗期間所有手錶日常運動（無乳酸）全數納入，精準計算真實間隔天數與總體生理負荷",
-            key="ai_report_lactate_target"
+        bounds_key = f"date_bounds_{uid}"
+        if bounds_key not in st.session_state:
+            st.session_state[bounds_key] = wpe.get_user_training_date_bounds(uid, token, ref_token)
+        slider_min, slider_max, def_start, def_end = st.session_state[bounds_key]
+
+        selected_date_range = st.slider(
+            "選擇 AI 分析日期區間 (左右滑動選取區間)",
+            min_value=slider_min,
+            max_value=slider_max,
+            value=(def_start, def_end),
+            format="YYYY-MM-DD",
+            help="直接拖拉起始與結束日期，系統將自動納入該區間內的所有汗乳酸關鍵測驗、日常手錶運動與 Intervals.icu 晨間 HRV 數據",
+            key="ai_report_date_slider"
         )
+        if isinstance(selected_date_range, (list, tuple)) and len(selected_date_range) == 2:
+            start_date_sel, end_date_sel = selected_date_range[0], selected_date_range[1]
+        else:
+            start_date_sel, end_date_sel = def_start, def_end
+
     with col_ctl2:
         sport_filter = st.selectbox(
             "運動專項篩選 (分開分析)",
@@ -1448,18 +1469,12 @@ if app_mode == "AI 運動生理週報與下一次處方":
         st.write("")
         st.write("")
         btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
+        if btn_gen:
+            st.session_state.pop(bounds_key, None)
 
-    import importlib
-    import weekly_physio_engine as wpe
-    import ai_weekly_report as awr
-    importlib.reload(wpe)
-    importlib.reload(awr)
-    import streamlit.components.v1 as components
-    from datetime import datetime
-
-    # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v13_hrv_integration"
-    current_cache_key = f"{uid}_{athlete_name}_{lactate_session_target}_{sport_filter}_{REPORT_VERSION}"
+    # 自動快取失效機制（當調整日期區間、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
+    REPORT_VERSION = "20260917_v14_date_range_slider"
+    current_cache_key = f"{uid}_{athlete_name}_{start_date_sel}_{end_date_sel}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
 
@@ -1470,7 +1485,8 @@ if app_mode == "AI 運動生理週報與下一次處方":
                 uid=uid,
                 token=token,
                 refresh_token=ref_token,
-                days_limit=lactate_session_target,
+                start_date=start_date_sel,
+                end_date=end_date_sel,
                 sport_filter=sport_filter
             )
 

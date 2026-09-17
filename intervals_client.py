@@ -55,20 +55,24 @@ def test_intervals_connection(api_key: str, athlete_id: str = "0") -> Tuple[bool
         return False, f"連線逾時或網路錯誤: {str(e)}"
 
 
-def calculate_pre_lactate_date_ranges(lactate_dates: List[datetime], lookback_days: int = 5) -> List[Tuple[str, str]]:
+def calculate_lactate_surrounding_date_ranges(
+    lactate_dates: List[datetime],
+    lookback_days: int = 7,
+    lookahead_days: int = 7
+) -> List[Tuple[str, str]]:
     """
-    根據所有有乳酸紀錄的日期清單，計算每一天的前 N 天 (預設 5 天) 區間，
+    根據所有乳酸採樣日期清單，計算每一天的前 N 天 (預設前 1 週 7 天) 至後 M 天 (預設後 1 週 7 天) 的完整區間，
     並自動合併重疊或相鄰的日期區間，產生最精簡的 (oldest, newest) 清單。
     格式: YYYY-MM-DD
     """
     if not lactate_dates:
         return []
 
-    # 1. 產生所有需要覆蓋的單日 (包含乳酸日前 5 天與乳酸日當天)
+    # 1. 產生所有需要覆蓋的單日 (涵蓋乳酸日前 1 週、當天、與後 1 週)
     target_days = set()
     for dt in lactate_dates:
         d = dt.date() if isinstance(dt, datetime) else dt
-        for i in range(lookback_days + 1):
+        for i in range(-lookahead_days, lookback_days + 1):
             target_days.add(d - timedelta(days=i))
 
     sorted_days = sorted(target_days)
@@ -90,6 +94,10 @@ def calculate_pre_lactate_date_ranges(lactate_dates: List[datetime], lookback_da
     ranges.append((start_d.strftime("%Y-%m-%d"), prev_d.strftime("%Y-%m-%d")))
 
     return ranges
+
+
+def calculate_pre_lactate_date_ranges(lactate_dates: List[datetime], lookback_days: int = 7, lookahead_days: int = 7) -> List[Tuple[str, str]]:
+    return calculate_lactate_surrounding_date_ranges(lactate_dates, lookback_days=lookback_days, lookahead_days=lookahead_days)
 
 
 def fetch_intervals_activities(api_key: str, athlete_id: str = "0", oldest: str = None, newest: str = None) -> List[Dict[str, Any]]:
@@ -485,12 +493,13 @@ def sync_pre_lactate_activities_to_firebase(
     firebase_token: str,
     intervals_api_key: str,
     athlete_id: str = "0",
-    lookback_days: int = 5
+    lookback_days: int = 7,
+    lookahead_days: int = 7
 ) -> Tuple[int, int, str]:
     """
     高階整合同步主函式：
     1. 從 Firestore 讀取現有所有的乳酸採樣日期。
-    2. 自動推算所有「乳酸日前 lookback_days 天」的有效日期區間。
+    2. 自動推算所有「開始收乳酸前 lookback_days 天至後 lookahead_days 天」（預設前後各 1 週）的有效日期區間。
     3. 呼叫 Intervals.icu 抓取日常運動數據。
     4. 檢查 Firestore 現有 fit_records，若該時段已有原創乳酸測試 FIT 檔則跳過（防覆蓋有乳酸的珍貴測驗）。
     5. 透過 PATCH 冪等寫入 Firestore。
@@ -526,7 +535,7 @@ def sync_pre_lactate_activities_to_firebase(
         now_dt = datetime.now()
         date_ranges = [((now_dt - timedelta(days=30)).strftime("%Y-%m-%d"), now_dt.strftime("%Y-%m-%d"))]
     else:
-        date_ranges = calculate_pre_lactate_date_ranges(lactate_dates, lookback_days=lookback_days)
+        date_ranges = calculate_lactate_surrounding_date_ranges(lactate_dates, lookback_days=lookback_days, lookahead_days=lookahead_days)
 
     if not date_ranges:
         return 0, 0, "未找到有效的同步日期區間"

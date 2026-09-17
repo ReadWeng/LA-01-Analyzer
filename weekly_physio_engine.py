@@ -15,7 +15,7 @@ import os
 import re
 import glob
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import numpy as np
 import pandas as pd
 import requests
@@ -284,7 +284,95 @@ def _clean_firestore_doc_in_background(doc_url, headers, sport, sub_sport, durat
         pass
 
 
-def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filter="all", refresh_token=None):
+def get_user_training_date_bounds(uid, token, refresh_token=None):
+    """
+    快速查詢使用者的運動與乳酸測試歷史的最早與最晚日期，作為前端日期區間拉桿的 min_value 與 max_value
+    回傳: (slider_min: date, slider_max: date, default_start: date, default_end: date)
+    """
+    today = datetime.now().date()
+    if not uid or not token:
+        min_d = today - timedelta(days=60)
+        max_d = today + timedelta(days=7)
+        return min_d, max_d, today - timedelta(days=14), today
+
+    headers = {"Authorization": f"Bearer {token}"}
+    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
+
+    all_dates = set()
+    try:
+        r_fit = requests.get(fit_url, headers=headers, timeout=5)
+        if r_fit.status_code == 200:
+            docs = r_fit.json().get("documents", [])
+            for d in docs:
+                st_val = d.get("fields", {}).get("start_time", {}).get("timestampValue")
+                if st_val:
+                    try:
+                        clean_ts = st_val.replace("Z", "+00:00")
+                        all_dates.add(datetime.fromisoformat(clean_ts).date())
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    la_dates = []
+    try:
+        r_la = requests.get(la_url, headers=headers, timeout=5)
+        if r_la.status_code == 200:
+            docs = r_la.json().get("documents", [])
+            for d in docs:
+                f = d.get("fields", {})
+                y = int(f.get("year", {}).get("integerValue", 0))
+                m = int(f.get("month", {}).get("integerValue", 0))
+                day = int(f.get("day", {}).get("integerValue", 0))
+                if y > 0 and m > 0 and day > 0:
+                    fy = y + 2000 if y < 100 else y
+                    d_obj = date(fy, m, day)
+                    all_dates.add(d_obj)
+                    la_dates.append(d_obj)
+    except Exception:
+        pass
+
+    if all_dates:
+        sorted_all = sorted(all_dates)
+        earliest = sorted_all[0]
+        latest = sorted_all[-1]
+
+        # 拉桿最小與最大範圍：包含最早訓練日前 14 天，至最晚紀錄（或今天）後 7 天
+        slider_min = min(earliest - timedelta(days=14), today - timedelta(days=60))
+        slider_max = max(latest + timedelta(days=7), today)
+
+        # 預設選取區間：如果有乳酸日期，預設為最近 5 場乳酸最早的一場至最新紀錄日
+        if la_dates:
+            sorted_la = sorted(la_dates)
+            target_la = sorted_la[-5:]
+            def_start = target_la[0]
+            def_start = max(slider_min, def_start)
+            def_end = latest
+        else:
+            def_start = max(slider_min, latest - timedelta(days=14))
+            def_end = latest
+
+        if slider_min >= slider_max:
+            slider_min = slider_max - timedelta(days=14)
+        if def_start > def_end:
+            def_start = def_end - timedelta(days=7)
+        if def_start < slider_min:
+            def_start = slider_min
+        if def_end > slider_max:
+            def_end = slider_max
+
+        return slider_min, slider_max, def_start, def_end
+    else:
+        min_d = today - timedelta(days=60)
+        max_d = today + timedelta(days=7)
+        return min_d, max_d, today - timedelta(days=14), today
+
+
+def fetch_firestore_dataset_with_status(
+    uid, token, session_limit=7, sport_filter="all", refresh_token=None,
+    start_date=None, end_date=None
+):
     """
     從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄，支援自動刷新 Token 與明確錯誤原因回報
     回傳: (sessions: list, active_token: str, error_msg: str or None)
@@ -628,14 +716,26 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
     if not lactate_sessions:
         return [], active_token, "查無任何包含汗乳酸採樣的測驗紀錄，請先登錄乳酸測試數據"
 
-    # 取最近 N 場（預設 5 場）含乳酸之關鍵測驗場次
-    target_la_count = session_limit if (session_limit and session_limit > 0) else 5
-    target_la_sessions = lactate_sessions[-target_la_count:]
-    earliest_la_time = target_la_sessions[0]["start_time"]
+    # 若使用者指定了日期區間 (start_date, end_date)
+    if start_date and end_date:
+        s_date_obj = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date)[:10], "%Y-%m-%d").date()
+        e_date_obj = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date)[:10], "%Y-%m-%d").date()
+        
+        final_sessions = [
+            s for s in valid
+            if s_date_obj <= s["start_time"].date() <= e_date_obj
+        ]
+        if not final_sessions:
+            return [], active_token, f"在選定的日期區間（{s_date_obj} 至 {e_date_obj}）內查無任何運動紀錄，請嘗試擴大日期拉桿範圍"
+    else:
+        # 取最近 N 場（預設 5 場）含乳酸之關鍵測驗場次
+        target_la_count = session_limit if (session_limit and session_limit > 0) else 5
+        target_la_sessions = lactate_sessions[-target_la_count:]
+        earliest_la_time = target_la_sessions[0]["start_time"]
 
-    # 關鍵策略：拉入自最早該場乳酸測驗起至最新一場之間的所有運動
-    # （包含這 5 場乳酸測驗 + 期間所有中間有運動但沒乳酸的手錶日常數據）
-    final_sessions = [s for s in valid if s["start_time"] >= earliest_la_time]
+        # 關鍵策略：拉入自最早該場乳酸測驗起至最新一場之間的所有運動
+        # （包含這 5 場乳酸測驗 + 期間所有中間有運動但沒乳酸的手錶日常數據）
+        final_sessions = [s for s in valid if s["start_time"] >= earliest_la_time]
 
     # 5. 從 Intervals.icu 撈取對應週期的晨間 HRV (rMSSD) 與靜息心率 (Resting HR) 數據
     if final_sessions and uid and active_token:
@@ -648,8 +748,12 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                 icu_ath_id = cfg_fields.get("athlete_id", {}).get("stringValue", "0")
                 if icu_api_key:
                     import intervals_client as ic
-                    d_start = (final_sessions[0]["start_time"] - timedelta(days=2)).strftime("%Y-%m-%d")
-                    d_end = (final_sessions[-1]["start_time"] + timedelta(days=1)).strftime("%Y-%m-%d")
+                    if start_date and end_date:
+                        d_start = str(start_date)[:10]
+                        d_end = str(end_date)[:10]
+                    else:
+                        d_start = (final_sessions[0]["start_time"] - timedelta(days=2)).strftime("%Y-%m-%d")
+                        d_end = (final_sessions[-1]["start_time"] + timedelta(days=1)).strftime("%Y-%m-%d")
                     wellness_map = ic.get_intervals_wellness_map(
                         icu_api_key, athlete_id=icu_ath_id, oldest=d_start, newest=d_end
                     )

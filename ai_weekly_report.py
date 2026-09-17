@@ -19,9 +19,19 @@ import weekly_physio_engine as wpe
 import ai_coach_generator as acg
 
 
-def generate_weekly_report_data(athlete_name="選手", uid=None, token=None, api_key=None, days_limit=5, sport_filter="all", refresh_token=None):
+def generate_weekly_report_data(
+    athlete_name="選手",
+    uid=None,
+    token=None,
+    api_key=None,
+    days_limit=5,
+    sport_filter="all",
+    refresh_token=None,
+    start_date=None,
+    end_date=None
+):
     """
-    抓取真實用戶雲端數據（以指定場次之汗乳酸關鍵測驗為錨點，並納入期間所有手錶日常運動）、進行運動專項分流、汗乳酸動力學與跨期負荷運算，並呼叫 Firebase AI Logic
+    抓取真實用戶雲端數據（支援指定日期區間拉桿或指定關鍵測驗場次，並納入期間所有手錶日常運動與 HRV）、進行運動專項分流、汗乳酸動力學與跨期負荷運算，並呼叫 Firebase AI Logic
     """
     if not uid or not token:
         return {
@@ -35,7 +45,8 @@ def generate_weekly_report_data(athlete_name="選手", uid=None, token=None, api
         }
 
     sessions, new_token, fetch_error = wpe.fetch_firestore_dataset_with_status(
-        uid, token, session_limit=days_limit, sport_filter=sport_filter, refresh_token=refresh_token
+        uid, token, session_limit=days_limit, sport_filter=sport_filter, refresh_token=refresh_token,
+        start_date=start_date, end_date=end_date
     )
 
     if not sessions:
