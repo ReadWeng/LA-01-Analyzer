@@ -1399,12 +1399,16 @@ if app_mode == "AI 運動生理週報與下一次處方":
         st.write("")
         btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
 
+    import importlib
+    import weekly_physio_engine as wpe
     import ai_weekly_report as awr
+    importlib.reload(wpe)
+    importlib.reload(awr)
     import streamlit.components.v1 as components
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v8_accurate_running_duration_fix"
+    REPORT_VERSION = "20260917_v9_clean_cloud_and_exact_runs"
     current_cache_key = f"{uid}_{athlete_name}_{lactate_session_target}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
