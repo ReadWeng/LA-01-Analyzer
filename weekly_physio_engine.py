@@ -649,10 +649,11 @@ def calculate_comprehensive_load(sessions):
             h = s.get("avg_hr", 0)
             la = s.get("avg_lactate", 0)
             
-            if has_full_power and p > 0:
+            # 若該測驗場次具備功率，優先以 W/mmol 評估輸出代謝經濟性！
+            if p > 0 and la > 0:
                 eff = round(p / la, 1)  # W per mmol
                 unit = "W/mmol"
-            elif h > 0:
+            elif h > 0 and la > 0:
                 eff = round(h / la, 1)  # bpm per mmol
                 unit = "bpm/mmol"
             else:
@@ -673,15 +674,15 @@ def calculate_comprehensive_load(sessions):
             s["metabolic_efficiency"] = None
             s["efficiency_unit"] = "未採樣"
 
-    # 4. 代謝效率變化率 (最新場次 vs 前期場次)
+    # 4. 代謝效率變化率 (最新含乳酸測驗 vs 前期測驗)
     eff_delta_pct = 0.0
-    latest = sessions[-1]
     valid_eff_sessions = [s for s in sessions if s.get("metabolic_efficiency") is not None and s.get("metabolic_efficiency", 0) > 0]
-    if len(valid_eff_sessions) >= 2 and latest.get("metabolic_efficiency") is not None:
+    if len(valid_eff_sessions) >= 2:
+        latest_eff_session = valid_eff_sessions[-1]
         prior_effs = [s["metabolic_efficiency"] for s in valid_eff_sessions[:-1]]
         if prior_effs:
             mean_prior = np.mean(prior_effs)
-            eff_delta_pct = round(((latest["metabolic_efficiency"] - mean_prior) / mean_prior) * 100.0, 1)
+            eff_delta_pct = round(((latest_eff_session["metabolic_efficiency"] - mean_prior) / mean_prior) * 100.0, 1)
 
     # 5. 汗乳酸加權負荷積分與極化區間計算
     total_sweat_load = 0.0
@@ -735,6 +736,7 @@ def calculate_comprehensive_load(sessions):
         zone_pct = {"Low_Recovery": 0.0, "Tempo_Aerobic": 0.0, "High_Glycolytic": 0.0}
 
     # 6. 疲勞與恢復狀態判定 (結合最新場次間隔天數與汗乳酸水平)
+    latest = sessions[-1]
     days_since_last = latest.get("days_since_prior", 2.0) or 2.0
     latest_la = latest.get("avg_lactate", 0)
 
