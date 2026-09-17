@@ -1,8 +1,41 @@
 import requests
 import streamlit as st
 import json
+import base64
+import time
 
 FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+
+def parse_jwt_payload(token):
+    """解析 JWT Payload 以取得 iat (簽發時間) 與 exp (過期時間)"""
+    try:
+        parts = token.split(".")
+        if len(parts) == 3:
+            padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+            return json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def logout_firebase():
+    """徹底清除所有 Firebase 登入狀態、暫存與 Streamlit OIDC Cookie，回到乾淨登入頁面"""
+    keys_to_clear = [
+        "firebase_uid", "firebase_email", "firebase_token", "firebase_refresh_token",
+        "cached_weekly_report_html", "cached_report_key", "google_token_processed",
+        "intervals_api_key", "intervals_athlete_id"
+    ]
+    for k in keys_to_clear:
+        st.session_state.pop(k, None)
+    if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+        try:
+            st.logout()
+        except Exception:
+            pass
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    st.rerun()
 
 def login_with_google_id_token(id_token):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
@@ -67,6 +100,17 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
 
         if g_token:
             is_jwt = isinstance(g_token, str) and g_token.count(".") == 2
+            
+            # 若為 JWT，檢查是否為重開後的過期/舊憑證 (若簽發超過 5 分鐘或已過期，代表為前次關閉前殘留的舊 Cookie)
+            if is_jwt:
+                payload_info = parse_jwt_payload(g_token)
+                iat = payload_info.get("iat", 0)
+                exp = payload_info.get("exp", 0)
+                now_ts = time.time()
+                # 若憑證過期或簽發時間超過 300 秒 (5分鐘)，自動清除舊 Cookie，讓每次重開都是乾淨的登入畫面
+                if (exp > 0 and now_ts > exp) or (iat > 0 and (now_ts - iat) > 300):
+                    logout_firebase()
+
             post_body = f"id_token={g_token}&providerId=google.com" if is_jwt else f"access_token={g_token}&providerId=google.com"
             url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
             payload = {
@@ -87,12 +131,12 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                     st.session_state.pop("cached_report_key", None)
                     st.rerun()
                 else:
-                    err_msg = data.get("error", {}).get("message", "未知錯誤")
-                    st.sidebar.error(f"MyLactate 同步失敗: {err_msg}")
-            except Exception as e:
-                st.sidebar.error(f"連線失敗: {str(e)}")
+                    # Token 已過期 (stale to sign-in) 或無效：自動清除過期憑證，直接恢復乾淨登入畫面，不卡死報錯
+                    logout_firebase()
+            except Exception:
+                logout_firebase()
         else:
-            st.session_state["firebase_email"] = getattr(st.user, "email", "")
+            logout_firebase()
 
 # 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:
@@ -164,24 +208,6 @@ def register_to_firebase(email, password):
     except Exception as e:
         st.sidebar.error(f"網路連線失敗: {str(e)}")
 
-def logout_firebase():
-    if "firebase_uid" in st.session_state:
-        del st.session_state["firebase_uid"]
-    if "firebase_email" in st.session_state:
-        del st.session_state["firebase_email"]
-    if "firebase_token" in st.session_state:
-        del st.session_state["firebase_token"]
-    if "firebase_refresh_token" in st.session_state:
-        del st.session_state["firebase_refresh_token"]
-    st.session_state.pop("cached_weekly_report_html", None)
-    st.session_state.pop("cached_report_key", None)
-    if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
-        try:
-            st.logout()
-        except Exception:
-            pass
-    st.query_params.clear()
-    st.rerun()
 
 def reset_firebase_password(email):
     if not email:
@@ -1081,10 +1107,12 @@ st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
 if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
     logged_email = st.session_state.get('firebase_email') or "已認證用戶"
     st.sidebar.success(f"已登入: {logged_email}")
-    if st.sidebar.button("登出帳號", use_container_width=True):
+    if st.sidebar.button("🚪 登出並清除所有紀錄", use_container_width=True):
         logout_firebase()
 elif hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
-    st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但尚未連結 MyLactate 雲端金鑰。請在下方輸入帳號密碼登入以讀取您的雲端紀錄。")
+    st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但尚未連結 MyLactate 雲端金鑰。")
+    if st.sidebar.button("🧹 清除舊紀錄並重新登入", use_container_width=True):
+        logout_firebase()
 else:
     st.sidebar.info("登入與 MyLactate 相同的帳號以讀取個人數據")
     
@@ -1159,6 +1187,10 @@ else:
         reg_pwd_input = st.text_input("設定密碼 (至少6位數)", type="password", key="reg_pwd_input")
         if st.button("確認註冊並登入", use_container_width=True):
             register_to_firebase(reg_email_input, reg_pwd_input)
+
+    st.sidebar.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+    if st.sidebar.button("🧹 重設登入畫面 / 清除快取", key="reset_login_view_btn", use_container_width=True):
+        logout_firebase()
 
 st.sidebar.markdown("---")
 
