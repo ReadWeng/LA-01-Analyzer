@@ -30,6 +30,8 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
         sessions_detail.append({
             "date": s.get("date"),
             "full_date": s.get("full_date"),
+            "sport": s.get("sport_display", s.get("sport", "運動")),
+            "sub_sport": s.get("sub_sport", "generic"),
             "interval_since_previous": intv_str,
             "duration_min": s.get("duration_min"),
             "avg_power_W": s.get("avg_power") if s.get("avg_power", 0) > 0 else "無功率",
@@ -42,8 +44,11 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
             "session_type": s.get("type")
         })
 
+    sport_desc = "純自行車專項 (Cycling)" if metrics.get("is_pure_cycling") else ("純跑步專項 (Running)" if metrics.get("is_pure_running") else f"跨專項綜合 (場次分佈：{metrics.get('sport_counts', {})})")
+
     prompt_context = {
         "athlete_name": athlete_name,
+        "sport_discipline": sport_desc,
         "time_span": f"{metrics.get('period_start')} 至 {metrics.get('period_end')}（跨越總天數：{metrics.get('time_span_days')} 天，共 {metrics.get('session_count')} 場實際訓練）",
         "sweat_lactate_range": f"週期最低 {metrics.get('min_sweat_lactate')} ~ 最高峰值 {metrics.get('peak_sweat_lactate')} mmol/L（個人基準分界：低於 {metrics.get('baseline_low')} 為低負荷，高於 {metrics.get('baseline_high')} 為高糖解負荷）",
         "metabolic_efficiency_change": f"{'+' if metrics.get('efficiency_delta_pct', 0) > 0 else ''}{metrics.get('efficiency_delta_pct', 0)}% (最新場次對比前期場次)",
@@ -64,6 +69,7 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
    - 若連日運動（背靠背隔 0~1 天），且汗乳酸偏高，代表「連續訓練的代謝堆疊與未完全排除」。
 5. 精準開出【下一次運動處方 (Next Workout Protocol)】：針對汗乳酸特性，給出具體建議間隔天數、目標時長、目標心率/功率、運動項目與階段指導。
 6. 【功率缺失處理原則】：若訓練數據中有場次缺失功率（例如 avg_power_W 顯示為「無功率」），系統已自動切換為【平均心率 (bpm)】作為縱向對照基準。此時嚴禁提及功率 (W) 或輸出功率圖，必須全程以心率 (bpm) 與汗乳酸濃度的關係、代謝效率 (bpm/mmol) 及心率區間進行講評與下一次處方！
+7. 【運動專項分流原則】：若受測者為特定專項（如純自行車 Cycling 或純跑步 Running），請嚴格聚焦於該專項的生理特徵（自行車著重踩踏輸出、齒比、踏頻與功率/心率比；跑步著重承重衝擊、跑步心率漂移與配速/心率經濟性）。若為混合運動，請分析騎跑交叉訓練的互補效益，下一次處方中明確指明運動項目（sport_type）。
 """
 
     user_prompt = f"""請根據以下受測者的汗乳酸與跨期運動負荷數據進行深度評析：

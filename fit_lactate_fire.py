@@ -642,7 +642,7 @@ def upload_report_to_firebase_storage(html_data, file_name):
         return False, str(e)
 
 
-def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
+def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core, sport='unknown', sub_sport='generic'):
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
     if not uid or not token:
@@ -692,6 +692,8 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
             'fields': {
                 'file_name': {'stringValue': str(file_name)},
                 'start_time': {'timestampValue': start_time.isoformat() + 'Z' if start_time.tzinfo is None else start_time.isoformat()},
+                'sport': {'stringValue': str(sport)},
+                'sub_sport': {'stringValue': str(sub_sport)},
                 'avg_power': {'integerValue': str(int(avg_power))},
                 'max_power': {'integerValue': str(int(max_power))},
                 'avg_hr': {'integerValue': str(int(avg_hr))},
@@ -780,12 +782,14 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
 
 def parse_fit_file_data(uploaded_file_bytes):
     """
-    解析 FIT 檔案的 records 與 laps 數據。
+    解析 FIT 檔案的 records 與 laps 數據，並提取運動類型 (sport, sub_sport)。
     傳入 bytes 物件，使用 fitparse 解析，若失敗則自動 fallback 到 fitdecode。
     """
     records = []
     laps_list = []
     use_fallback = False
+    sport = 'unknown'
+    sub_sport = 'generic'
     
     try:
         fit_file = fitparse.FitFile(io.BytesIO(uploaded_file_bytes))
@@ -795,6 +799,19 @@ def parse_fit_file_data(uploaded_file_bytes):
         for i, lap in enumerate(fit_file.get_messages('lap')):
             vals = {field.name: field.value for field in lap.fields}
             laps_list.append(vals)
+        for s_msg in fit_file.get_messages('sport'):
+            for f in s_msg.fields:
+                if f.name == 'sport' and f.value is not None:
+                    sport = str(f.value).lower()
+                elif f.name == 'sub_sport' and f.value is not None:
+                    sub_sport = str(f.value).lower()
+        if sport == 'unknown':
+            for s_msg in fit_file.get_messages('session'):
+                for f in s_msg.fields:
+                    if f.name == 'sport' and f.value is not None:
+                        sport = str(f.value).lower()
+                    elif f.name == 'sub_sport' and f.value is not None:
+                        sub_sport = str(f.value).lower()
     except Exception as e:
         use_fallback = True
         
@@ -812,12 +829,18 @@ def parse_fit_file_data(uploaded_file_bytes):
                         elif frame.name == "lap":
                             row = {field.name: field.value for field in frame.fields}
                             laps_list.append(row)
+                        elif frame.name in ("sport", "session"):
+                            for field in frame.fields:
+                                if field.name == "sport" and field.value is not None:
+                                    sport = str(field.value).lower()
+                                elif field.name == "sub_sport" and field.value is not None:
+                                    sub_sport = str(field.value).lower()
         except Exception as fallback_err:
-            return pd.DataFrame(), pd.DataFrame(), None
+            return pd.DataFrame(), pd.DataFrame(), None, 'unknown', 'generic'
             
     df = pd.DataFrame(records)
     if df.empty or 'timestamp' not in df.columns:
-        return pd.DataFrame(), pd.DataFrame(), None
+        return pd.DataFrame(), pd.DataFrame(), None, 'unknown', 'generic'
         
     # 排序並取得開始時間 (FIT 檔時間預設為 UTC+0，加上 8 小時轉換為 UTC+8 當地時間)
     df = df.sort_values(by='timestamp').reset_index(drop=True)
@@ -930,8 +953,19 @@ def parse_fit_file_data(uploaded_file_bytes):
                 'distance_m': lap_val.get('total_distance')
             })
             
+    # 若運動類型仍為未知，進行啟發式推斷
+    if sport == 'unknown':
+        if 'power' in df.columns and df['power'].notna().any() and (df['power'] > 0).any():
+            sport = 'cycling'
+        elif 'cadence' in df.columns and df['cadence'].notna().any() and df['cadence'].mean() > 130:
+            sport = 'running'
+        else:
+            sport = 'running'
+            
+    df_clean.attrs['sport'] = sport
+    df_clean.attrs['sub_sport'] = sub_sport
     df_laps = pd.DataFrame(laps)
-    return df_clean, df_laps, start_time
+    return df_clean, df_laps, start_time, sport, sub_sport
 
 # ----------------- 應用程式介面 -----------------
 
@@ -1155,7 +1189,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
         athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
         source_type = "firebase"
 
-    col_ctl1, col_ctl2 = st.columns([2, 1])
+    col_ctl1, col_ctl2, col_ctl3 = st.columns([2, 2, 1])
     with col_ctl1:
         session_range = st.slider(
             "分析最近訓練場次數量 (場)",
@@ -1166,6 +1200,18 @@ if app_mode == "AI 運動生理週報與下一次處方":
             key="ai_report_sessions"
         )
     with col_ctl2:
+        sport_filter = st.selectbox(
+            "運動專項篩選 (分開分析)",
+            options=["all", "cycling", "running"],
+            format_func=lambda x: {
+                "all": "🌐 全部專項 (綜合交叉分析)",
+                "cycling": "🚲 僅分析自行車騎行 (Cycling)",
+                "running": "🏃 僅分析跑步訓練 (Running)"
+            }.get(x, x),
+            help="分開評估自行車（瓦數/代謝效率）與跑步（心率/配速），避免跨專項生理特徵混淆",
+            key="ai_report_sport_filter"
+        )
+    with col_ctl3:
         st.write("")
         st.write("")
         btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
@@ -1174,9 +1220,9 @@ if app_mode == "AI 運動生理週報與下一次處方":
     import streamlit.components.v1 as components
     from datetime import datetime
 
-    # 自動快取失效機制（當調整場次、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260915_v3_force_hr_sync"
-    current_cache_key = f"{source_type}_{athlete_name}_{session_range}_{REPORT_VERSION}"
+    # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
+    REPORT_VERSION = "20260917_v4_sport_type_split"
+    current_cache_key = f"{source_type}_{athlete_name}_{session_range}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
 
@@ -1187,7 +1233,8 @@ if app_mode == "AI 運動生理週報與下一次處方":
                 athlete_name=athlete_name,
                 uid=uid,
                 token=token,
-                days_limit=session_range
+                days_limit=session_range,
+                sport_filter=sport_filter
             )
             html_report = awr.render_modern_html_report(report_data)
             st.session_state["cached_weekly_report_html"] = html_report
@@ -1282,7 +1329,13 @@ if file_name and file_name != st.session_state['last_file']:
 # 主流程
 if fit_bytes is not None:
     with st.spinner("正在解析 FIT 檔案中..."):
-        df, df_laps, start_time = parse_fit_file_data(fit_bytes)
+        parsed_res = parse_fit_file_data(fit_bytes)
+        if len(parsed_res) == 5:
+            df, df_laps, start_time, sport, sub_sport = parsed_res
+        else:
+            df, df_laps, start_time = parsed_res
+            sport = df.attrs.get('sport', 'unknown')
+            sub_sport = df.attrs.get('sub_sport', 'generic')
         
     if df.empty:
         st.error("FIT 檔案解析失敗或無有效 Record 數據。")
@@ -1301,7 +1354,21 @@ if fit_bytes is not None:
         has_gps_flag = ('lat' in df.columns and df['lat'].notna().any() and 'lng' in df.columns and df['lng'].notna().any())
         tot_dist_km = (df['distance'].dropna().iloc[-1] / 1000.0) if ('distance' in df.columns and df['distance'].notna().any()) else 0.0
         gps_badge = f" | **📍 GPS 軌跡**: 已擷取 ({tot_dist_km:.2f} km)" if has_gps_flag else ""
-        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{file_name}`{gps_badge}")
+        
+        sport_icon_map = {
+            'cycling': ('🚴 自行車 (Cycling)', '#00f2fe'),
+            'running': ('🏃 跑步 (Running)', '#ff5252'),
+            'swimming': ('🏊 游泳 (Swimming)', '#4facfe'),
+            'walking': ('🚶 健走 (Walking)', '#00e676'),
+            'fitness_equipment': ('🏋️ 健身器材 (Gym)', '#ffab00'),
+            'generic': ('🏅 運動訓練 (Generic)', '#ffab00'),
+            'unknown': ('🎯 運動活動', '#94a3b8')
+        }
+        sport_text, sport_col = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
+        sub_info = f" · {sub_sport}" if sub_sport and sub_sport != 'generic' else ""
+        sport_badge = f" | **🏃 運動類型**: <span style='color:{sport_col}; font-weight:700;'>{sport_text}{sub_info}</span>"
+        
+        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{file_name}`{sport_badge}{gps_badge}", unsafe_allow_html=True)
         
         kpi_cols = st.columns(4)
         with kpi_cols[0]:
@@ -1321,7 +1388,7 @@ if fit_bytes is not None:
             if st.session_state.get('last_uploaded_fit_name') != file_name:
                 # Automatically upload
                 with st.spinner('自動同步 FIT 數據至雲端...'):
-                    if upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core):
+                    if upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_hr, max_hr, max_core, sport=sport, sub_sport=sub_sport):
                         st.session_state['last_uploaded_fit_name'] = file_name
 
             

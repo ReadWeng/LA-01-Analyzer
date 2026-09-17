@@ -19,14 +19,14 @@ import weekly_physio_engine as wpe
 import ai_coach_generator as acg
 
 
-def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7):
+def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7, sport_filter="all"):
     """
-    抓取數據（以實際場次數量為準）、進行汗乳酸與間隔運算，並呼叫 Firebase AI Logic
+    抓取數據（以實際場次數量為準）、進行運動專項分流、汗乳酸與間隔運算，並呼叫 Firebase AI Logic
     """
     if uid and token:
-        sessions = wpe.fetch_firestore_dataset(uid, token, session_limit=days_limit)
+        sessions = wpe.fetch_firestore_dataset(uid, token, session_limit=days_limit, sport_filter=sport_filter)
     elif os.path.isdir(source):
-        sessions = wpe.fetch_local_dataset(source, session_limit=days_limit)
+        sessions = wpe.fetch_local_dataset(source, session_limit=days_limit, sport_filter=sport_filter)
     else:
         sessions = wpe.get_benchmark_dataset()
 
@@ -102,6 +102,14 @@ def render_modern_html_report(report_data):
         zone_pct.get("High_Glycolytic", 0)
     ]
 
+    # 專項範圍識別標籤
+    if metrics.get("is_pure_cycling"):
+        sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(0,242,254,0.12); border:1px solid rgba(0,242,254,0.3); color:#00f2fe; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🚲 自行車專項分析</span>"
+    elif metrics.get("is_pure_running"):
+        sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(255,82,82,0.12); border:1px solid rgba(255,82,82,0.3); color:#ff5252; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🏃 跑步專項分析</span>"
+    else:
+        sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(255,171,0,0.12); border:1px solid rgba(255,171,0,0.3); color:#ffab00; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🌐 跨項目綜合分析 (騎行/跑步分流)</span>"
+
     # 處方階段 HTML
     phases_html = ""
     for idx, p in enumerate(rx.get("protocol_phases", [])):
@@ -124,10 +132,15 @@ def render_modern_html_report(report_data):
         pwr_str = f"{s.get('avg_power', 0)} W" if s.get('avg_power', 0) > 0 else "—"
         hr_str = f"{s.get('avg_hr', 0)} bpm" if s.get('avg_hr', 0) > 0 else "—"
         intv_badge = f"<span class='intv-pill'>{s.get('interval_desc')}</span>"
+        sport_disp = s.get('sport_display', '🏅 運動')
+        sport_color = s.get('sport_color', '#ffab00')
+        sub_info = f"<br><span style='font-size:0.68rem; color:#94a3b8;'>{s.get('sub_sport', '')}</span>" if s.get('sub_sport') and s.get('sub_sport') != 'generic' else ""
+        sport_badge = f"<span style='display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700; background:rgba(255,255,255,0.06); color:{sport_color}'>{sport_disp}{sub_info}</span>"
         table_rows_html += f"""
         <tr>
             <td style="font-weight: 700; color: #ffffff;">{s.get('date')}</td>
             <td>{intv_badge}</td>
+            <td>{sport_badge}</td>
             <td><span class="type-pill">{s.get('type')}</span></td>
             <td class="num">{s.get('duration_min')} 分</td>
             <td class="num" style="color: #00f2fe; font-weight: 600;">{pwr_str}</td>
@@ -562,7 +575,10 @@ def render_modern_html_report(report_data):
         <!-- Header -->
         <header>
             <div class="top-meta">
-                <div class="athlete-tag">💧 汗乳酸動態監控 &nbsp;|&nbsp; 選手：{athlete} &nbsp;|&nbsp; 週期：{metrics.get('period_start')} – {metrics.get('period_end')}</div>
+                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <div class="athlete-tag">💧 汗乳酸動態監控 &nbsp;|&nbsp; 選手：{athlete} &nbsp;|&nbsp; 週期：{metrics.get('period_start')} – {metrics.get('period_end')}</div>
+                    {sport_scope_badge}
+                </div>
                 <div class="recovery-pill">● {metrics.get('recovery_state')}</div>
             </div>
             <h1>💧 {ai.get('report_title', '汗乳酸運動生理週期分析與處方報告')}</h1>
@@ -698,6 +714,7 @@ def render_modern_html_report(report_data):
                         <tr>
                             <th>訓練日期</th>
                             <th>距前次間隔</th>
+                            <th>運動專項</th>
                             <th>強度層級</th>
                             <th class="num">時長</th>
                             <th class="num">平均功率</th>

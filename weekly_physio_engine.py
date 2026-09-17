@@ -166,12 +166,68 @@ def parse_local_html_report(fpath):
         init_la = raw_lactates[0] if raw_lactates else 0.0
         final_la = raw_lactates[-1] if raw_lactates else 0.0
 
+        # 6. 解析運動類型 (sport, sub_sport)
+        sport = 'unknown'
+        sub_sport = 'generic'
+        
+        # 檢查 HTML 是否包含運動類型文字
+        sp_m = re.search(r'運動類型.*?([a-zA-Z\u4e00-\u9fa5]+)', content)
+        if sp_m:
+            sp_txt = sp_m.group(1).lower()
+            if any(k in sp_txt for k in ['bike', 'cycling', '自行車', '騎行']):
+                sport = 'cycling'
+            elif any(k in sp_txt for k in ['run', '跑步', '慢跑']):
+                sport = 'running'
+                
+        # 檢查 HTML 內對應之 FIT 檔案名稱並直接嘗試讀取 FIT 的 sport 訊息
+        fit_match = re.search(r'([\w\-]+\.fit)', content, re.IGNORECASE)
+        fit_fn = fit_match.group(1) if fit_match else None
+        if sport == 'unknown' and fit_fn:
+            fit_p = os.path.join(os.path.dirname(fpath), fit_fn)
+            if os.path.isfile(fit_p):
+                try:
+                    import fitparse
+                    ff = fitparse.FitFile(fit_p)
+                    for s_msg in ff.get_messages('sport'):
+                        for f_f in s_msg.fields:
+                            if f_f.name == 'sport' and f_f.value is not None:
+                                sport = str(f_f.value).lower()
+                            elif f_f.name == 'sub_sport' and f_f.value is not None:
+                                sub_sport = str(f_f.value).lower()
+                    if sport == 'unknown':
+                        for s_msg in ff.get_messages('session'):
+                            for f_f in s_msg.fields:
+                                if f_f.name == 'sport' and f_f.value is not None:
+                                    sport = str(f_f.value).lower()
+                                elif f_f.name == 'sub_sport' and f_f.value is not None:
+                                    sub_sport = str(f_f.value).lower()
+                except Exception:
+                    pass
+
+        # 若仍為 unknown，以是否有功率判定（自行車多有功率計，跑步多無）
+        if sport == 'unknown':
+            sport = 'cycling' if avg_p > 0 else 'running'
+
+        sport_icon_map = {
+            'cycling': ('🚴 自行車', '#00f2fe'),
+            'running': ('🏃 跑步', '#ff5252'),
+            'swimming': ('🏊 游泳', '#4facfe'),
+            'walking': ('🚶 健走', '#00e676'),
+            'generic': ('🏅 綜合訓練', '#ffab00'),
+            'unknown': ('🎯 運動紀錄', '#94a3b8')
+        }
+        sport_display, sport_color = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
+
         return {
             "source_file": os.path.basename(fpath),
             "start_time": start_dt,
             "date": start_dt.strftime("%m/%d"),
             "full_date": start_dt.strftime("%Y-%m-%d"),
             "duration_min": round(duration_min, 1),
+            "sport": sport,
+            "sub_sport": sub_sport,
+            "sport_display": sport_display,
+            "sport_color": sport_color,
             "avg_power": round(avg_p, 1),
             "max_power": round(max_p, 1),
             "avg_hr": round(avg_h, 1),
@@ -188,10 +244,10 @@ def parse_local_html_report(fpath):
         return None
 
 
-def fetch_local_dataset(folder_path="DataMindy", session_limit=7):
+def fetch_local_dataset(folder_path="DataMindy", session_limit=7, sport_filter="all"):
     """
     從本地資料夾載入歷史 HTML 報告，篩選最近有效訓練場次 (Sessions)
-    以實際運動日為準，不限定連續天數
+    以實際運動日為準，不限定連續天數；支援依運動專項 (sport_filter) 進行分流篩選
     """
     html_files = sorted(glob.glob(os.path.join(folder_path, "lactate_report_*.html")))
     sessions = []
@@ -203,13 +259,21 @@ def fetch_local_dataset(folder_path="DataMindy", session_limit=7):
     if not sessions:
         return get_benchmark_dataset()
 
+    # 依運動專項篩選
+    if sport_filter and sport_filter != "all":
+        sessions = [s for s in sessions if s.get("sport") == sport_filter]
+
+    if not sessions:
+        # 若該專項無紀錄，回傳空清單讓外層提示
+        return []
+
     sessions = sorted(sessions, key=lambda x: x["start_time"])
     return sessions[-session_limit:]
 
 
-def fetch_firestore_dataset(uid, token, session_limit=7):
+def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
     """
-    從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄
+    從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄，支援依運動專項篩選
     """
     if not uid or not token:
         return []
@@ -249,6 +313,22 @@ def fetch_firestore_dataset(uid, token, session_limit=7):
                 avg_hr = _get_fs_val(f.get("avg_hr", {}), 0.0)
                 max_hr = _get_fs_val(f.get("max_hr", {}), 0.0)
 
+                # 讀取運動專項 (sport / sub_sport)
+                sport = f.get("sport", {}).get("stringValue")
+                sub_sport = f.get("sub_sport", {}).get("stringValue", "generic")
+                if not sport:
+                    sport = "cycling" if avg_pwr > 0 else "running"
+
+                sport_icon_map = {
+                    'cycling': ('🚴 自行車', '#00f2fe'),
+                    'running': ('🏃 跑步', '#ff5252'),
+                    'swimming': ('🏊 游泳', '#4facfe'),
+                    'walking': ('🚶 健走', '#00e676'),
+                    'generic': ('🏅 綜合訓練', '#ffab00'),
+                    'unknown': ('🎯 運動紀錄', '#94a3b8')
+                }
+                sport_display, sport_color = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
+
                 ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
                 duration_min = 0.0
                 if ts_values:
@@ -260,6 +340,10 @@ def fetch_firestore_dataset(uid, token, session_limit=7):
                     "source_file": file_name,
                     "start_time": start_dt,
                     "duration_min": round(duration_min, 1) if duration_min > 0 else 45.0,
+                    "sport": sport,
+                    "sub_sport": sub_sport,
+                    "sport_display": sport_display,
+                    "sport_color": sport_color,
                     "avg_power": round(avg_pwr, 1),
                     "max_power": round(max_pwr, 1),
                     "avg_hr": round(avg_hr, 1),
@@ -326,8 +410,13 @@ def fetch_firestore_dataset(uid, token, session_limit=7):
         s["full_date"] = s_time.strftime("%Y-%m-%d") if s_time else "2026-09-10"
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
+    
+    # 依運動專項篩選
+    if sport_filter and sport_filter != "all":
+        valid = [s for s in valid if s.get("sport") == sport_filter]
+
     valid = sorted(valid, key=lambda x: x["start_time"])
-    return valid[-session_limit:] if valid else get_benchmark_dataset()
+    return valid[-session_limit:] if valid else []
 
 
 def calculate_comprehensive_load(sessions):
@@ -370,6 +459,17 @@ def calculate_comprehensive_load(sessions):
 
     baseline_low = round(min_la * 1.35, 1)      # 低代謝壓力門檻
     baseline_high = round(median_la * 1.35, 1)   # 高糖解刺激門檻
+
+    # 分析本週期專項組成 (Sport Breakdown)
+    sport_counts = {}
+    for s in sessions:
+        sp = s.get("sport", "cycling")
+        sport_counts[sp] = sport_counts.get(sp, 0) + 1
+        
+    dominant_sport = max(sport_counts, key=sport_counts.get) if sport_counts else "cycling"
+    is_pure_cycling = len(sport_counts) == 1 and "cycling" in sport_counts
+    is_pure_running = len(sport_counts) == 1 and "running" in sport_counts
+    is_mixed_sports = len(sport_counts) > 1
 
     # 檢查功率是否完整（若有任一場次缺失或完全無功率，即判定為功率有缺失）
     has_full_power = (
@@ -495,6 +595,11 @@ def calculate_comprehensive_load(sessions):
         "recovery_state": recovery_state,
         "state_color": state_color,
         "recommended_action": recommended_action,
+        "sport_counts": sport_counts,
+        "dominant_sport": dominant_sport,
+        "is_pure_cycling": is_pure_cycling,
+        "is_pure_running": is_pure_running,
+        "is_mixed_sports": is_mixed_sports,
         "sessions": sessions
     }
 
@@ -508,6 +613,10 @@ def get_benchmark_dataset():
             "date": "08/22",
             "full_date": "2026-08-22",
             "duration_min": 32.1,
+            "sport": "cycling",
+            "sub_sport": "indoor_cycling",
+            "sport_display": "🚴 自行車",
+            "sport_color": "#00f2fe",
             "avg_power": 186.7,
             "max_power": 245.0,
             "avg_hr": 152.9,
@@ -525,6 +634,10 @@ def get_benchmark_dataset():
             "date": "08/26",
             "full_date": "2026-08-26",
             "duration_min": 41.7,
+            "sport": "cycling",
+            "sub_sport": "indoor_cycling",
+            "sport_display": "🚴 自行車",
+            "sport_color": "#00f2fe",
             "avg_power": 184.3,
             "max_power": 230.0,
             "avg_hr": 132.1,
@@ -542,6 +655,10 @@ def get_benchmark_dataset():
             "date": "08/29",
             "full_date": "2026-08-29",
             "duration_min": 96.1,
+            "sport": "cycling",
+            "sub_sport": "indoor_cycling",
+            "sport_display": "🚴 自行車",
+            "sport_color": "#00f2fe",
             "avg_power": 194.0,
             "max_power": 260.0,
             "avg_hr": 151.6,
@@ -559,6 +676,10 @@ def get_benchmark_dataset():
             "date": "09/08",
             "full_date": "2026-09-08",
             "duration_min": 33.1,
+            "sport": "cycling",
+            "sub_sport": "indoor_cycling",
+            "sport_display": "🚴 自行車",
+            "sport_color": "#00f2fe",
             "avg_power": 189.0,
             "max_power": 255.0,
             "avg_hr": 159.0,
@@ -576,6 +697,10 @@ def get_benchmark_dataset():
             "date": "09/10",
             "full_date": "2026-09-10",
             "duration_min": 60.0,
+            "sport": "cycling",
+            "sub_sport": "indoor_cycling",
+            "sport_display": "🚴 自行車",
+            "sport_color": "#00f2fe",
             "avg_power": 196.9,
             "max_power": 282.0,
             "avg_hr": 149.6,
