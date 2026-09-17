@@ -139,6 +139,69 @@ def map_intervals_sport_type(icu_type: str) -> Tuple[str, str]:
         return "generic", "generic"
 
 
+def extract_intervals_power(act: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    從 Intervals.icu 活動物件中全方位提取平均功率與最大功率，支援所有官方標準與衍生功率欄位：
+    1. 官方平均功率 (average_watts, icu_average_watts)
+    2. 加權平均功率 (icu_weighted_avg_watts, weighted_average_watts)
+    3. 衍生功率欄位 (normalized_watts, avg_watts, power)
+    4. 能量與時間換算 (P = Joules / moving_time)
+    """
+    if not act or not isinstance(act, dict):
+        return 0.0, 0.0
+        
+    avg_pwr = 0.0
+    max_pwr = 0.0
+    
+    candidates_avg = [
+        act.get("average_watts"),
+        act.get("icu_average_watts"),
+        act.get("icu_weighted_avg_watts"),
+        act.get("weighted_average_watts"),
+        act.get("avg_watts"),
+        act.get("power"),
+        act.get("normalized_watts")
+    ]
+    for c in candidates_avg:
+        if c is not None:
+            try:
+                v = float(c)
+                if v > 0:
+                    avg_pwr = round(v, 1)
+                    break
+            except (ValueError, TypeError):
+                pass
+
+    if avg_pwr <= 0:
+        j_val = act.get("icu_joules") or act.get("joules")
+        sec_val = act.get("moving_time") or act.get("elapsed_time")
+        if j_val and sec_val:
+            try:
+                j = float(j_val)
+                s = float(sec_val)
+                if j > 0 and s > 0:
+                    avg_pwr = round(j / s, 1)
+            except (ValueError, TypeError):
+                pass
+                
+    candidates_max = [
+        act.get("max_watts"),
+        act.get("icu_max_watts"),
+        act.get("max_power")
+    ]
+    for c in candidates_max:
+        if c is not None:
+            try:
+                v = float(c)
+                if v > 0:
+                    max_pwr = round(v, 1)
+                    break
+            except (ValueError, TypeError):
+                pass
+                
+    return avg_pwr, max_pwr
+
+
 def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any]) -> Dict[str, Any]:
     """
     將 Intervals.icu 的單場活動轉換為標準 Firestore fit_records 格式
@@ -161,8 +224,7 @@ def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any]) -> Di
     moving_time_s = act.get("moving_time") or act.get("elapsed_time") or 0
     duration_min = round(float(moving_time_s) / 60.0, 1)
 
-    avg_pwr = float(act.get("average_watts") or 0.0)
-    max_pwr = float(act.get("max_watts") or 0.0)
+    avg_pwr, max_pwr = extract_intervals_power(act)
     avg_hr = float(act.get("average_heartrate") or 0.0)
     max_hr = float(act.get("max_heartrate") or 0.0)
     tot_dist = float(act.get("distance") or 0.0)
@@ -258,18 +320,30 @@ def sync_pre_lactate_activities_to_firebase(
     if not date_ranges:
         return 0, 0, "未找到有效的同步日期區間"
 
-    # 2. 抓取現有的 fit_records 以便比對重疊
+    # 2. 抓取現有的 fit_records 以便比對重疊 (嚴格區分：珍貴的乳酸測驗 vs 日常手錶訓練)
     fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
-    existing_session_times = []
+    lactate_test_times = []
+    icu_existing_docs = {}
     try:
         r_fit = requests.get(fit_url, headers=headers_fb, timeout=12)
         if r_fit.status_code == 200:
             for doc in r_fit.json().get("documents", []):
-                st_val = doc.get("fields", {}).get("start_time", {}).get("timestampValue")
+                fields = doc.get("fields", {})
+                st_val = fields.get("start_time", {}).get("timestampValue")
+                src = fields.get("source", {}).get("stringValue", "")
+                has_la = fields.get("has_lactate", {}).get("booleanValue", False)
+                doc_name = doc.get("name", "").split("/")[-1]
+                
                 if st_val:
                     try:
                         clean_ts = st_val.replace("Z", "+00:00")
-                        existing_session_times.append(datetime.fromisoformat(clean_ts))
+                        dt_obj = datetime.fromisoformat(clean_ts)
+                        # 若不是 intervals_icu 或者有乳酸測試，屬於不可覆蓋的原創測驗
+                        if src != "intervals_icu" or has_la:
+                            lactate_test_times.append(dt_obj)
+                        else:
+                            time_k = dt_obj.strftime("%Y%m%d_%H%M")
+                            icu_existing_docs[time_k] = doc_name
                     except Exception:
                         pass
     except Exception as e:
@@ -297,29 +371,32 @@ def sync_pre_lactate_activities_to_firebase(
         rec = convert_intervals_activity_to_firebase_fit_record(act)
         act_start = rec["start_time"]
 
-        # 防重複/防覆蓋檢查：如果該時段 (前後 5 分鐘內) 已經有由原版 FIT 或 HTML 匯入的測驗，跳過寫入
-        is_overlap = False
-        for ex_dt in existing_session_times:
+        # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！
+        is_lactate_conflict = False
+        for ex_dt in lactate_test_times:
             if abs((act_start.replace(tzinfo=None) - ex_dt.replace(tzinfo=None)).total_seconds()) <= 300:
-                is_overlap = True
+                is_lactate_conflict = True
                 break
 
-        if is_overlap:
+        if is_lactate_conflict:
             skipped_count += 1
             continue
 
-        # 寫入 Firestore (使用 PATCH 進行冪等寫入)
+        # 若是日常手錶運動（包含已有紀錄需更新功率），使用 PATCH 執行冪等寫入或覆蓋更新
         doc_id = rec["doc_id"]
+        time_k = act_start.strftime("%Y%m%d_%H%M")
+        if time_k in icu_existing_docs:
+            doc_id = icu_existing_docs[time_k]
+
         post_url = f"{fit_url}/{doc_id}"
         try:
             r_post = requests.patch(post_url, headers=headers_fb, json=rec["payload"], timeout=10)
             if r_post.status_code in [200, 201]:
                 synced_count += 1
-                existing_session_times.append(act_start)
             else:
                 print(f"Failed to upsert Intervals activity {doc_id}: {r_post.text}")
         except Exception as e:
             print(f"Error upserting activity {doc_id}: {e}")
 
-    msg = f"Intervals.icu 同步完成！共掃描 {len(all_activities)} 場日常活動，成功同步 {synced_count} 筆背景訓練，跳過 {skipped_count} 筆現有重疊紀錄。"
+    msg = f"Intervals.icu 同步完成！共掃描 {len(all_activities)} 場日常活動，成功同步/更新 {synced_count} 筆背景訓練功率與數據，保留 {skipped_count} 筆關鍵測驗紀錄。"
     return synced_count, skipped_count, msg

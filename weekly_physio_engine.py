@@ -424,6 +424,53 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                     "max_altitude": _get_fs_val(f.get("max_altitude", {}), 0.0),
                     "lactate_readings": []
                 })
+
+            # 1.1 自動回補 Intervals.icu 手錶日常運動的缺失功率，不再空著
+            missing_pwr_icu = [s for s in fit_sessions if s.get("source") == "intervals_icu" and (s.get("avg_power", 0) <= 0) and s.get("start_time")]
+            if missing_pwr_icu and uid and active_token:
+                try:
+                    cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+                    r_cfg = requests.get(cfg_url, headers=headers, timeout=5)
+                    if r_cfg.status_code == 200:
+                        cfg_fields = r_cfg.json().get("fields", {})
+                        api_key = cfg_fields.get("api_key", {}).get("stringValue", "")
+                        ath_id = cfg_fields.get("athlete_id", {}).get("stringValue", "0")
+                        if api_key:
+                            import intervals_client as ic
+                            earliest_missing = min(s["start_time"] for s in missing_pwr_icu) - timedelta(days=1)
+                            latest_missing = max(s["start_time"] for s in missing_pwr_icu) + timedelta(days=1)
+                            acts = ic.fetch_intervals_activities(
+                                api_key, athlete_id=ath_id,
+                                oldest=earliest_missing.strftime("%Y-%m-%d"),
+                                newest=latest_missing.strftime("%Y-%m-%d")
+                            )
+                            for a in acts:
+                                a_start_str = a.get("start_date_local") or a.get("start_date")
+                                if not a_start_str:
+                                    continue
+                                try:
+                                    clean_a_ts = a_start_str.replace("Z", "+00:00")
+                                    a_dt = datetime.fromisoformat(clean_a_ts)
+                                    pwr_val, max_pwr_val = ic.extract_intervals_power(a)
+                                    if pwr_val > 0:
+                                        for s in missing_pwr_icu:
+                                            if abs((s["start_time"].replace(tzinfo=None) - a_dt.replace(tzinfo=None)).total_seconds()) <= 300:
+                                                s["avg_power"] = pwr_val
+                                                s["max_power"] = max_pwr_val
+                                                doc_id_val = s.get("id")
+                                                if doc_id_val:
+                                                    patch_payload = {
+                                                        "fields": {
+                                                            "avg_power": {"integerValue": str(int(pwr_val))},
+                                                            "max_power": {"integerValue": str(int(max_pwr_val))}
+                                                        }
+                                                    }
+                                                    mask_u = f"https://firestore.googleapis.com/v1/{doc_id_val}?updateMask.fieldPaths=avg_power&updateMask.fieldPaths=max_power"
+                                                    requests.patch(mask_u, headers=headers, json=patch_payload, timeout=5)
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    print(f"Auto-patching intervals power failed: {e}")
         else:
             if r_fit.status_code in [401, 403]:
                 return [], active_token, f"Firebase 認證 Token 已過期或權限不足 (HTTP {r_fit.status_code})，請重新登入"
