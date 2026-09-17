@@ -118,6 +118,99 @@ def fetch_intervals_activities(api_key: str, athlete_id: str = "0", oldest: str 
         return []
 
 
+def fetch_intervals_wellness(
+    api_key: str,
+    athlete_id: str = "0",
+    oldest: str = None,
+    newest: str = None
+) -> List[Dict[str, Any]]:
+    """
+    從 Intervals.icu 下載指定日期區間的每日生理健康與自律神經數據 (Wellness)，包含：
+    - hrv: 晨間心率變異度 rMSSD (毫秒 ms)
+    - hrvSD: HRV 標準差
+    - restingHR: 晨間靜息心率 (bpm)
+    - readiness: 身體就緒度分數 (0-100)
+    - sleepSecs: 睡眠總秒數
+    - sleepScore: 睡眠品質評分
+    - fatigue, soreness, stress, mood: 主觀身心疲勞程度 (1-5)
+    """
+    if not api_key:
+        return []
+
+    ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
+    url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}/wellness"
+    headers = get_basic_auth_header(api_key)
+    params = {}
+    if oldest:
+        params["oldest"] = oldest
+    if newest:
+        params["newest"] = newest
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+        else:
+            print(f"Intervals.icu Wellness API Error ({resp.status_code}): {resp.text[:100]}")
+            return []
+    except Exception as e:
+        print(f"Error fetching wellness from Intervals.icu: {e}")
+        return []
+
+
+def get_intervals_wellness_map(
+    api_key: str,
+    athlete_id: str = "0",
+    oldest: str = None,
+    newest: str = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    下載並回傳以日期字串 ('YYYY-MM-DD') 為 key 的每日 HRV 與生理狀態對照表
+    """
+    records = fetch_intervals_wellness(api_key, athlete_id=athlete_id, oldest=oldest, newest=newest)
+    w_map = {}
+    for r in records:
+        date_k = str(r.get("id", ""))
+        if date_k:
+            hrv_val = r.get("hrv")
+            try:
+                hrv_val = round(float(hrv_val), 1) if hrv_val is not None else None
+            except (ValueError, TypeError):
+                hrv_val = None
+
+            rhr_val = r.get("restingHR")
+            try:
+                rhr_val = round(float(rhr_val), 1) if rhr_val is not None else None
+            except (ValueError, TypeError):
+                rhr_val = None
+
+            readiness_val = r.get("readiness")
+            try:
+                readiness_val = round(float(readiness_val), 1) if readiness_val is not None else None
+            except (ValueError, TypeError):
+                readiness_val = None
+
+            w_map[date_k] = {
+                "date": date_k,
+                "hrv": hrv_val,
+                "hrv_sd": r.get("hrvSD"),
+                "resting_hr": rhr_val,
+                "readiness": readiness_val,
+                "sleep_hours": round(float(r.get("sleepSecs", 0)) / 3600.0, 1) if r.get("sleepSecs") else None,
+                "sleep_score": r.get("sleepScore"),
+                "fatigue": r.get("fatigue"),
+                "soreness": r.get("soreness"),
+                "stress": r.get("stress"),
+                "mood": r.get("mood")
+            }
+    return w_map
+
+
+
 def map_intervals_sport_type(icu_type: str) -> Tuple[str, str]:
     """
     將 Intervals.icu 的運動類型映射為 MyLactate 專項 (sport, sub_sport)

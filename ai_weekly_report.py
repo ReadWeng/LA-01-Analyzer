@@ -177,6 +177,14 @@ def render_modern_html_report(report_data):
         source_badge = "<br><span style='font-size:0.68rem; color:#38bdf8; background:rgba(56,189,248,0.12); padding:1px 6px; border-radius:4px;'>⌚ 手錶日常</span>" if is_icu else ""
         sport_badge = f"<span style='display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700; background:rgba(255,255,255,0.06); color:{sport_color}'>{sport_disp}{sub_info}</span>{source_badge}"
         
+        hrv_val = s.get('hrv')
+        rhr_val = s.get('resting_hr')
+        if hrv_val and hrv_val > 0:
+            rhr_txt = f"<br><span style='font-size:0.72rem; color:#94a3b8;'>靜息 {int(rhr_val)} bpm</span>" if (rhr_val and rhr_val > 0) else ""
+            hrv_html = f"<span style='color: #a78bfa; font-weight: 700;'>{hrv_val} ms</span>{rhr_txt}"
+        else:
+            hrv_html = "<span style='color:#64748b; font-size:0.8rem;'>—</span>"
+
         if has_la:
             avg_la_html = f"<span style='color: #ffab00; font-weight: 700;'>{s.get('avg_lactate')}</span>"
             max_la_html = f"<span style='color: #ff5252; font-weight: 700;'>{s.get('max_lactate')}</span>"
@@ -196,8 +204,22 @@ def render_modern_html_report(report_data):
             <td class="num">{avg_la_html}</td>
             <td class="num">{max_la_html}</td>
             <td class="num" style="color: #00e676; font-weight: 700;">{eff_str}</td>
+            <td class="num">{hrv_html}</td>
             <td class="num" style="color: #64b5f6;">{s.get('calculated_load')}</td>
         </tr>
+        """
+
+    # HRV KPI 卡片 HTML
+    hrv_kpi_card_html = ""
+    if metrics.get("has_hrv_data"):
+        d_pct = metrics.get('hrv_delta_pct')
+        delta_str = f"{'+' if (d_pct or 0) > 0 else ''}{d_pct}%" if d_pct is not None else "持平"
+        hrv_kpi_card_html = f"""
+            <div class="kpi-card">
+                <div class="kpi-label">💓 自律神經恢復基準 (HRV)</div>
+                <div class="kpi-value" style="color: #a78bfa;">{metrics.get('latest_hrv', '—')} <span style="font-size: 1rem; color: var(--text-secondary);">ms</span></div>
+                <div class="kpi-sub">週期基準 {metrics.get('hrv_baseline')} ms（偏離 {delta_str}），靜息心率 {metrics.get('rhr_baseline')} bpm</div>
+            </div>
         """
 
     # Hero Insight 卡片 HTML
@@ -659,6 +681,7 @@ def render_modern_html_report(report_data):
                 <div class="kpi-value" style="color: #64b5f6;">{metrics.get('total_sweat_load')} <span style="font-size: 1rem; color: var(--text-secondary);">分</span></div>
                 <div class="kpi-sub">距上一場隔 {metrics.get('days_since_prior', 0)} 天休整</div>
             </div>
+            {hrv_kpi_card_html}
         </div>
 
         <!-- Hero Insights Bar -->
@@ -771,6 +794,7 @@ def render_modern_html_report(report_data):
                             <th class="num">平均汗乳酸</th>
                             <th class="num">峰值汗乳酸</th>
                             <th class="num">代謝效率比</th>
+                            <th class="num">晨間 HRV / 靜息心率</th>
                             <th class="num">單場負荷</th>
                         </tr>
                     </thead>

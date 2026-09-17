@@ -29,6 +29,10 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
         intv_str = f"距上一場隔 {s.get('days_since_prior')} 天 ({s.get('interval_desc')})" if s.get("days_since_prior") is not None else "首場基準"
         has_la = (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0)
         
+        hrv_val = s.get("hrv")
+        rhr_val = s.get("resting_hr")
+        readiness_val = s.get("readiness")
+        
         s_dict = {
             "date": s.get("date"),
             "full_date": s.get("full_date"),
@@ -43,6 +47,9 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
             "avg_hr_bpm": s.get("avg_hr") if s.get("avg_hr", 0) > 0 else "無心率",
             "max_hr_bpm": s.get("max_hr") if s.get("max_hr", 0) > 0 else "無心率",
             "session_load": s.get("calculated_load", 0),
+            "morning_hrv_rmssd_ms": f"{hrv_val} ms" if hrv_val else "無紀錄",
+            "resting_hr_bpm": f"{rhr_val} bpm" if rhr_val else "無紀錄",
+            "readiness_score": f"{readiness_val}/100" if readiness_val else "無紀錄",
             "session_type": s.get("type")
         }
         if has_la:
@@ -60,12 +67,22 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
 
     sport_desc = "純自行車專項 (Cycling)" if metrics.get("is_pure_cycling") else ("純跑步專項 (Running)" if metrics.get("is_pure_running") else f"跨專項綜合 (場次分佈：{metrics.get('sport_counts', {})})")
 
+    hrv_summary = {
+        "has_hrv_data": metrics.get("has_hrv_data", False),
+        "hrv_baseline_rmssd_ms": metrics.get("hrv_baseline"),
+        "resting_hr_baseline_bpm": metrics.get("rhr_baseline"),
+        "readiness_baseline": metrics.get("readiness_baseline"),
+        "latest_hrv_rmssd_ms": metrics.get("latest_hrv"),
+        "hrv_delta_vs_baseline_pct": f"{'+' if (metrics.get('hrv_delta_pct') or 0) > 0 else ''}{metrics.get('hrv_delta_pct')}%" if metrics.get("hrv_delta_pct") is not None else "無基準"
+    }
+
     prompt_context = {
         "athlete_name": athlete_name,
         "sport_discipline": sport_desc,
         "time_span": f"{metrics.get('period_start')} 至 {metrics.get('period_end')}（跨越總天數：{metrics.get('time_span_days')} 天，共 {metrics.get('session_count')} 場實際訓練）",
         "sweat_lactate_range": f"關鍵測驗最低 {metrics.get('min_sweat_lactate')} ~ 最高峰值 {metrics.get('peak_sweat_lactate')} mmol/L（個人基準分界：低於 {metrics.get('baseline_low')} 為低負荷，高於 {metrics.get('baseline_high')} 為高糖解負荷）",
         "metabolic_efficiency_change": f"{'+' if metrics.get('efficiency_delta_pct', 0) > 0 else ''}{metrics.get('efficiency_delta_pct', 0)}% (最新關鍵測驗對比前期關鍵測驗)",
+        "autonomic_nervous_status_hrv": hrv_summary,
         "recovery_and_adaptation_state": metrics.get("recovery_state"),
         "recommended_action_guideline": metrics.get("recommended_action"),
         "training_sessions_chronological": sessions_detail
@@ -85,6 +102,11 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
 5. 【汗乳酸動力學縱向對比】：所有的汗乳酸濃度升降、代謝經濟性（W/mmol 或 bpm/mmol）對比，【必須且只能在實際有採樣汗乳酸的關鍵測驗場次之間進行縱向對比】！
 6. 【運動專項分流原則】：若受測者為特定專項（如純跑步 Running），請嚴格聚焦於跑步生理特徵（承重衝擊、配速與跑步心率漂移、跑步動態功率）。下一次處方中明確指明運動項目（sport_type 為跑步課表）。
 7. 精準開出【下一次運動處方 (Next Workout Protocol)】：針對汗乳酸特性，給出具體建議間隔天數、目標時長、目標心率/功率、運動項目與階段指導。
+8. 【HRV 心率變異度與自律神經恢復 × 汗乳酸交互對照鐵律 (極重要)】：
+   - 整合 Intervals.icu 每日晨間 HRV (rMSSD, ms) 與靜息心率 (Resting HR, bpm) 監控數據。
+   - 【高乳酸刺激後的自律神經抑制】：在高糖解、汗乳酸峰值飆高的關鍵測驗後，若隔日晨間 HRV 顯著被壓低（Suppressed HRV）且靜息心率升高，反映交感神經劇烈興奮與中樞/神經內分泌疲勞尚未修復，應在「cumulative_load_fatigue_review」中具體指出。
+   - 【低負荷巡航與修整後的自律神經回彈】：若在充分間隔天數或低強度日常有氧巡航後，晨間 HRV 回彈（Rebound）超越個人基準線、靜息心率降低，表示副交感神經恢復、自律神經處於超補償準備狀態。
+   - 【請在 hero_insights 或 cumulative_load_fatigue_review 中深度討論 HRV 與汗乳酸的交互狀態】。若受測者無 HRV 記錄，則客觀依據訓練時長與負荷評估，不捏造 HRV 數字。
 """
 
     user_prompt = f"""請根據以下受測者的汗乳酸與跨期運動負荷數據進行深度評析：
@@ -96,11 +118,11 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
   "athlete_summary_tag": "一句極具教練震撼力與專業度的汗乳酸生理總結標籤 (15字以內)",
   "hero_insights": [
     {{"metric": "汗乳酸代謝經濟性", "value": "例如：功率-汗乳酸比提升 46%", "desc": "輸出/汗乳酸濃度對比說明"}},
-    {{"metric": "週期訓練與休整節奏", "value": "例如：平均每 2.8 天訓練一場", "desc": "間隔天數與恢復平衡"}},
+    {{"metric": "自律神經與恢復狀態", "value": "例如：HRV 處於基準以上 (+8.5%)", "desc": "晨間 HRV 與副交感神經準備度"}},
     {{"metric": "當前代謝適應狀態", "value": "例如：處於超補償突破期", "desc": "生理系統準備狀態"}}
   ],
   "lactate_kinetics_analysis": "深入剖析汗乳酸動力學與負荷對比的段落（200~300字）。【必須明確引用具體日期、間隔天數、平均功率/心率與汗乳酸數值】，對比不同場次的代謝經濟性變化，並從粒線體有氧氧化與汗腺乳酸排泄機制解讀。",
-  "cumulative_load_fatigue_review": "深入評估跨期累積代謝負荷與休整節奏的段落（150~250字）。探討間隔天數（如背靠背 vs 充分休整）對汗乳酸基礎水平的影響，診斷是否有連續疲勞堆疊。",
+  "cumulative_load_fatigue_review": "深入評估跨期累積代謝負荷、休整節奏與 HRV 自律神經恢復狀態的段落（200~300字）。【必須明確結合 Intervals.icu 晨間 HRV (ms)、靜息心率 (bpm) 與間隔天數】，探討高汗乳酸刺激後神經系統是否處於抑制或超補償回彈，診斷疲勞累積。",
   "next_workout_prescription": {{
     "workout_code": "課表代號（如：SWEAT-FLUSH-40 或 AERO-TEMPO-50）",
     "workout_name": "具體課表名稱（如：主動排酸・低代謝壓力有氧巡航）",
@@ -223,10 +245,20 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
         ]
         daily_desc = f" 在測驗間隔期間，受測者進行了手錶日常運動：{'、'.join(daily_items)}；此類日常運動未採樣汗乳酸，僅就其心率與負荷進行客觀評估，真實反映了兩場測驗之間的疲勞累積與有氧巡航支撐。"
 
+    hrv_txt = ""
+    if metrics.get("has_hrv_data"):
+        h_base = metrics.get("hrv_baseline")
+        r_base = metrics.get("rhr_baseline")
+        l_hrv = metrics.get("latest_hrv")
+        h_delta = metrics.get("hrv_delta_pct")
+        delta_str = f"{h_delta:+0.1f}%" if h_delta is not None else "穩定"
+        hrv_txt = f" 同期 Intervals.icu 晨間自律神經監控顯示：週期 HRV 基準線為 {h_base} ms（靜息心率 {r_base} bpm），最新晨間 HRV 為 {l_hrv} ms（相對基準變動 {delta_str}）；反映出受測者副交感神經在汗乳酸負荷與日常訓練交替下的修復能力。"
+
     load_review_text = (
         f"在過去 {time_span} 天的實際紀錄中，共涵蓋 {len(sessions)} 場訓練（包含 {len(la_sessions)} 場含汗乳酸關鍵測驗與 {len(daily_sessions)} 場日常背景運動），總時長 {metrics.get('total_hours')} 小時。"
         f"在含乳酸測驗中，汗乳酸動態範圍介於 {min_la} 至 {peak_la} mmol/L 之間（個人基準：低負荷 <= {base_low}，高糖解 >= {base_high} mmol/L）。"
         f"{daily_desc}"
+        f"{hrv_txt}"
         f" 整體生理狀態判定為【{rec_state}】。"
     )
 
@@ -264,26 +296,37 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
             "physiological_rationale": "運動員當前代謝經濟性良好，汗乳酸在輸出刺激下呈現良好收斂。此時安排個人中等穩態訓練，能進一步加固慢肌纖維的粒線體氧化能力，擴展有氧平台。"
         }
 
+    fallback_insights = [
+        {
+            "metric": "輸出-汗乳酸代謝經濟性" if has_pwr else "心率-汗乳酸代謝經濟性",
+            "value": f"{eff_delta:+0.1f}%",
+            "desc": "最新關鍵測驗 vs 前期基準"
+        }
+    ]
+    if metrics.get("has_hrv_data"):
+        h_delta = metrics.get("hrv_delta_pct")
+        delta_str = f"{h_delta:+0.1f}%" if h_delta is not None else "持平"
+        fallback_insights.append({
+            "metric": "自律神經恢復 (HRV)",
+            "value": f"{metrics.get('latest_hrv')} ms ({delta_str})",
+            "desc": f"基準 {metrics.get('hrv_baseline')} ms / 靜息心率 {metrics.get('rhr_baseline')} bpm"
+        })
+    else:
+        fallback_insights.append({
+            "metric": "週期訓練與休整節奏",
+            "value": f"平均每 {round(time_span / max(1, len(sessions)), 1)} 天一場",
+            "desc": f"跨期 {time_span} 天共 {len(sessions)} 場"
+        })
+    fallback_insights.append({
+        "metric": "當前代謝適應狀態",
+        "value": rec_state.split(' ')[0] if ' ' in rec_state else rec_state,
+        "desc": "生理系統準備狀態"
+    })
+
     return {
         "report_title": "汗乳酸運動生理週期分析與下一次處方報告",
         "athlete_summary_tag": "汗乳酸代謝經濟性良好" if eff_delta > 0 else "汗乳酸負荷調整中",
-        "hero_insights": [
-            {
-                "metric": "輸出-汗乳酸代謝經濟性" if has_pwr else "心率-汗乳酸代謝經濟性",
-                "value": f"{eff_delta:+0.1f}%",
-                "desc": "最新關鍵測驗 vs 前期基準"
-            },
-            {
-                "metric": "週期訓練與休整節奏",
-                "value": f"平均每 {round(time_span / max(1, len(sessions)), 1)} 天一場",
-                "desc": f"跨期 {time_span} 天共 {len(sessions)} 場"
-            },
-            {
-                "metric": "當前代謝適應狀態",
-                "value": rec_state.split(' ')[0] if ' ' in rec_state else rec_state,
-                "desc": "生理系統準備狀態"
-            }
-        ],
+        "hero_insights": fallback_insights,
         "lactate_kinetics_analysis": kinetics_text,
         "cumulative_load_fatigue_review": load_review_text,
         "next_workout_prescription": rx,

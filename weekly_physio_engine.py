@@ -637,6 +637,34 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
     # （包含這 5 場乳酸測驗 + 期間所有中間有運動但沒乳酸的手錶日常數據）
     final_sessions = [s for s in valid if s["start_time"] >= earliest_la_time]
 
+    # 5. 從 Intervals.icu 撈取對應週期的晨間 HRV (rMSSD) 與靜息心率 (Resting HR) 數據
+    if final_sessions and uid and active_token:
+        try:
+            cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+            r_cfg = requests.get(cfg_url, headers=headers, timeout=5)
+            if r_cfg.status_code == 200:
+                cfg_fields = r_cfg.json().get("fields", {})
+                icu_api_key = cfg_fields.get("api_key", {}).get("stringValue", "")
+                icu_ath_id = cfg_fields.get("athlete_id", {}).get("stringValue", "0")
+                if icu_api_key:
+                    import intervals_client as ic
+                    d_start = (final_sessions[0]["start_time"] - timedelta(days=2)).strftime("%Y-%m-%d")
+                    d_end = (final_sessions[-1]["start_time"] + timedelta(days=1)).strftime("%Y-%m-%d")
+                    wellness_map = ic.get_intervals_wellness_map(
+                        icu_api_key, athlete_id=icu_ath_id, oldest=d_start, newest=d_end
+                    )
+                    for s in final_sessions:
+                        s_date_str = s["start_time"].strftime("%Y-%m-%d")
+                        w_data = wellness_map.get(s_date_str, {})
+                        s["hrv"] = w_data.get("hrv")
+                        s["hrv_sd"] = w_data.get("hrv_sd")
+                        s["resting_hr"] = w_data.get("resting_hr")
+                        s["readiness"] = w_data.get("readiness")
+                        s["sleep_hours"] = w_data.get("sleep_hours")
+                        s["fatigue"] = w_data.get("fatigue")
+        except Exception as e:
+            print(f"Failed to fetch Intervals wellness data: {e}")
+
     return final_sessions, active_token, None
 
 
@@ -836,6 +864,21 @@ def calculate_comprehensive_load(sessions):
         state_color = "#ffab00"
         recommended_action = "生理指標維持平穩，汗乳酸與心率功率呈現穩定對應，可按預定節奏進行課表。"
 
+    # 7. 自律神經恢復趨勢分析 (HRV & Resting HR Trends)
+    valid_hrvs = [s.get("hrv") for s in sessions if s.get("hrv") is not None and s.get("hrv") > 0]
+    valid_rhrs = [s.get("resting_hr") for s in sessions if s.get("resting_hr") is not None and s.get("resting_hr") > 0]
+    valid_readiness = [s.get("readiness") for s in sessions if s.get("readiness") is not None and s.get("readiness") > 0]
+
+    hrv_baseline = round(float(np.mean(valid_hrvs)), 1) if valid_hrvs else None
+    rhr_baseline = round(float(np.mean(valid_rhrs)), 1) if valid_rhrs else None
+    readiness_baseline = round(float(np.mean(valid_readiness)), 1) if valid_readiness else None
+    has_hrv_data = len(valid_hrvs) > 0
+
+    latest_hrv = latest.get("hrv")
+    hrv_delta_pct = None
+    if latest_hrv and hrv_baseline and hrv_baseline > 0:
+        hrv_delta_pct = round(((latest_hrv - hrv_baseline) / hrv_baseline) * 100.0, 1)
+
     return {
         "period_start": sessions[0]["full_date"],
         "period_end": sessions[-1]["full_date"],
@@ -857,6 +900,12 @@ def calculate_comprehensive_load(sessions):
         "days_since_prior": days_since_last,
         "has_full_power": has_full_power,
         "intensity_label": "平均功率 (W)" if has_full_power else "平均心率 (bpm)",
+        "has_hrv_data": has_hrv_data,
+        "hrv_baseline": hrv_baseline,
+        "rhr_baseline": rhr_baseline,
+        "readiness_baseline": readiness_baseline,
+        "latest_hrv": latest_hrv,
+        "hrv_delta_pct": hrv_delta_pct,
         "recovery_state": recovery_state,
         "state_color": state_color,
         "recommended_action": recommended_action,

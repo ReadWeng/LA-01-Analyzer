@@ -1458,7 +1458,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v12_30s_power_matrix"
+    REPORT_VERSION = "20260917_v13_hrv_integration"
     current_cache_key = f"{uid}_{athlete_name}_{lactate_session_target}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
