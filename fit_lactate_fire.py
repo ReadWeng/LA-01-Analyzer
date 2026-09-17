@@ -18,12 +18,36 @@ def login_with_google_id_token(id_token):
         if "localId" in data:
             st.session_state["firebase_uid"] = data["localId"]
             st.session_state["firebase_token"] = data["idToken"]
+            st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
             st.session_state["firebase_email"] = data.get("email", "")
+            st.session_state.pop("cached_weekly_report_html", None)
+            st.session_state.pop("cached_report_key", None)
             return True, "成功"
         else:
             return False, data.get("error", {}).get("message", "未知錯誤")
     except Exception as e:
         return False, str(e)
+
+def refresh_firebase_token():
+    """當 token 過期 (401) 時自動透過 refreshToken 換取全新 idToken"""
+    ref_token = st.session_state.get("firebase_refresh_token")
+    if not ref_token:
+        return False
+    url = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": ref_token
+    }
+    try:
+        res = requests.post(url, data=payload, timeout=6)
+        if res.status_code == 200:
+            d = res.json()
+            st.session_state["firebase_token"] = d.get("id_token")
+            st.session_state["firebase_refresh_token"] = d.get("refresh_token", ref_token)
+            return True
+    except Exception:
+        pass
+    return False
 
 # 檢查 Streamlit 原生 Google OIDC 登入狀態
 if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
@@ -57,7 +81,10 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                 if "localId" in data:
                     st.session_state["firebase_uid"] = data["localId"]
                     st.session_state["firebase_token"] = data["idToken"]
+                    st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
                     st.session_state["firebase_email"] = data.get("email", getattr(st.user, "email", ""))
+                    st.session_state.pop("cached_weekly_report_html", None)
+                    st.session_state.pop("cached_report_key", None)
                     st.rerun()
                 else:
                     err_msg = data.get("error", {}).get("message", "未知錯誤")
@@ -72,6 +99,8 @@ if "google_uid" in st.query_params:
     st.session_state["firebase_uid"] = st.query_params.get("google_uid")
     st.session_state["firebase_email"] = st.query_params.get("google_email", "")
     st.session_state["firebase_token"] = st.query_params.get("google_token", "")
+    st.session_state.pop("cached_weekly_report_html", None)
+    st.session_state.pop("cached_report_key", None)
     st.query_params.clear()
     st.rerun()
 
@@ -88,7 +117,10 @@ def login_to_firebase(email, password):
         if "localId" in data:
             st.session_state["firebase_uid"] = data["localId"]
             st.session_state["firebase_token"] = data["idToken"]
+            st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
             st.session_state["firebase_email"] = email
+            st.session_state.pop("cached_weekly_report_html", None)
+            st.session_state.pop("cached_report_key", None)
             st.sidebar.success("MyLactate 雲端登入成功！")
             st.rerun()
         else:
@@ -118,7 +150,10 @@ def register_to_firebase(email, password):
         if "localId" in data:
             st.session_state["firebase_uid"] = data["localId"]
             st.session_state["firebase_token"] = data["idToken"]
+            st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
             st.session_state["firebase_email"] = email
+            st.session_state.pop("cached_weekly_report_html", None)
+            st.session_state.pop("cached_report_key", None)
             st.sidebar.success("MyLactate 帳號註冊成功並已登入！")
             st.rerun()
         else:
@@ -136,6 +171,10 @@ def logout_firebase():
         del st.session_state["firebase_email"]
     if "firebase_token" in st.session_state:
         del st.session_state["firebase_token"]
+    if "firebase_refresh_token" in st.session_state:
+        del st.session_state["firebase_refresh_token"]
+    st.session_state.pop("cached_weekly_report_html", None)
+    st.session_state.pop("cached_report_key", None)
     if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
         try:
             st.logout()
@@ -1039,11 +1078,13 @@ def parse_fit_file_data(uploaded_file_bytes):
 
 # MyLactate 雲端登入區
 st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
-if "firebase_uid" in st.session_state or (hasattr(st, "user") and getattr(st.user, "is_logged_in", False)):
-    logged_email = st.session_state.get('firebase_email') or getattr(st.user, 'email', '')
+if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
+    logged_email = st.session_state.get('firebase_email') or "已認證用戶"
     st.sidebar.success(f"已登入: {logged_email}")
     if st.sidebar.button("登出帳號", use_container_width=True):
         logout_firebase()
+elif hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+    st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但尚未連結 MyLactate 雲端金鑰。請在下方輸入帳號密碼登入以讀取您的雲端紀錄。")
 else:
     st.sidebar.info("登入與 MyLactate 相同的帳號以讀取個人數據")
     
@@ -1321,14 +1362,28 @@ if app_mode == "AI 運動生理週報與下一次處方":
 
     uid = st.session_state.get('firebase_uid')
     token = st.session_state.get('firebase_token')
+    ref_token = st.session_state.get('firebase_refresh_token')
 
     if not uid:
-        st.info("💡 提示：您尚未登入 MyLactate 雲端帳號。目前系統將以示範數據 (DataMindy 跨期歷史場次) 進行週報生成；登入後將自動分析您的雲端歷史紀錄。")
+        st.warning("⚠️ **您尚未登入 MyLactate 雲端帳號**：目前無法讀取您的專屬運動紀錄。請於左側側邊欄輸入帳號密碼登入。")
+        st.info("💡 如果您暫時想先體驗報告版面與分析功能，可點擊下方按鈕載入【示範選手 Mindy (自行車)】的模擬數據進行預覽。")
+        col_d1, _ = st.columns([2, 3])
+        with col_d1:
+            if st.button("🧪 僅載入示範數據體驗功能 (Mindy 自行車)", use_container_width=True):
+                st.session_state["show_demo_mode"] = True
+                st.session_state.pop("cached_weekly_report_html", None)
+                st.rerun()
+
+        if not st.session_state.get("show_demo_mode"):
+            st.stop()
+
         athlete_name = "Mindy (示範選手)"
-        source_type = "DataMindy"
+        source_type = "demo"
     else:
+        st.session_state.pop("show_demo_mode", None)
         athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
         source_type = "firebase"
+        st.success(f"👤 已連結個人雲端帳號：**{st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
 
     col_ctl1, col_ctl2, col_ctl3 = st.columns([2, 2, 1])
     with col_ctl1:
@@ -1362,8 +1417,9 @@ if app_mode == "AI 運動生理週報與下一次處方":
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v5_sport_split_override"
-    current_cache_key = f"{source_type}_{athlete_name}_{session_range}_{sport_filter}_{REPORT_VERSION}"
+    REPORT_VERSION = "20260917_v6_strict_user_data_isolation"
+    user_key = uid if uid else ("demo" if st.session_state.get("show_demo_mode") else "none")
+    current_cache_key = f"{user_key}_{athlete_name}_{session_range}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
 
@@ -1374,9 +1430,27 @@ if app_mode == "AI 運動生理週報與下一次處方":
                 athlete_name=athlete_name,
                 uid=uid,
                 token=token,
+                refresh_token=ref_token,
                 days_limit=session_range,
                 sport_filter=sport_filter
             )
+
+            # 若 token 有刷新，更新 session_state
+            if report_data.get("new_token"):
+                st.session_state["firebase_token"] = report_data["new_token"]
+
+            # 若查無任何訓練場次，嚴格提示使用者，絕不以假數據冒充
+            if not report_data.get("sessions"):
+                st.session_state.pop("cached_weekly_report_html", None)
+                err_msg = report_data.get("fetch_error", "查無訓練紀錄")
+                st.warning(f"⚠️ **{athlete_name} 您好**：在【{sport_filter}】專項篩選下查無任何訓練場次紀錄。\n\n**詳細原因**：{err_msg}")
+                st.info("""💡 **排查與操作指引**：
+1. **專項篩選**：若您進行的是跑步訓練，請將上方篩選切換為 **🏃 僅分析跑步訓練 (Running)** 或 **🌐 全部專項**。
+2. **上傳記錄**：若尚未上傳 FIT 檔案，可切換至【FIT 檔與乳酸協同分析】上傳您的運動記錄。
+3. **手錶同步**：或使用左側側邊欄的【🔗 運動手錶雲端綁定 (Garmin / COROS via Intervals.icu)】一鍵同步手錶日常訓練。
+""")
+                st.stop()
+
             html_report = awr.render_modern_html_report(report_data)
             st.session_state["cached_weekly_report_html"] = html_report
             st.session_state["cached_report_key"] = current_cache_key

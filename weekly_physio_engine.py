@@ -378,20 +378,39 @@ def fetch_local_dataset(folder_path="DataMindy", session_limit=7, sport_filter="
     return sessions[-session_limit:]
 
 
-def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
+def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filter="all", refresh_token=None):
     """
-    從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄，支援依運動專項篩選
+    從 Firebase Firestore 抓取登入者真實歷史訓練與汗乳酸紀錄，支援自動刷新 Token 與明確錯誤原因回報
+    回傳: (sessions: list, active_token: str, error_msg: str or None)
     """
     if not uid or not token:
-        return []
+        return [], token, "未提供登入 UID 或認證 Token，請先於側邊欄登入"
 
-    headers = {"Authorization": f"Bearer {token}"}
+    active_token = token
+    headers = {"Authorization": f"Bearer {active_token}"}
     
     # 1. 抓取 fit_records
     fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
     fit_sessions = []
     try:
         r_fit = requests.get(fit_url, headers=headers, timeout=12)
+        
+        # 若遭遇 401 Unauthorized 且具備 refresh_token，自動刷新一次
+        if r_fit.status_code in [401, 403] and refresh_token:
+            try:
+                API_KEY_LOCAL = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+                r_ref = requests.post(
+                    f"https://securetoken.googleapis.com/v1/token?key={API_KEY_LOCAL}",
+                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                    timeout=8
+                )
+                if r_ref.status_code == 200:
+                    active_token = r_ref.json().get("id_token")
+                    headers = {"Authorization": f"Bearer {active_token}"}
+                    r_fit = requests.get(fit_url, headers=headers, timeout=12)
+            except Exception:
+                pass
+
         if r_fit.status_code == 200:
             fit_docs = r_fit.json().get("documents", [])
             for doc in fit_docs:
@@ -477,8 +496,12 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
                     "max_altitude": _get_fs_val(f.get("max_altitude", {}), 0.0),
                     "lactate_readings": []
                 })
+        else:
+            if r_fit.status_code in [401, 403]:
+                return [], active_token, f"Firebase 認證 Token 已過期或權限不足 (HTTP {r_fit.status_code})，請重新登入"
+            return [], active_token, f"讀取 fit_records 失敗 (HTTP {r_fit.status_code})"
     except Exception as e:
-        print(f"Error fetching fit_records: {e}")
+        return [], active_token, f"連線至 fit_records 失敗: {e}"
 
     # 2. 抓取 lactate_records
     la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
@@ -580,7 +603,18 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
         valid = [s for s in valid if s.get("sport") == sport_filter]
 
     valid = sorted(valid, key=lambda x: x["start_time"])
-    return valid[-session_limit:] if valid else []
+    final_sessions = valid[-session_limit:] if valid else []
+    return final_sessions, active_token, None
+
+
+def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all", refresh_token=None):
+    """
+    相容舊版介面，回傳訓練場次清單
+    """
+    sessions, _, _ = fetch_firestore_dataset_with_status(
+        uid, token, session_limit=session_limit, sport_filter=sport_filter, refresh_token=refresh_token
+    )
+    return sessions
 
 
 def calculate_comprehensive_load(sessions):

@@ -19,32 +19,62 @@ import weekly_physio_engine as wpe
 import ai_coach_generator as acg
 
 
-def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7, sport_filter="all"):
+def generate_weekly_report_data(source="firebase", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7, sport_filter="all", refresh_token=None):
     """
     抓取數據（以實際場次數量為準）、進行運動專項分流、汗乳酸與間隔運算，並呼叫 Firebase AI Logic
+    嚴格防禦：若使用者已登入，絕不靜默回退到模擬示範數據！
     """
-    if uid and token:
-        sessions = wpe.fetch_firestore_dataset(uid, token, session_limit=days_limit, sport_filter=sport_filter)
-    elif os.path.isdir(source):
-        sessions = wpe.fetch_local_dataset(source, session_limit=days_limit, sport_filter=sport_filter)
-    else:
-        sessions = wpe.get_benchmark_dataset()
+    fetch_error = None
+    new_token = token
+    sessions = []
+    is_demo = False
 
+    if uid and token:
+        # 使用者已登入 Firebase，嚴格讀取該用戶之真實雲端數據
+        sessions, new_token, fetch_error = wpe.fetch_firestore_dataset_with_status(
+            uid, token, session_limit=days_limit, sport_filter=sport_filter, refresh_token=refresh_token
+        )
+    elif source in ["demo", "DataMindy"]:
+        is_demo = True
+        if os.path.isdir("DataMindy"):
+            sessions = wpe.fetch_local_dataset("DataMindy", session_limit=days_limit, sport_filter=sport_filter)
+        else:
+            sessions = wpe.get_benchmark_dataset()
+    else:
+        sessions = []
+
+    # 關鍵防護：若登入者在該篩選條件下查無資料，嚴格回傳空清單與具體錯誤，絕不以 Mindy 假資料頂替！
+    if uid and not sessions:
+        return {
+            "athlete_name": athlete_name,
+            "metrics": {},
+            "ai_analysis": None,
+            "sessions": [],
+            "sport_filter": sport_filter,
+            "is_demo": False,
+            "fetch_error": fetch_error or f"在【{sport_filter}】專項篩選下查無任何訓練場次紀錄",
+            "new_token": new_token
+        }
+
+    # 若非登入狀態且無任何數據，才載入標準基準數據
     if not sessions:
         sessions = wpe.get_benchmark_dataset()
+        is_demo = True
 
     # 1. 運動生理學與跨期負荷運算
     metrics = wpe.calculate_comprehensive_load(sessions)
 
     # 2. 透過 Firebase AI Logic 產出深度汗乳酸評析與處方
-    ai_analysis = acg.call_firebase_ai_logic(metrics, athlete_name=athlete_name, firebase_token=token, api_key=api_key)
+    ai_analysis = acg.call_firebase_ai_logic(metrics, athlete_name=athlete_name, firebase_token=new_token or token, api_key=api_key)
 
     return {
         "athlete_name": athlete_name,
         "metrics": metrics,
         "ai_analysis": ai_analysis,
         "sessions": sessions,
-        "sport_filter": sport_filter
+        "sport_filter": sport_filter,
+        "is_demo": is_demo,
+        "new_token": new_token
     }
 
 
@@ -59,6 +89,12 @@ def render_modern_html_report(report_data):
 
     rx = ai.get("next_workout_prescription", {})
     hero_insights = ai.get("hero_insights", [])
+
+    is_demo = report_data.get("is_demo", False)
+    if is_demo:
+        source_banner_html = """<div style="background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; color: #fbbf24; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>⚠️</span> <span><strong>【示範體驗模式】</strong>目前展示示範選手 Mindy (自行車) 之歷史測試紀錄。登入個人帳號後將自動分析專屬於您的個人訓練數據。</span></div>"""
+    else:
+        source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫。</span></div>"""
 
     # 圖表資料準備
     dates_labels = [s["date"] for s in sessions]
@@ -601,6 +637,7 @@ def render_modern_html_report(report_data):
     <div class="container">
         <!-- Header -->
         <header>
+            {source_banner_html}
             <div class="top-meta">
                 <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                     <div class="athlete-tag">💧 汗乳酸動態監控 &nbsp;|&nbsp; 選手：{athlete} &nbsp;|&nbsp; 週期：{metrics.get('period_start')} – {metrics.get('period_end')}</div>
