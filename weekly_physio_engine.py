@@ -101,6 +101,8 @@ def parse_local_html_report(fpath):
 
         # 2. 活動時長
         dur_m = re.search(r'活動時長.*?<div[^>]*kpi-value[^>]*>(.*?)</div>', content, re.DOTALL | re.IGNORECASE)
+        if not dur_m:
+            dur_m = re.search(r'活動時長.*?<div[^>]*metric-value[^>]*>(.*?)</div>', content, re.DOTALL | re.IGNORECASE)
         if dur_m:
             duration_min = parse_duration_to_minutes(dur_m.group(1))
         else:
@@ -108,7 +110,7 @@ def parse_local_html_report(fpath):
             if plain_dur:
                 duration_min = float(plain_dur.group(1)) + (float(plain_dur.group(2))/60.0 if plain_dur.group(2) else 0)
             else:
-                duration_min = 45.0
+                duration_min = 0.0
 
         # 3. 功率
         avg_p, max_p = 0.0, 0.0
@@ -165,6 +167,14 @@ def parse_local_html_report(fpath):
         max_la = round(float(np.max(raw_lactates)), 2) if raw_lactates else 0.0
         init_la = raw_lactates[0] if raw_lactates else 0.0
         final_la = raw_lactates[-1] if raw_lactates else 0.0
+
+        # 若時長未成功抓取或為 0，且有乳酸時間點，以最大乳酸時間點校正時長
+        if duration_min <= 0 and la_readings:
+            max_la_pt_time = max([pt["time_min"] for pt in la_readings])
+            if max_la_pt_time > 0:
+                duration_min = round(max_la_pt_time, 1)
+        if duration_min <= 0:
+            duration_min = 60.0
 
         # 6. 解析運動類型 (sport, sub_sport)
         sport = 'unknown'
@@ -330,16 +340,18 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
                 sport_display, sport_color = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
 
                 ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
-                duration_min = 0.0
-                if ts_values:
+                # 1. 優先取頂層 duration_minutes
+                duration_min = _get_fs_val(f.get("duration_minutes", {}), 0.0)
+                # 2. 次優先取 time_series 最後一點
+                if duration_min <= 0 and ts_values:
                     last_pt = ts_values[-1].get("mapValue", {}).get("fields", {})
-                    duration_min = float(last_pt.get("elapsed_minutes", {}).get("doubleValue", 0.0))
+                    duration_min = _get_fs_val(last_pt.get("elapsed_minutes", {}), 0.0)
 
                 fit_sessions.append({
                     "id": doc.get("name"),
                     "source_file": file_name,
                     "start_time": start_dt,
-                    "duration_min": round(duration_min, 1) if duration_min > 0 else 45.0,
+                    "duration_min": round(duration_min, 1),
                     "sport": sport,
                     "sub_sport": sub_sport,
                     "sport_display": sport_display,
@@ -405,9 +417,16 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
         s["avg_lactate"] = round(float(np.mean(raw_las)), 2) if raw_las else 0.0
         s["max_lactate"] = round(float(np.max(raw_las)), 2) if raw_las else 0.0
         s["initial_lactate"] = raw_las[0] if raw_las else 0.0
-        s["final_lactate"] = raw_las[-1] if raw_las else 0.0
         s["date"] = s_time.strftime("%m/%d") if s_time else "近期"
         s["full_date"] = s_time.strftime("%Y-%m-%d") if s_time else "2026-09-10"
+
+        # 校正運動時長：若 duration_min 缺失 (<= 0) 或明顯小於乳酸測試點時間，以乳酸採樣最大時間點校正為真實時長
+        if matched_la:
+            max_la_t = max([x["time_min"] for x in matched_la])
+            if s["duration_min"] <= 0 or s["duration_min"] < max_la_t or (s["duration_min"] == 45.0 and max_la_t > 40.0):
+                s["duration_min"] = round(max_la_t, 1)
+        if s["duration_min"] <= 0:
+            s["duration_min"] = 60.0
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     

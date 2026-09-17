@@ -481,10 +481,25 @@ def import_historical_html_to_firebase(html_content, file_name):
     fn_m = re.search(r'檔案名稱.*?[:：]\s*([^&|\s\n\r<]+)', html_content)
     original_filename = fn_m.group(1).strip() if fn_m else file_name
 
-    # 2. KPIs
+    # 2. KPIs & 活動時長
     avg_power, max_power = 0, 0
     avg_hr, max_hr = 0, 0
     max_core = None
+    duration_min = 0.0
+
+    # 提取活動時長
+    dur_m = re.search(r'活動時長.*?<div[^>]*kpi-value[^>]*>(.*?)</div>', html_content, re.DOTALL | re.IGNORECASE)
+    if not dur_m:
+        dur_m = re.search(r'活動時長.*?<div[^>]*metric-value[^>]*>(.*?)</div>', html_content, re.DOTALL | re.IGNORECASE)
+    if dur_m:
+        dur_txt = re.sub(r'<.*?>', '', dur_m.group(1)).strip()
+        m_dur = re.search(r'(\d+(?:\.\d+)?)\s*分(?:\s*(\d+(?:\.\d+)?)\s*秒)?', dur_txt)
+        if m_dur:
+            duration_min = round(float(m_dur.group(1)) + (float(m_dur.group(2))/60.0 if m_dur.group(2) else 0), 1)
+    if duration_min <= 0:
+        plain_dur = re.search(r'時長.*?(\d+(?:\.\d+)?)\s*分(?:\s*(\d+)\s*秒)?', html_content, re.DOTALL)
+        if plain_dur:
+            duration_min = round(float(plain_dur.group(1)) + (float(plain_dur.group(2))/60.0 if plain_dur.group(2) else 0), 1)
 
     pm = re.search(r'功率.*?(\d+)\s*/\s*(\d+)\s*W', html_content, re.DOTALL)
     if pm:
@@ -497,6 +512,16 @@ def import_historical_html_to_firebase(html_content, file_name):
     cm = re.search(r'核心溫度.*?([\d\.]+)\s*°C', html_content, re.DOTALL)
     if cm:
         max_core = float(cm.group(1))
+
+    # 運動類型推斷
+    sport = 'cycling' if avg_power > 0 else 'running'
+    sp_m = re.search(r'運動類型.*?([a-zA-Z\u4e00-\u9fa5]+)', html_content)
+    if sp_m:
+        sp_txt = sp_m.group(1).lower()
+        if any(k in sp_txt for k in ['bike', 'cycling', '自行車', '騎行']):
+            sport = 'cycling'
+        elif any(k in sp_txt for k in ['run', '跑步', '慢跑']):
+            sport = 'running'
 
     # 3. Plotly time series (downsample to 30s bins)
     time_series_points = []
@@ -519,20 +544,35 @@ def import_historical_html_to_firebase(html_content, file_name):
                 traces = json.loads(html_content[start_arr:end_arr])
                 x_time, y_pwr, y_hr, y_core = None, None, None, None
                 for t in traces:
-                    nm = t.get('name', '')
+                    nm = str(t.get('name', '')).lower()
                     x_obj, y_obj = t.get('x', {}), t.get('y', {})
                     if isinstance(x_obj, dict) and 'bdata' in x_obj and isinstance(y_obj, dict) and 'bdata' in y_obj:
                         x_data = np.frombuffer(base64.b64decode(x_obj['bdata']), dtype=np.float64)
                         y_data = np.frombuffer(base64.b64decode(y_obj['bdata']), dtype=np.float64)
-                        if '功率' in nm and ('30s' in nm or '平均' in nm):
-                            x_time = x_data
+                        
+                        is_pwr = any(k in nm for k in ['功率', '(w)', ' w', 'power', 'pwr', '30s'])
+                        is_hr = any(k in nm for k in ['心率', '(bpm)', ' bpm', 'bpm', 'hr', 'heart'])
+                        is_core = any(k in nm for k in ['核心', 'core', '°c', 'temp'])
+                        
+                        if is_pwr:
+                            if x_time is None or ('30s' in nm):
+                                x_time = x_data
                             y_pwr = y_data
-                        elif '心率' in nm or 'BPM' in nm:
+                        elif is_hr:
+                            if x_time is None:
+                                x_time = x_data
                             y_hr = y_data
-                        elif '核心' in nm:
+                        elif is_core:
+                            if x_time is None:
+                                x_time = x_data
                             y_core = y_data
+                        elif x_time is None and len(x_data) > 10:
+                            x_time = x_data
 
                 if x_time is not None:
+                    if duration_min <= 0:
+                        duration_min = round(float(x_time.max()), 1)
+
                     df_ts = pd.DataFrame({'elapsed_minutes': x_time})
                     if y_pwr is not None and len(y_pwr) == len(x_time):
                         df_ts['power'] = y_pwr
@@ -561,11 +601,17 @@ def import_historical_html_to_firebase(html_content, file_name):
             except Exception as e:
                 print('Error parsing plotly json in html import:', e)
 
+    if duration_min <= 0:
+        duration_min = 60.0
+
     # 4. Upload to fit_records
     fit_payload = {
         "fields": {
             "file_name": {"stringValue": str(original_filename)},
             "start_time": {"timestampValue": start_time.isoformat() + "Z"},
+            "sport": {"stringValue": str(sport)},
+            "sub_sport": {"stringValue": "indoor_cycling" if sport == "cycling" else "generic"},
+            "duration_minutes": {"doubleValue": float(duration_min)},
             "avg_power": {"integerValue": str(int(avg_power))},
             "max_power": {"integerValue": str(int(max_power))},
             "avg_hr": {"integerValue": str(int(avg_hr))},
@@ -688,12 +734,14 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
         # JSON payload for Firestore
         has_gps = ('lat' in df.columns and df['lat'].notna().any() and
                    'lng' in df.columns and df['lng'].notna().any())
+        duration_minutes = float(df['elapsed_minutes'].max()) if ('elapsed_minutes' in df.columns and df['elapsed_minutes'].notna().any()) else 0.0
         payload = {
             'fields': {
                 'file_name': {'stringValue': str(file_name)},
                 'start_time': {'timestampValue': start_time.isoformat() + 'Z' if start_time.tzinfo is None else start_time.isoformat()},
                 'sport': {'stringValue': str(sport)},
                 'sub_sport': {'stringValue': str(sub_sport)},
+                'duration_minutes': {'doubleValue': round(float(duration_minutes), 1)},
                 'avg_power': {'integerValue': str(int(avg_power))},
                 'max_power': {'integerValue': str(int(max_power))},
                 'avg_hr': {'integerValue': str(int(avg_hr))},
