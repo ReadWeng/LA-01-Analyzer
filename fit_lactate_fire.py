@@ -1120,6 +1120,80 @@ else:
             register_to_firebase(reg_email_input, reg_pwd_input)
 
 st.sidebar.markdown("---")
+
+# Intervals.icu / Garmin / COROS 手錶雲端綁定
+if st.session_state.get('firebase_uid'):
+    with st.sidebar.expander("🔗 運動手錶雲端綁定 (Garmin / COROS)", expanded=False):
+        st.markdown("**支援 Garmin Connect、COROS 等設備**")
+        st.caption("透過 Intervals.icu 自動同步乳酸日前 5 天日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
+
+        icu_uid = st.session_state.get('firebase_uid')
+        icu_token = st.session_state.get('firebase_token')
+
+        if "intervals_api_key" not in st.session_state:
+            st.session_state["intervals_api_key"] = ""
+            st.session_state["intervals_athlete_id"] = "0"
+            try:
+                cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{icu_uid}/settings/intervals_icu"
+                r_cfg = requests.get(cfg_url, headers={"Authorization": f"Bearer {icu_token}"}, timeout=4)
+                if r_cfg.status_code == 200:
+                    f_cfg = r_cfg.json().get("fields", {})
+                    st.session_state["intervals_api_key"] = f_cfg.get("api_key", {}).get("stringValue", "")
+                    st.session_state["intervals_athlete_id"] = f_cfg.get("athlete_id", {}).get("stringValue", "0")
+            except Exception:
+                pass
+
+        ath_id_val = st.text_input("Intervals.icu Athlete ID", value=st.session_state.get("intervals_athlete_id", "0"), help="個人帳號請填 0，或填入如 i123456")
+        api_key_val = st.text_input("Intervals.icu API Key", value=st.session_state.get("intervals_api_key", ""), type="password", help="登入 intervals.icu -> Settings (設定) 頁面最下方即可複製 API Key")
+
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            if st.button("🔌 測試連線", use_container_width=True, key="btn_test_icu"):
+                import intervals_client as ic
+                ok, msg = ic.test_intervals_connection(api_key_val, ath_id_val)
+                if ok:
+                    st.success(msg)
+                    st.session_state["intervals_api_key"] = api_key_val
+                    st.session_state["intervals_athlete_id"] = ath_id_val
+                    try:
+                        cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{icu_uid}/settings/intervals_icu"
+                        requests.patch(cfg_url, headers={"Authorization": f"Bearer {icu_token}", "Content-Type": "application/json"}, json={
+                            "fields": {
+                                "api_key": {"stringValue": api_key_val},
+                                "athlete_id": {"stringValue": ath_id_val}
+                            }
+                        }, timeout=5)
+                    except Exception:
+                        pass
+                else:
+                    st.error(msg)
+        with col_b2:
+            sync_btn = st.button("🔄 同步前5天", use_container_width=True, key="btn_sync_icu")
+
+        if sync_btn:
+            if not api_key_val:
+                st.warning("請先輸入 API Key！")
+            else:
+                with st.spinner("正在計算乳酸日期並同步前 5 天訓練數據至 Firebase..."):
+                    import intervals_client as ic
+                    s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
+                        uid=icu_uid,
+                        firebase_token=icu_token,
+                        intervals_api_key=api_key_val,
+                        athlete_id=ath_id_val,
+                        lookback_days=5
+                    )
+                    st.session_state["intervals_api_key"] = api_key_val
+                    st.session_state["intervals_athlete_id"] = ath_id_val
+                    if s_count > 0:
+                        st.success(s_msg)
+                        st.session_state.pop("cached_weekly_report_html", None)
+                        st.rerun()
+                    else:
+                        st.info(s_msg)
+
+    st.sidebar.markdown("---")
+
 st.sidebar.markdown("### 介面設定")
 chart_theme = st.sidebar.radio("圖表主題", ["深色模式 (Dark)", "淺色模式 (Light)"])
 theme_str = "dark" if "Dark" in chart_theme else "light"

@@ -141,14 +141,28 @@ def render_modern_html_report(report_data):
     # 場次明細表格
     table_rows_html = ""
     for s in sessions:
-        eff_str = f"{s.get('metabolic_efficiency', 0)} {s.get('efficiency_unit', '')}" if s.get('metabolic_efficiency', 0) > 0 else "—"
-        pwr_str = f"{s.get('avg_power', 0)} W" if s.get('avg_power', 0) > 0 else "—"
-        hr_str = f"{s.get('avg_hr', 0)} bpm" if s.get('avg_hr', 0) > 0 else "—"
+        is_icu = s.get('source') == 'intervals_icu'
+        has_la = (s.get('avg_lactate', 0) > 0) or (len(s.get('lactate_readings', [])) > 0)
+        
+        eff_str = f"{s.get('metabolic_efficiency', 0)} {s.get('efficiency_unit', '')}" if (s.get('metabolic_efficiency') is not None and s.get('metabolic_efficiency', 0) > 0) else "<span style='color:#64748b;'>—</span>"
+        pwr_str = f"{s.get('avg_power', 0)} W" if s.get('avg_power', 0) > 0 else "<span style='color:#64748b;'>—</span>"
+        hr_str = f"{s.get('avg_hr', 0)} bpm" if s.get('avg_hr', 0) > 0 else "<span style='color:#64748b;'>—</span>"
         intv_badge = f"<span class='intv-pill'>{s.get('interval_desc')}</span>"
         sport_disp = s.get('sport_display', '🏅 運動')
         sport_color = s.get('sport_color', '#ffab00')
         sub_info = f"<br><span style='font-size:0.68rem; color:#94a3b8;'>{s.get('sub_sport', '')}</span>" if s.get('sub_sport') and s.get('sub_sport') != 'generic' else ""
-        sport_badge = f"<span style='display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700; background:rgba(255,255,255,0.06); color:{sport_color}'>{sport_disp}{sub_info}</span>"
+        
+        # 標註手錶日常訓練來源
+        source_badge = "<br><span style='font-size:0.68rem; color:#38bdf8; background:rgba(56,189,248,0.12); padding:1px 6px; border-radius:4px;'>⌚ 手錶日常</span>" if is_icu else ""
+        sport_badge = f"<span style='display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700; background:rgba(255,255,255,0.06); color:{sport_color}'>{sport_disp}{sub_info}</span>{source_badge}"
+        
+        if has_la:
+            avg_la_html = f"<span style='color: #ffab00; font-weight: 700;'>{s.get('avg_lactate')}</span>"
+            max_la_html = f"<span style='color: #ff5252; font-weight: 700;'>{s.get('max_lactate')}</span>"
+        else:
+            avg_la_html = "<span style='color:#64748b; font-size:0.8rem;'>未採樣</span>"
+            max_la_html = "<span style='color:#64748b; font-size:0.8rem;'>未採樣</span>"
+
         table_rows_html += f"""
         <tr>
             <td style="font-weight: 700; color: #ffffff;">{s.get('date')}</td>
@@ -158,8 +172,8 @@ def render_modern_html_report(report_data):
             <td class="num">{s.get('duration_min')} 分</td>
             <td class="num" style="color: #00f2fe; font-weight: 600;">{pwr_str}</td>
             <td class="num" style="color: #ff5252; font-weight: 600;">{hr_str}</td>
-            <td class="num" style="color: #ffab00; font-weight: 700;">{s.get('avg_lactate')}</td>
-            <td class="num" style="color: #ff5252; font-weight: 700;">{s.get('max_lactate')}</td>
+            <td class="num">{avg_la_html}</td>
+            <td class="num">{max_la_html}</td>
             <td class="num" style="color: #00e676; font-weight: 700;">{eff_str}</td>
             <td class="num" style="color: #64b5f6;">{s.get('calculated_load')}</td>
         </tr>

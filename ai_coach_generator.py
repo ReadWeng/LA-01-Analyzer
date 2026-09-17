@@ -30,6 +30,8 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
         sessions_detail.append({
             "date": s.get("date"),
             "full_date": s.get("full_date"),
+            "source": s.get("source", "manual_fit"),
+            "activity_name": s.get("activity_name", ""),
             "sport": s.get("sport_display", s.get("sport", "運動")),
             "sub_sport": s.get("sub_sport", "generic"),
             "interval_since_previous": intv_str,
@@ -38,9 +40,9 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
             "max_power_W": s.get("max_power") if s.get("max_power", 0) > 0 else "無功率",
             "avg_hr_bpm": s.get("avg_hr") if s.get("avg_hr", 0) > 0 else "無心率",
             "max_hr_bpm": s.get("max_hr") if s.get("max_hr", 0) > 0 else "無心率",
-            "avg_sweat_lactate_mmol": s.get("avg_lactate"),
-            "max_sweat_lactate_mmol": s.get("max_lactate"),
-            "metabolic_efficiency": f"{s.get('metabolic_efficiency')} {s.get('efficiency_unit')}",
+            "avg_sweat_lactate_mmol": s.get("avg_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else "未採樣 (手錶日常訓練)",
+            "max_sweat_lactate_mmol": s.get("max_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else "未採樣",
+            "metabolic_efficiency": f"{s.get('metabolic_efficiency')} {s.get('efficiency_unit')}" if s.get('metabolic_efficiency') is not None else "未採樣",
             "session_type": s.get("type")
         })
 
@@ -70,6 +72,7 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
 5. 精準開出【下一次運動處方 (Next Workout Protocol)】：針對汗乳酸特性，給出具體建議間隔天數、目標時長、目標心率/功率、運動項目與階段指導。
 6. 【功率缺失處理原則】：若訓練數據中有場次缺失功率（例如 avg_power_W 顯示為「無功率」），系統已自動切換為【平均心率 (bpm)】作為縱向對照基準。此時嚴禁提及功率 (W) 或輸出功率圖，必須全程以心率 (bpm) 與汗乳酸濃度的關係、代謝效率 (bpm/mmol) 及心率區間進行講評與下一次處方！
 7. 【運動專項分流原則】：若受測者為特定專項（如純自行車 Cycling 或純跑步 Running），請嚴格聚焦於該專項的生理特徵（自行車著重踩踏輸出、齒比、踏頻與功率/心率比；跑步著重承重衝擊、跑步心率漂移與配速/心率經濟性）。若為混合運動，請分析騎跑交叉訓練的互補效益，下一次處方中明確指明運動項目（sport_type）。
+8. 【手錶日常背景訓練指引】：部分場次為透過手錶（Garmin / COROS via Intervals.icu）自動拉取的日常背景訓練（標註未採樣乳酸）。這些紀錄提供了乳酸測驗日之間的真實身體負荷、運動頻率與恢復間隔，使負荷分析更真實；但在探討「汗乳酸動力學與代謝經濟性」時，請以實際有採樣汗乳酸的關鍵測驗場次為分析主軸。
 """
 
     user_prompt = f"""請根據以下受測者的汗乳酸與跨期運動負荷數據進行深度評析：

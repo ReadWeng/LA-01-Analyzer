@@ -451,9 +451,16 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
                     last_pt = ts_values[-1].get("mapValue", {}).get("fields", {})
                     duration_min = _get_fs_val(last_pt.get("elapsed_minutes", {}), 0.0)
 
+                source_val = f.get("source", {}).get("stringValue", "manual_fit")
+                act_name = f.get("activity_name", {}).get("stringValue", file_name)
+                icu_load = _get_fs_val(f.get("icu_training_load", {}), 0.0)
+
                 fit_sessions.append({
                     "id": doc.get("name"),
                     "source_file": file_name,
+                    "activity_name": act_name,
+                    "source": source_val,
+                    "icu_training_load": icu_load,
                     "start_time": start_dt,
                     "duration_min": round(duration_min, 1),
                     "sport": sport,
@@ -642,39 +649,52 @@ def calculate_comprehensive_load(sessions):
     # 3. 為每場次標定汗乳酸強度等級，並計算代謝效率比
     efficiency_trend = []
     for s in sessions:
-        s["type"] = infer_session_type_sweat(
-            s.get("avg_power", 0) if has_full_power else 0,
-            s.get("avg_hr", 0),
-            s.get("avg_lactate", 0),
-            s.get("max_lactate", 0),
-            baseline_low=baseline_low,
-            baseline_high=baseline_high
-        )
+        has_lactate = len(s.get("lactate_readings", [])) > 0 or s.get("avg_lactate", 0) > 0
         
-        # 代謝經濟性 (Output per Sweat Lactate)
-        p = s.get("avg_power", 0)
-        h = s.get("avg_hr", 0)
-        la = s.get("avg_lactate", 0) if s.get("avg_lactate", 0) > 0 else 1.0
-        
-        # 若功率有缺失，直接統一用心率 (bpm/mmol) 做比較，保持跨場次評估單位一致且不秀功率
-        if has_full_power and p > 0:
-            eff = round(p / la, 1)  # W per mmol
-            unit = "W/mmol"
-        elif h > 0:
-            eff = round(h / la, 1)  # bpm per mmol
-            unit = "bpm/mmol"
+        if has_lactate:
+            s["type"] = infer_session_type_sweat(
+                s.get("avg_power", 0) if has_full_power else 0,
+                s.get("avg_hr", 0),
+                s.get("avg_lactate", 0),
+                s.get("max_lactate", 0),
+                baseline_low=baseline_low,
+                baseline_high=baseline_high
+            )
+            # 代謝經濟性 (Output per Sweat Lactate)
+            p = s.get("avg_power", 0)
+            h = s.get("avg_hr", 0)
+            la = s.get("avg_lactate", 0)
+            
+            if has_full_power and p > 0:
+                eff = round(p / la, 1)  # W per mmol
+                unit = "W/mmol"
+            elif h > 0:
+                eff = round(h / la, 1)  # bpm per mmol
+                unit = "bpm/mmol"
+            else:
+                eff = 0.0
+                unit = "N/A"
+            s["metabolic_efficiency"] = eff
+            s["efficiency_unit"] = unit
+            efficiency_trend.append(eff)
         else:
-            eff = 0.0
-            unit = "N/A"
-        s["metabolic_efficiency"] = eff
-        s["efficiency_unit"] = unit
-        efficiency_trend.append(eff)
+            # 手錶日常背景訓練 (未採樣汗乳酸)
+            avg_hr = s.get("avg_hr", 0)
+            if avg_hr >= 165:
+                s["type"] = "耐力刺激 / 閾值提升"
+            elif avg_hr >= 140:
+                s["type"] = "有氧燃脂 / 節奏巡航"
+            else:
+                s["type"] = "基礎耐力 / 動態恢復"
+            s["metabolic_efficiency"] = None
+            s["efficiency_unit"] = "未採樣"
 
     # 4. 代謝效率變化率 (最新場次 vs 前期場次)
     eff_delta_pct = 0.0
     latest = sessions[-1]
-    if len(sessions) >= 2 and latest.get("metabolic_efficiency", 0) > 0:
-        prior_effs = [s["metabolic_efficiency"] for s in sessions[:-1] if s.get("metabolic_efficiency", 0) > 0]
+    valid_eff_sessions = [s for s in sessions if s.get("metabolic_efficiency") is not None and s.get("metabolic_efficiency", 0) > 0]
+    if len(valid_eff_sessions) >= 2 and latest.get("metabolic_efficiency") is not None:
+        prior_effs = [s["metabolic_efficiency"] for s in valid_eff_sessions[:-1]]
         if prior_effs:
             mean_prior = np.mean(prior_effs)
             eff_delta_pct = round(((latest["metabolic_efficiency"] - mean_prior) / mean_prior) * 100.0, 1)
@@ -686,21 +706,40 @@ def calculate_comprehensive_load(sessions):
     for s in sessions:
         dur_hrs = s.get("duration_min", 0) / 60.0
         la = s.get("avg_lactate", 0)
+        has_lactate = len(s.get("lactate_readings", [])) > 0 or la > 0
+        avg_hr = s.get("avg_hr", 0)
         
-        if la <= baseline_low:
-            w = 1.0
-            zone_duration["Low_Recovery"] += s.get("duration_min", 0)
-        elif la <= baseline_high:
-            w = 1.8
-            zone_duration["Tempo_Aerobic"] += s.get("duration_min", 0)
+        if has_lactate:
+            if la <= baseline_low:
+                w = 1.0
+                zone_duration["Low_Recovery"] += s.get("duration_min", 0)
+            elif la <= baseline_high:
+                w = 1.8
+                zone_duration["Tempo_Aerobic"] += s.get("duration_min", 0)
+            else:
+                w = 3.5
+                zone_duration["High_Glycolytic"] += s.get("duration_min", 0)
         else:
-            w = 3.5
-            zone_duration["High_Glycolytic"] += s.get("duration_min", 0)
+            # 依心率區間推算極化區間
+            if avg_hr >= 165:
+                w = 2.5
+                zone_duration["High_Glycolytic"] += s.get("duration_min", 0)
+            elif avg_hr >= 140:
+                w = 1.5
+                zone_duration["Tempo_Aerobic"] += s.get("duration_min", 0)
+            else:
+                w = 1.0
+                zone_duration["Low_Recovery"] += s.get("duration_min", 0)
 
         # 間隔天數微調係數：若連日運動（間隔<=1天），疲勞累積加成
         interval_factor = 1.2 if (s.get("days_since_prior") is not None and s.get("days_since_prior") <= 1.0) else 1.0
         
-        session_load = round(dur_hrs * 100.0 * w * interval_factor, 1)
+        # 若來自手錶且具備 Intervals.icu Training Load (TSS)，優先結合手錶負荷
+        if s.get("icu_training_load", 0) > 0:
+            session_load = round(float(s["icu_training_load"]) * interval_factor, 1)
+        else:
+            session_load = round(dur_hrs * 100.0 * w * interval_factor, 1)
+            
         s["calculated_load"] = session_load
         total_sweat_load += session_load
 
