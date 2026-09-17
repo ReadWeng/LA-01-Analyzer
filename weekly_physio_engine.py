@@ -22,114 +22,173 @@ import requests
 
 
 _FIT_SPORT_CACHE = {}
+_FIT_METADATA_CACHE = {}
+
+def _init_local_metadata_cache():
+    """
+    掃描本地所有報告與 FIT 檔案目錄，建立 fit 檔名至專項與真實活動時長的精準快取映射
+    """
+    global _FIT_METADATA_CACHE, _FIT_SPORT_CACHE
+    if _FIT_METADATA_CACHE:
+        return _FIT_METADATA_CACHE
+        
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(cur_dir)
+    base_dirs = [cur_dir, parent_dir]
+    sub_names = ["RunDataRead", "RunDataDayu", "RunDataMei", "DataYen", "DataMindy", "DataSunday", "0521", "bikeData", "."]
+    
+    for b in base_dirs:
+        for s in sub_names:
+            folder = os.path.normpath(os.path.join(b, s))
+            if not os.path.isdir(folder):
+                continue
+            folder_lower = s.lower()
+            is_run = "run" in folder_lower
+            is_bike = "bike" in folder_lower or "cycle" in folder_lower
+            def_sp = "running" if is_run else ("cycling" if is_bike else None)
+            
+            # 1. 掃描報告 HTML 檔案 (精準抓取檔名與真實活動時長)
+            for hpath in glob.glob(os.path.join(folder, "*.html")):
+                try:
+                    with open(hpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    m_fit = re.search(r"檔案名稱.*?:?\s*([\w\-]+\.fit)", content)
+                    m_dur = re.search(r"活動時長.*?<div class=[\"']kpi-value[\"'][^>]*>(.*?)</div>", content, re.S)
+                    
+                    dur_val = 0.0
+                    if m_dur:
+                        dur_text = m_dur.group(1).strip()
+                        m_min_sec = re.search(r"(\d+)\s*分(?:\s*(\d+)\s*秒)?", dur_text)
+                        if m_min_sec:
+                            mins = float(m_min_sec.group(1))
+                            secs = float(m_min_sec.group(2)) if m_min_sec.group(2) else 0.0
+                            dur_val = round(mins + secs / 60.0, 1)
+                            
+                    if m_fit:
+                        fit_fn = m_fit.group(1).strip()
+                        resolved_sp = def_sp if def_sp else ("cycling" if is_bike else "running")
+                        meta_obj = {
+                            "sport": resolved_sp,
+                            "sub_sport": "indoor_cycling" if resolved_sp == "cycling" else "generic",
+                            "duration_min": dur_val,
+                            "source_html": os.path.basename(hpath)
+                        }
+                        _FIT_METADATA_CACHE[fit_fn] = meta_obj
+                        _FIT_METADATA_CACHE[fit_fn.replace(".fit", "")] = meta_obj
+                        _FIT_SPORT_CACHE[fit_fn] = (resolved_sp, meta_obj["sub_sport"])
+                        _FIT_SPORT_CACHE[fit_fn.replace(".fit", "")] = (resolved_sp, meta_obj["sub_sport"])
+                except Exception:
+                    pass
+                    
+            # 2. 掃描實體 .fit 檔案 (使用 fitparse 讀取官方 sport 欄位)
+            for fpath in glob.glob(os.path.join(folder, "*.fit")):
+                fit_fn = os.path.basename(fpath)
+                if fit_fn not in _FIT_SPORT_CACHE:
+                    try:
+                        import fitparse
+                        fit = fitparse.FitFile(fpath, check_crc=False)
+                        sp = None
+                        sub = 'generic'
+                        for m in fit.get_messages('sport'):
+                            vals = {x.name: x.value for x in m.fields}
+                            if vals.get('sport'):
+                                sp = str(vals.get('sport')).lower()
+                                if vals.get('sub_sport'):
+                                    sub = str(vals.get('sub_sport')).lower()
+                                break
+                        if not sp:
+                            for m in fit.get_messages('session'):
+                                vals = {x.name: x.value for x in m.fields}
+                                if vals.get('sport'):
+                                    sp = str(vals.get('sport')).lower()
+                                    if vals.get('sub_sport'):
+                                        sub = str(vals.get('sub_sport')).lower()
+                                    break
+                        if sp:
+                            _FIT_SPORT_CACHE[fit_fn] = (sp, sub)
+                            _FIT_SPORT_CACHE[fit_fn.replace('.fit', '')] = (sp, sub)
+                            if fit_fn not in _FIT_METADATA_CACHE:
+                                _FIT_METADATA_CACHE[fit_fn] = {"sport": sp, "sub_sport": sub, "duration_min": 0.0}
+                    except Exception:
+                        pass
+                        
+    return _FIT_METADATA_CACHE
+
+
+def get_fit_file_metadata(file_name):
+    """
+    隨需快速查詢特定 FIT 檔案的元數據 (sport, sub_sport, duration_min)
+    """
+    if not file_name:
+        return None
+    _init_local_metadata_cache()
+    fn_clean = os.path.basename(str(file_name)).strip()
+    m_fit = re.search(r'([\w\-]+\.fit)', fn_clean, re.IGNORECASE)
+    target_fit = m_fit.group(1) if m_fit else (fn_clean if fn_clean.lower().endswith('.fit') else None)
+    
+    if target_fit and target_fit in _FIT_METADATA_CACHE:
+        return _FIT_METADATA_CACHE[target_fit]
+    if fn_clean in _FIT_METADATA_CACHE:
+        return _FIT_METADATA_CACHE[fn_clean]
+    return None
+
 
 def get_fit_file_sport(file_name):
     """
     隨需快速查詢特定 FIT 檔案的官方 sport / sub_sport，具備記憶快取（秒開、不卡頓）
     """
-    if not file_name:
-        return None
-    fn_clean = os.path.basename(str(file_name)).strip()
-    m_fit = re.search(r'([\w\-]+\.fit)', fn_clean, re.IGNORECASE)
-    target_fit = m_fit.group(1) if m_fit else (fn_clean if fn_clean.lower().endswith('.fit') else None)
-    if not target_fit:
-        return None
-        
-    if target_fit in _FIT_SPORT_CACHE:
-        return _FIT_SPORT_CACHE[target_fit]
-        
-    cur_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(cur_dir)
-    search_dirs = [cur_dir, parent_dir]
-    sub_names = ["DataYen", "DataMindy", "DataSunday", "0521", "RunDataRead", "RunDataDayu", "RunDataMei", "bikeData", "."]
-    
-    found_path = None
-    for b in search_dirs:
-        for s in sub_names:
-            p = os.path.normpath(os.path.join(b, s, target_fit))
-            if os.path.isfile(p):
-                found_path = p
-                break
-        if found_path:
-            break
-            
-    if found_path:
-        try:
-            import fitparse
-            fit = fitparse.FitFile(found_path, check_crc=False)
-            sp = None
-            sub = 'generic'
-            for m in fit.get_messages('sport'):
-                vals = {x.name: x.value for x in m.fields}
-                if vals.get('sport'):
-                    sp = str(vals.get('sport')).lower()
-                    if vals.get('sub_sport'):
-                        sub = str(vals.get('sub_sport')).lower()
-                    break
-            if not sp:
-                for m in fit.get_messages('session'):
-                    vals = {x.name: x.value for x in m.fields}
-                    if vals.get('sport'):
-                        sp = str(vals.get('sport')).lower()
-                        if vals.get('sub_sport'):
-                            sub = str(vals.get('sub_sport')).lower()
-                        break
-            if sp:
-                _FIT_SPORT_CACHE[target_fit] = (sp, sub)
-                _FIT_SPORT_CACHE[target_fit.replace('.fit', '')] = (sp, sub)
-                return (sp, sub)
-        except Exception:
-            pass
-            
+    meta = get_fit_file_metadata(file_name)
+    if meta:
+        return (meta["sport"], meta.get("sub_sport", "generic"))
     return None
 
 
 def get_workspace_fit_sport_cache():
+    _init_local_metadata_cache()
     return _FIT_SPORT_CACHE
 
 
 def resolve_sport_type(filename_or_text, avg_power=0, avg_hr=0, cadence=0, default_sport=None):
     """
-    結合 FIT 檔官方資訊、檔名關鍵字、步頻特徵與功率水準綜合研判真實運動專項。
-    特別注意：受試者佩戴 Stryd 跑步功率計時功率常在 280W~350W，且心率在 150~180bpm；
-    自行車飛輪訓練功率多在 100W~180W。若歷史資料庫曾誤將跑步存為 cycling，特徵規則將自動修正。
+    結合 FIT 檔/報告快取、檔名關鍵字、生理指標與功率特徵綜合研判真實運動專項。
+    特別防禦：
+    1. 跑步功率計（如 Stryd / Garmin Running Power）功率常見於 180W~350W，且心率常在 140~175 bpm，嚴禁武斷視為自行車！
+    2. 自行車判定必須具備明確 bike/cycling/騎行關鍵字或 40~110 rpm 踏頻特徵。
+    3. 純數字檔名手錶活動在無自行車特徵時，預設一律校正為跑步（running）。
     """
     fn_clean = os.path.basename(str(filename_or_text)).strip()
     
-    # 1. 優先從 FIT 檔官方快取查詢 (秒開精確解析)
+    # 1. 優先從本地報告與 FIT 官方快取查詢 (秒開精確解析)
     fit_res = get_fit_file_sport(fn_clean)
     if fit_res:
         return fit_res
     
     # 2. 檢查檔名與文字中的明確關鍵字
     txt_lower = fn_clean.lower()
-    if any(k in txt_lower for k in ['run', '跑步', '慢跑', '路跑', 'treadmill']):
+    if any(k in txt_lower for k in ['run', '跑步', '慢跑', '路跑', 'treadmill', 'rundata']):
         return ('running', 'generic')
-    if any(k in txt_lower for k in ['bike', 'cycling', '自行車', '騎行', '單車', '飛輪', 'indoor_cycling']):
+    if any(k in txt_lower for k in ['bike', 'cycling', '自行車', '騎行', '單車', '飛輪', 'indoor_cycling', 'bikedata']):
         return ('cycling', 'indoor_cycling')
         
     # 3. 檢查步頻 (Cadence): 跑步步頻通常在 140~200，自行車踏頻在 60~110
-    if cadence > 130:
+    if cadence > 120:
         return ('running', 'generic')
-    if 40 <= cadence <= 120 and avg_power > 0:
+    if 40 <= cadence <= 110 and any(k in txt_lower for k in ['bike', 'ride', 'cycle']):
         return ('cycling', 'indoor_cycling')
         
-    # 4. 生理與功率特徵優先覆蓋（防止歷史匯入將跑步功率計紀錄誤存為 cycling）
-    # Stryd 跑步動態功率通常 >= 250W 且心率較高
-    if avg_power >= 250 and avg_hr >= 140:
+    # 4. 生理與功率特徵防禦（跑步功率計 180W~350W 且心率較高）
+    if avg_power >= 180 and avg_hr >= 140 and cadence == 0:
         return ('running', 'generic')
 
-    # 5. 若已具備可靠的 default_sport (且非 unknown)
+    # 5. 若 default_sport 存在且可靠
     if default_sport and default_sport not in ['unknown', 'None', '', 'generic']:
-        # 若標記為 cycling 但功率高達 220W+ 且無自行車踏頻，再次防禦
-        if default_sport == 'cycling' and avg_power >= 250:
+        # 若標記為 cycling 但檔名為純數字手錶紀錄且心率在跑步心率區間，校正為 running
+        is_numeric_fn = bool(re.match(r'^\d+(\.fit)?$', fn_clean))
+        if default_sport == 'cycling' and is_numeric_fn and avg_hr >= 140:
             return ('running', 'generic')
         return (default_sport, 'generic')
         
-    # 6. 一般自行車飛輪特徵 (1~249W)
-    if avg_power > 0 and avg_power < 250:
-        return ('cycling', 'indoor_cycling')
-        
+    # 6. 預設 fallback 為跑步
     return ('running', 'generic')
 
 
@@ -256,13 +315,17 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                 raw_sport = f.get("sport", {}).get("stringValue")
                 raw_sub = f.get("sub_sport", {}).get("stringValue")
                 
+                local_meta = get_fit_file_metadata(file_name)
                 sport, sub_sport = resolve_sport_type(
                     file_name,
                     avg_power=avg_pwr,
                     avg_hr=avg_hr,
                     default_sport=raw_sport
                 )
-                if raw_sub and sub_sport == 'generic':
+                if local_meta:
+                    sport = local_meta.get("sport", sport)
+                    sub_sport = local_meta.get("sub_sport", sub_sport)
+                elif raw_sub and sub_sport == 'generic':
                     sub_sport = raw_sub
 
                 sport_icon_map = {
@@ -276,12 +339,16 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                 sport_display, sport_color = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
 
                 ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
-                # 1. 優先取頂層 duration_minutes
-                duration_min = _get_fs_val(f.get("duration_minutes", {}), 0.0)
-                # 2. 次優先取 time_series 最後一點
-                if duration_min <= 0 and ts_values:
-                    last_pt = ts_values[-1].get("mapValue", {}).get("fields", {})
-                    duration_min = _get_fs_val(last_pt.get("elapsed_minutes", {}), 0.0)
+                duration_min = 0.0
+                if local_meta and local_meta.get("duration_min", 0) > 0:
+                    duration_min = float(local_meta["duration_min"])
+                else:
+                    # 1. 優先取頂層 duration_minutes
+                    duration_min = _get_fs_val(f.get("duration_minutes", {}), 0.0)
+                    # 2. 次優先取 time_series 最後一點
+                    if duration_min <= 0 and ts_values:
+                        last_pt = ts_values[-1].get("mapValue", {}).get("fields", {})
+                        duration_min = _get_fs_val(last_pt.get("elapsed_minutes", {}), 0.0)
 
                 source_val = f.get("source", {}).get("stringValue", "manual_fit")
                 act_name = f.get("activity_name", {}).get("stringValue", file_name)
@@ -377,13 +444,14 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
         s["date"] = s_time.strftime("%m/%d") if s_time else "近期"
         s["full_date"] = s_time.strftime("%Y-%m-%d") if s_time else "2026-09-10"
 
-        # 校正運動時長：若 duration_min 缺失 (<= 0) 或明顯小於乳酸測試點時間，以乳酸採樣最大時間點校正為真實時長
-        if matched_la:
-            max_la_t = max([x["time_min"] for x in matched_la])
-            if s["duration_min"] <= 0 or s["duration_min"] < max_la_t or (s["duration_min"] == 45.0 and max_la_t > 40.0):
-                s["duration_min"] = round(max_la_t, 1)
+        # 校正運動時長：嚴禁以運動結束後休息/恢復期的乳酸採血時間點覆蓋真正的運動時長！
+        # 運動時長 (duration_min) 若已有正值，保持真實運動時長；只有在缺失 (<= 0) 時才作為備援
         if s["duration_min"] <= 0:
-            s["duration_min"] = 60.0
+            if matched_la:
+                max_la_t = max([x["time_min"] for x in matched_la])
+                s["duration_min"] = round(max_la_t, 1)
+            else:
+                s["duration_min"] = 35.0
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     
