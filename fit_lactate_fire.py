@@ -1365,46 +1365,33 @@ if app_mode == "AI 運動生理週報與下一次處方":
     ref_token = st.session_state.get('firebase_refresh_token')
 
     if not uid:
-        st.warning("⚠️ **您尚未登入 MyLactate 雲端帳號**：目前無法讀取您的專屬運動紀錄。請於左側側邊欄輸入帳號密碼登入。")
-        st.info("💡 如果您暫時想先體驗報告版面與分析功能，可點擊下方按鈕載入【示範選手 Mindy (自行車)】的模擬數據進行預覽。")
-        col_d1, _ = st.columns([2, 3])
-        with col_d1:
-            if st.button("🧪 僅載入示範數據體驗功能 (Mindy 自行車)", use_container_width=True):
-                st.session_state["show_demo_mode"] = True
-                st.session_state.pop("cached_weekly_report_html", None)
-                st.rerun()
+        st.warning("🔒 **請先登入 MyLactate 雲端帳號**")
+        st.info("系統將讀取您個人的真實汗乳酸測試紀錄與手錶日常運動進行運動生理週期分析。請於左側側邊欄輸入帳號密碼登入。")
+        st.stop()
 
-        if not st.session_state.get("show_demo_mode"):
-            st.stop()
-
-        athlete_name = "Mindy (示範選手)"
-        source_type = "demo"
-    else:
-        st.session_state.pop("show_demo_mode", None)
-        athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
-        source_type = "firebase"
-        st.success(f"👤 已連結個人雲端帳號：**{st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
+    athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
+    st.success(f"👤 已連結個人雲端帳號：**{st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
 
     col_ctl1, col_ctl2, col_ctl3 = st.columns([2, 2, 1])
     with col_ctl1:
-        session_range = st.slider(
-            "分析最近訓練場次數量 (場)",
+        lactate_session_target = st.slider(
+            "分析含乳酸關鍵測驗場次 (場)",
             min_value=3,
-            max_value=12,
-            value=7,
-            help="以實際訓練場次為準，系統將自動推算跨越天數（可橫跨一整個月）與相鄰兩場間隔天數",
-            key="ai_report_sessions"
+            max_value=10,
+            value=5,
+            help="系統將鎖定最近 N 場具有乳酸採樣的關鍵測驗，並自動將這幾場測驗期間所有手錶日常運動（無乳酸）全數納入，精準計算真實間隔天數與總體生理負荷",
+            key="ai_report_lactate_target"
         )
     with col_ctl2:
         sport_filter = st.selectbox(
             "運動專項篩選 (分開分析)",
-            options=["all", "cycling", "running"],
+            options=["all", "running", "cycling"],
             format_func=lambda x: {
                 "all": "🌐 全部專項 (綜合交叉分析)",
-                "cycling": "🚲 僅分析自行車騎行 (Cycling)",
-                "running": "🏃 僅分析跑步訓練 (Running)"
+                "running": "🏃 僅分析跑步訓練 (Running)",
+                "cycling": "🚲 僅分析自行車騎行 (Cycling)"
             }.get(x, x),
-            help="分開評估自行車（瓦數/代謝效率）與跑步（心率/配速），避免跨專項生理特徵混淆",
+            help="分開評估跑步（心率/配速）與自行車（瓦數/代謝效率），避免跨專項生理特徵混淆",
             key="ai_report_sport_filter"
         )
     with col_ctl3:
@@ -1417,21 +1404,19 @@ if app_mode == "AI 運動生理週報與下一次處方":
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v6_strict_user_data_isolation"
-    user_key = uid if uid else ("demo" if st.session_state.get("show_demo_mode") else "none")
-    current_cache_key = f"{user_key}_{athlete_name}_{session_range}_{sport_filter}_{REPORT_VERSION}"
+    REPORT_VERSION = "20260917_v7_lactate_anchored_intervening_sync"
+    current_cache_key = f"{uid}_{athlete_name}_{lactate_session_target}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
 
     if btn_gen or "cached_weekly_report_html" not in st.session_state:
         with st.spinner("🧠 正在透過汗乳酸生理學引擎運算並呼叫 AI 生成處方..."):
             report_data = awr.generate_weekly_report_data(
-                source=source_type,
                 athlete_name=athlete_name,
                 uid=uid,
                 token=token,
                 refresh_token=ref_token,
-                days_limit=session_range,
+                days_limit=lactate_session_target,
                 sport_filter=sport_filter
             )
 
@@ -1439,15 +1424,15 @@ if app_mode == "AI 運動生理週報與下一次處方":
             if report_data.get("new_token"):
                 st.session_state["firebase_token"] = report_data["new_token"]
 
-            # 若查無任何訓練場次，嚴格提示使用者，絕不以假數據冒充
+            # 若查無任何訓練場次，嚴格提示使用者
             if not report_data.get("sessions"):
                 st.session_state.pop("cached_weekly_report_html", None)
                 err_msg = report_data.get("fetch_error", "查無訓練紀錄")
-                st.warning(f"⚠️ **{athlete_name} 您好**：在【{sport_filter}】專項篩選下查無任何訓練場次紀錄。\n\n**詳細原因**：{err_msg}")
-                st.info("""💡 **排查與操作指引**：
-1. **專項篩選**：若您進行的是跑步訓練，請將上方篩選切換為 **🏃 僅分析跑步訓練 (Running)** 或 **🌐 全部專項**。
-2. **上傳記錄**：若尚未上傳 FIT 檔案，可切換至【FIT 檔與乳酸協同分析】上傳您的運動記錄。
-3. **手錶同步**：或使用左側側邊欄的【🔗 運動手錶雲端綁定 (Garmin / COROS via Intervals.icu)】一鍵同步手錶日常訓練。
+                st.warning(f"⚠️ **{athlete_name} 您好**：在【{sport_filter}】專項篩選下查無足夠之運動紀錄。\n\n**詳細原因**：{err_msg}")
+                st.info("""💡 **操作建議**：
+1. **專項篩選**：若您進行的是跑步訓練，請確認上方篩選為 **🏃 僅分析跑步訓練 (Running)** 或 **🌐 全部專項**。
+2. **上傳記錄**：若尚未上傳含有乳酸測試的 FIT 檔案，可切換至【FIT 檔與乳酸協同分析】上傳並標記乳酸。
+3. **手錶日常同步**：使用左側側邊欄的【🔗 運動手錶雲端綁定 (Garmin / COROS via Intervals.icu)】一鍵同步手錶日常訓練。
 """)
                 st.stop()
 

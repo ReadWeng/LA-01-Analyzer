@@ -19,49 +19,37 @@ import weekly_physio_engine as wpe
 import ai_coach_generator as acg
 
 
-def generate_weekly_report_data(source="firebase", athlete_name="選手", uid=None, token=None, api_key=None, days_limit=7, sport_filter="all", refresh_token=None):
+def generate_weekly_report_data(athlete_name="選手", uid=None, token=None, api_key=None, days_limit=5, sport_filter="all", refresh_token=None):
     """
-    抓取數據（以實際場次數量為準）、進行運動專項分流、汗乳酸與間隔運算，並呼叫 Firebase AI Logic
-    嚴格防禦：若使用者已登入，絕不靜默回退到模擬示範數據！
+    抓取真實用戶雲端數據（以指定場次之汗乳酸關鍵測驗為錨點，並納入期間所有手錶日常運動）、進行運動專項分流、汗乳酸動力學與跨期負荷運算，並呼叫 Firebase AI Logic
     """
-    fetch_error = None
-    new_token = token
-    sessions = []
-    is_demo = False
-
-    if uid and token:
-        # 使用者已登入 Firebase，嚴格讀取該用戶之真實雲端數據
-        sessions, new_token, fetch_error = wpe.fetch_firestore_dataset_with_status(
-            uid, token, session_limit=days_limit, sport_filter=sport_filter, refresh_token=refresh_token
-        )
-    elif source in ["demo", "DataMindy"]:
-        is_demo = True
-        if os.path.isdir("DataMindy"):
-            sessions = wpe.fetch_local_dataset("DataMindy", session_limit=days_limit, sport_filter=sport_filter)
-        else:
-            sessions = wpe.get_benchmark_dataset()
-    else:
-        sessions = []
-
-    # 關鍵防護：若登入者在該篩選條件下查無資料，嚴格回傳空清單與具體錯誤，絕不以 Mindy 假資料頂替！
-    if uid and not sessions:
+    if not uid or not token:
         return {
             "athlete_name": athlete_name,
             "metrics": {},
             "ai_analysis": None,
             "sessions": [],
             "sport_filter": sport_filter,
-            "is_demo": False,
-            "fetch_error": fetch_error or f"在【{sport_filter}】專項篩選下查無任何訓練場次紀錄",
+            "fetch_error": "尚未登入 MyLactate 帳號，請先於側邊欄登入以讀取您的雲端紀錄",
+            "new_token": token
+        }
+
+    sessions, new_token, fetch_error = wpe.fetch_firestore_dataset_with_status(
+        uid, token, session_limit=days_limit, sport_filter=sport_filter, refresh_token=refresh_token
+    )
+
+    if not sessions:
+        return {
+            "athlete_name": athlete_name,
+            "metrics": {},
+            "ai_analysis": None,
+            "sessions": [],
+            "sport_filter": sport_filter,
+            "fetch_error": fetch_error or f"在【{sport_filter}】專項篩選下查無足夠之運動紀錄",
             "new_token": new_token
         }
 
-    # 若非登入狀態且無任何數據，才載入標準基準數據
-    if not sessions:
-        sessions = wpe.get_benchmark_dataset()
-        is_demo = True
-
-    # 1. 運動生理學與跨期負荷運算
+    # 1. 運動生理學與跨期負荷運算 (包含手錶日常負荷與乳酸動力學)
     metrics = wpe.calculate_comprehensive_load(sessions)
 
     # 2. 透過 Firebase AI Logic 產出深度汗乳酸評析與處方
@@ -73,7 +61,6 @@ def generate_weekly_report_data(source="firebase", athlete_name="選手", uid=No
         "ai_analysis": ai_analysis,
         "sessions": sessions,
         "sport_filter": sport_filter,
-        "is_demo": is_demo,
         "new_token": new_token
     }
 
@@ -90,16 +77,13 @@ def render_modern_html_report(report_data):
     rx = ai.get("next_workout_prescription", {})
     hero_insights = ai.get("hero_insights", [])
 
-    is_demo = report_data.get("is_demo", False)
-    if is_demo:
-        source_banner_html = """<div style="background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; color: #fbbf24; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>⚠️</span> <span><strong>【示範體驗模式】</strong>目前展示示範選手 Mindy (自行車) 之歷史測試紀錄。登入個人帳號後將自動分析專屬於您的個人訓練數據。</span></div>"""
-    else:
-        source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫。</span></div>"""
+    source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫（包含關鍵乳酸測驗與日常背景運動）。</span></div>"""
 
     # 圖表資料準備
     dates_labels = [s["date"] for s in sessions]
-    avg_lactates = [s.get("avg_lactate", 0) for s in sessions]
-    max_lactates = [s.get("max_lactate", 0) for s in sessions]
+    # 若某場次為手錶日常（無乳酸採樣），在乳酸數值填入 None (JSON null)，避免繪出 0 mmol/L 的突兀柱狀
+    avg_lactates = [(s.get("avg_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else None) for s in sessions]
+    max_lactates = [(s.get("max_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else None) for s in sessions]
     powers = [s.get("avg_power", 0) for s in sessions]
     hrs = [s.get("avg_hr", 0) for s in sessions]
     durations = [s.get("duration_min", 0) for s in sessions]
@@ -825,6 +809,7 @@ def render_modern_html_report(report_data):
                         borderWidth: 2,
                         tension: 0.3,
                         pointRadius: 5,
+                        spanGaps: true,
                         yAxisID: 'yLactate'
                     }},
                     {{
@@ -843,6 +828,7 @@ def render_modern_html_report(report_data):
                         borderDash: [5, 5],
                         borderWidth: 2,
                         pointRadius: 4,
+                        spanGaps: true,
                         yAxisID: 'yIntensity'
                     }}
                 ]

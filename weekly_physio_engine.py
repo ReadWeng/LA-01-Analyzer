@@ -187,195 +187,8 @@ def infer_session_type_sweat(power, hr, avg_lactate, max_lactate, baseline_low=6
     return "常規運動訓練"
 
 
-def parse_local_html_report(fpath):
-    """
-    強健解析單份 lactate_report_*.html 獲取汗乳酸與運動指標
-    """
-    try:
-        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-
-        # 1. 開始時間
-        tm = re.search(r'活動開始時間.*?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', content, re.DOTALL)
-        if tm:
-            st_str = tm.group(1)
-        else:
-            fn_m = re.search(r'(\d{4})[-_]?(\d{2})[-_]?(\d{2})', os.path.basename(fpath))
-            if fn_m:
-                st_str = f"{fn_m.group(1)}-{fn_m.group(2)}-{fn_m.group(3)} 08:00:00"
-            else:
-                st_str = "2026-09-10 08:00:00"
-
-        try:
-            start_dt = datetime.strptime(st_str[:19], '%Y-%m-%d %H:%M:%S')
-        except Exception:
-            start_dt = datetime(2026, 9, 10, 8, 0, 0)
-
-        # 2. 活動時長
-        dur_m = re.search(r'活動時長.*?<div[^>]*kpi-value[^>]*>(.*?)</div>', content, re.DOTALL | re.IGNORECASE)
-        if not dur_m:
-            dur_m = re.search(r'活動時長.*?<div[^>]*metric-value[^>]*>(.*?)</div>', content, re.DOTALL | re.IGNORECASE)
-        if dur_m:
-            duration_min = parse_duration_to_minutes(dur_m.group(1))
-        else:
-            plain_dur = re.search(r'時長.*?(\d+(?:\.\d+)?)\s*分(?:\s*(\d+)\s*秒)?', content, re.DOTALL)
-            if plain_dur:
-                duration_min = float(plain_dur.group(1)) + (float(plain_dur.group(2))/60.0 if plain_dur.group(2) else 0)
-            else:
-                duration_min = 0.0
-
-        # 3. 功率
-        avg_p, max_p = 0.0, 0.0
-        p_m = re.search(r'功率.*?<div[^>]*kpi-value[^>]*>.*?(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*W', content, re.DOTALL | re.IGNORECASE)
-        if p_m:
-            avg_p = float(p_m.group(1))
-            max_p = float(p_m.group(2))
-        else:
-            plain_p = re.search(r'功率.*?(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*W', content, re.DOTALL)
-            if plain_p:
-                avg_p = float(plain_p.group(1))
-                max_p = float(plain_p.group(2))
-
-        # 4. 心率
-        avg_h, max_h = 0.0, 0.0
-        h_m = re.search(r'心率.*?<div[^>]*kpi-value[^>]*>.*?(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*bpm', content, re.DOTALL | re.IGNORECASE)
-        if h_m:
-            avg_h = float(h_m.group(1))
-            max_h = float(h_m.group(2))
-        else:
-            plain_h = re.search(r'心率.*?(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*bpm', content, re.DOTALL)
-            if plain_h:
-                avg_h = float(plain_h.group(1))
-                max_h = float(plain_h.group(2))
-
-        # 5. 汗乳酸採樣點解析
-        la_readings = []
-        table_m = re.search(r'<table[^>]*summary-table[^>]*>(.*?)</table>', content, re.DOTALL | re.IGNORECASE)
-        if not table_m:
-            table_m = re.search(r'<table[^>]*>(.*?)</table>', content, re.DOTALL | re.IGNORECASE)
-
-        if table_m:
-            tr_matches = re.findall(r'<tr[^>]*>(.*?)</tr>', table_m.group(1), re.DOTALL | re.IGNORECASE)
-            for tr in tr_matches:
-                tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL | re.IGNORECASE)
-                if len(tds) >= 2:
-                    clean_vals = [re.sub(r'<.*?>', '', td).strip() for td in tds]
-                    try:
-                        time_pt = float(re.search(r'(\d+(?:\.\d+)?)', clean_vals[0]).group(1))
-                        la_pt = float(re.search(r'(\d+(?:\.\d+)?)', clean_vals[1]).group(1))
-                        if 0.2 <= la_pt <= 60.0:  # 汗乳酸範圍寬廣，可達更高濃度
-                            la_readings.append({"time_min": time_pt, "lactate": la_pt})
-                    except Exception:
-                        pass
-
-        if not la_readings:
-            all_la_matches = re.findall(r'(\d+(?:\.\d+)?)\s*mmol/L', content)
-            la_vals = [float(x) for x in all_la_matches if 0.4 <= float(x) <= 60.0]
-            for i, v in enumerate(la_vals):
-                la_readings.append({"time_min": round((i + 1) * (duration_min / (len(la_vals) + 1)), 1), "lactate": v})
-
-        raw_lactates = [pt["lactate"] for pt in la_readings]
-        avg_la = round(float(np.mean(raw_lactates)), 2) if raw_lactates else 0.0
-        max_la = round(float(np.max(raw_lactates)), 2) if raw_lactates else 0.0
-        init_la = raw_lactates[0] if raw_lactates else 0.0
-        final_la = raw_lactates[-1] if raw_lactates else 0.0
-
-        # 若時長未成功抓取或為 0，且有乳酸時間點，以最大乳酸時間點校正時長
-        if duration_min <= 0 and la_readings:
-            max_la_pt_time = max([pt["time_min"] for pt in la_readings])
-            if max_la_pt_time > 0:
-                duration_min = round(max_la_pt_time, 1)
-        if duration_min <= 0:
-            duration_min = 60.0
-
-        # 6. 解析運動類型 (sport, sub_sport)
-        fit_match = re.search(r'([\w\-]+\.fit)', content, re.IGNORECASE)
-        ref_fn = fit_match.group(1) if fit_match else os.path.basename(fpath)
-        sport, sub_sport = resolve_sport_type(ref_fn, avg_power=avg_p, avg_hr=avg_h)
-
-        sport_icon_map = {
-            'cycling': ('🚴 自行車', '#00f2fe'),
-            'running': ('🏃 跑步', '#ff5252'),
-            'swimming': ('🏊 游泳', '#4facfe'),
-            'walking': ('🚶 健走', '#00e676'),
-            'generic': ('🏅 綜合訓練', '#ffab00'),
-            'unknown': ('🎯 運動紀錄', '#94a3b8')
-        }
-        sport_display, sport_color = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
-
-        return {
-            "source_file": os.path.basename(fpath),
-            "start_time": start_dt,
-            "date": start_dt.strftime("%m/%d"),
-            "full_date": start_dt.strftime("%Y-%m-%d"),
-            "duration_min": round(duration_min, 1),
-            "sport": sport,
-            "sub_sport": sub_sport,
-            "sport_display": sport_display,
-            "sport_color": sport_color,
-            "avg_power": round(avg_p, 1),
-            "max_power": round(max_p, 1),
-            "avg_hr": round(avg_h, 1),
-            "max_hr": round(max_h, 1),
-            "lactate_readings": la_readings,
-            "lactate_values": raw_lactates,
-            "avg_lactate": avg_la,
-            "max_lactate": max_la,
-            "initial_lactate": init_la,
-            "final_lactate": final_la
-        }
-    except Exception as e:
-        print(f"解析 {fpath} 發生錯誤: {e}")
-        return None
 
 
-def fetch_local_dataset(folder_path="DataMindy", session_limit=7, sport_filter="all"):
-    """
-    從本地資料夾載入歷史 HTML 報告，篩選最近有效訓練場次 (Sessions)
-    以實際運動日為準，不限定連續天數；支援依運動專項 (sport_filter) 進行分流篩選
-    """
-    html_files = sorted(glob.glob(os.path.join(folder_path, "lactate_report_*.html")))
-    sessions = []
-    for fp in html_files:
-        parsed = parse_local_html_report(fp)
-        if parsed and parsed.get("duration_min", 0) > 5:
-            sessions.append(parsed)
-
-    if not sessions:
-        return get_benchmark_dataset()
-
-    # 依開始時間去重 (相差 <= 180 秒視為同一場次)
-    unique_local = []
-    seen_local_times = []
-    for s in sessions:
-        s_dt = s.get("start_time")
-        if not s_dt:
-            continue
-        matched_idx = -1
-        for idx, ex_dt in enumerate(seen_local_times):
-            if abs((s_dt - ex_dt).total_seconds()) <= 180:
-                matched_idx = idx
-                break
-        if matched_idx == -1:
-            seen_local_times.append(s_dt)
-            unique_local.append(s)
-        else:
-            existing = unique_local[matched_idx]
-            if len(s.get("lactate_readings", [])) > len(existing.get("lactate_readings", [])):
-                unique_local[matched_idx] = s
-                seen_local_times[matched_idx] = s_dt
-    sessions = unique_local
-
-    # 依運動專項篩選
-    if sport_filter and sport_filter != "all":
-        sessions = [s for s in sessions if s.get("sport") == sport_filter]
-
-    if not sessions:
-        # 若該專項無紀錄，回傳空清單讓外層提示
-        return []
-
-    sessions = sorted(sessions, key=lambda x: x["start_time"])
-    return sessions[-session_limit:]
 
 
 def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filter="all", refresh_token=None):
@@ -602,12 +415,33 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
     if sport_filter and sport_filter != "all":
         valid = [s for s in valid if s.get("sport") == sport_filter]
 
+    if not valid:
+        return [], active_token, f"在【{sport_filter}】專項篩選下查無任何運動紀錄"
+
     valid = sorted(valid, key=lambda x: x["start_time"])
-    final_sessions = valid[-session_limit:] if valid else []
+
+    # 找出所有包含汗乳酸採樣的關鍵測驗場次
+    lactate_sessions = [
+        s for s in valid
+        if len(s.get("lactate_readings", [])) > 0 or s.get("avg_lactate", 0) > 0
+    ]
+
+    if not lactate_sessions:
+        return [], active_token, "查無任何包含汗乳酸採樣的測驗紀錄，請先登錄乳酸測試數據"
+
+    # 取最近 N 場（預設 5 場）含乳酸之關鍵測驗場次
+    target_la_count = session_limit if (session_limit and session_limit > 0) else 5
+    target_la_sessions = lactate_sessions[-target_la_count:]
+    earliest_la_time = target_la_sessions[0]["start_time"]
+
+    # 關鍵策略：拉入自最早該場乳酸測驗起至最新一場之間的所有運動
+    # （包含這 5 場乳酸測驗 + 期間所有中間有運動但沒乳酸的手錶日常數據）
+    final_sessions = [s for s in valid if s["start_time"] >= earliest_la_time]
+
     return final_sessions, active_token, None
 
 
-def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all", refresh_token=None):
+def fetch_firestore_dataset(uid, token, session_limit=5, sport_filter="all", refresh_token=None):
     """
     相容舊版介面，回傳訓練場次清單
     """
@@ -833,113 +667,3 @@ def calculate_comprehensive_load(sessions):
         "sessions": sessions
     }
 
-
-def get_benchmark_dataset():
-    """標準基準模擬數據（跨月 5 場，包含真實心率、功率與採樣汗乳酸）"""
-    return [
-        {
-            "source_file": "2026-08-22-mock.html",
-            "start_time": datetime(2026, 8, 22, 7, 32),
-            "date": "08/22",
-            "full_date": "2026-08-22",
-            "duration_min": 32.1,
-            "sport": "cycling",
-            "sub_sport": "indoor_cycling",
-            "sport_display": "🚴 自行車",
-            "sport_color": "#00f2fe",
-            "avg_power": 186.7,
-            "max_power": 245.0,
-            "avg_hr": 152.9,
-            "max_hr": 178.0,
-            "lactate_readings": [{"time_min": 10, "lactate": 14.5}, {"time_min": 30, "lactate": 18.3}],
-            "lactate_values": [14.5, 18.3],
-            "avg_lactate": 16.4,
-            "max_lactate": 18.3,
-            "initial_lactate": 14.5,
-            "final_lactate": 18.3
-        },
-        {
-            "source_file": "2026-08-26-mock.html",
-            "start_time": datetime(2026, 8, 26, 18, 30),
-            "date": "08/26",
-            "full_date": "2026-08-26",
-            "duration_min": 41.7,
-            "sport": "cycling",
-            "sub_sport": "indoor_cycling",
-            "sport_display": "🚴 自行車",
-            "sport_color": "#00f2fe",
-            "avg_power": 184.3,
-            "max_power": 230.0,
-            "avg_hr": 132.1,
-            "max_hr": 155.0,
-            "lactate_readings": [{"time_min": 15, "lactate": 8.5}, {"time_min": 35, "lactate": 10.0}],
-            "lactate_values": [8.5, 10.0],
-            "avg_lactate": 9.25,
-            "max_lactate": 10.0,
-            "initial_lactate": 8.5,
-            "final_lactate": 10.0
-        },
-        {
-            "source_file": "2026-08-29-mock.html",
-            "start_time": datetime(2026, 8, 29, 5, 51),
-            "date": "08/29",
-            "full_date": "2026-08-29",
-            "duration_min": 96.1,
-            "sport": "cycling",
-            "sub_sport": "indoor_cycling",
-            "sport_display": "🚴 自行車",
-            "sport_color": "#00f2fe",
-            "avg_power": 194.0,
-            "max_power": 260.0,
-            "avg_hr": 151.6,
-            "max_hr": 182.0,
-            "lactate_readings": [{"time_min": 25, "lactate": 11.2}, {"time_min": 60, "lactate": 15.6}, {"time_min": 90, "lactate": 19.7}],
-            "lactate_values": [11.2, 15.6, 19.7],
-            "avg_lactate": 15.5,
-            "max_lactate": 19.7,
-            "initial_lactate": 11.2,
-            "final_lactate": 19.7
-        },
-        {
-            "source_file": "2026-09-08-mock.html",
-            "start_time": datetime(2026, 9, 8, 19, 45),
-            "date": "09/08",
-            "full_date": "2026-09-08",
-            "duration_min": 33.1,
-            "sport": "cycling",
-            "sub_sport": "indoor_cycling",
-            "sport_display": "🚴 自行車",
-            "sport_color": "#00f2fe",
-            "avg_power": 189.0,
-            "max_power": 255.0,
-            "avg_hr": 159.0,
-            "max_hr": 181.0,
-            "lactate_readings": [{"time_min": 10, "lactate": 9.8}, {"time_min": 25, "lactate": 14.5}, {"time_min": 32, "lactate": 17.1}],
-            "lactate_values": [9.8, 14.5, 17.1],
-            "avg_lactate": 13.8,
-            "max_lactate": 17.1,
-            "initial_lactate": 9.8,
-            "final_lactate": 17.1
-        },
-        {
-            "source_file": "2026-09-10-mock.html",
-            "start_time": datetime(2026, 9, 10, 19, 54),
-            "date": "09/10",
-            "full_date": "2026-09-10",
-            "duration_min": 60.0,
-            "sport": "cycling",
-            "sub_sport": "indoor_cycling",
-            "sport_display": "🚴 自行車",
-            "sport_color": "#00f2fe",
-            "avg_power": 196.9,
-            "max_power": 282.0,
-            "avg_hr": 149.6,
-            "max_hr": 160.0,
-            "lactate_readings": [{"time_min": 15, "lactate": 6.2}, {"time_min": 35, "lactate": 7.8}, {"time_min": 58, "lactate": 10.5}],
-            "lactate_values": [6.2, 7.8, 10.5],
-            "avg_lactate": 8.17,
-            "max_lactate": 10.5,
-            "initial_lactate": 6.2,
-            "final_lactate": 10.5
-        }
-    ]
