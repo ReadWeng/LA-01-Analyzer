@@ -43,7 +43,8 @@ def generate_weekly_report_data(source="DataMindy", athlete_name="選手", uid=N
         "athlete_name": athlete_name,
         "metrics": metrics,
         "ai_analysis": ai_analysis,
-        "sessions": sessions
+        "sessions": sessions,
+        "sport_filter": sport_filter
     }
 
 
@@ -102,13 +103,25 @@ def render_modern_html_report(report_data):
         zone_pct.get("High_Glycolytic", 0)
     ]
 
-    # 專項範圍識別標籤
-    if metrics.get("is_pure_cycling"):
+    # 專項範圍識別標籤 (精確反映使用者篩選意圖與專項分佈)
+    sport_filter = report_data.get("sport_filter", "all")
+    counts = metrics.get("sport_counts", {})
+    
+    if sport_filter == "cycling" or (sport_filter != "all" and metrics.get("is_pure_cycling")):
         sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(0,242,254,0.12); border:1px solid rgba(0,242,254,0.3); color:#00f2fe; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🚲 自行車專項分析</span>"
-    elif metrics.get("is_pure_running"):
+    elif sport_filter == "running" or (sport_filter != "all" and metrics.get("is_pure_running")):
         sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(255,82,82,0.12); border:1px solid rgba(255,82,82,0.3); color:#ff5252; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🏃 跑步專項分析</span>"
     else:
-        sport_scope_badge = "<span style='display:inline-flex; align-items:center; background:rgba(255,171,0,0.12); border:1px solid rgba(255,171,0,0.3); color:#ffab00; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🌐 跨項目綜合分析 (騎行/跑步分流)</span>"
+        c_items = []
+        if counts.get('cycling', 0) > 0:
+            c_items.append(f"🚲 騎行 {counts.get('cycling')} 場")
+        if counts.get('running', 0) > 0:
+            c_items.append(f"🏃 跑步 {counts.get('running')} 場")
+        for k, v in counts.items():
+            if k not in ['cycling', 'running'] and v > 0:
+                c_items.append(f"🏅 {k} {v} 場")
+        detail_desc = f" ({' / '.join(c_items)})" if c_items else ""
+        sport_scope_badge = f"<span style='display:inline-flex; align-items:center; background:rgba(255,171,0,0.12); border:1px solid rgba(255,171,0,0.3); color:#ffab00; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;'>🌐 全部專項 (綜合交叉分析){detail_desc}</span>"
 
     # 處方階段 HTML
     phases_html = ""

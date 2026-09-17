@@ -513,15 +513,20 @@ def import_historical_html_to_firebase(html_content, file_name):
     if cm:
         max_core = float(cm.group(1))
 
-    # 運動類型推斷
-    sport = 'cycling' if avg_power > 0 else 'running'
+    # 運動類型推斷 (智能整合 FIT 官方快取、檔名、踏頻與 Stryd 跑步功率計特徵)
+    import weekly_physio_engine as wpe
+    sport, sub_sport = wpe.resolve_sport_type(
+        original_filename,
+        avg_power=avg_power,
+        avg_hr=avg_hr
+    )
     sp_m = re.search(r'運動類型.*?([a-zA-Z\u4e00-\u9fa5]+)', html_content)
     if sp_m:
         sp_txt = sp_m.group(1).lower()
         if any(k in sp_txt for k in ['bike', 'cycling', '自行車', '騎行']):
-            sport = 'cycling'
+            sport, sub_sport = 'cycling', 'indoor_cycling'
         elif any(k in sp_txt for k in ['run', '跑步', '慢跑']):
-            sport = 'running'
+            sport, sub_sport = 'running', 'generic'
 
     # 3. Plotly time series (downsample to 30s bins)
     time_series_points = []
@@ -610,7 +615,7 @@ def import_historical_html_to_firebase(html_content, file_name):
             "file_name": {"stringValue": str(original_filename)},
             "start_time": {"timestampValue": start_time.isoformat() + "Z"},
             "sport": {"stringValue": str(sport)},
-            "sub_sport": {"stringValue": "indoor_cycling" if sport == "cycling" else "generic"},
+            "sub_sport": {"stringValue": str(sub_sport)},
             "duration_minutes": {"doubleValue": float(duration_min)},
             "avg_power": {"integerValue": str(int(avg_power))},
             "max_power": {"integerValue": str(int(max_power))},
@@ -1269,7 +1274,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v4_sport_type_split"
+    REPORT_VERSION = "20260917_v5_sport_split_override"
     current_cache_key = f"{source_type}_{athlete_name}_{session_range}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)

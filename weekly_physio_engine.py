@@ -21,72 +21,85 @@ import pandas as pd
 import requests
 
 
-_FIT_SPORT_CACHE = None
+_FIT_SPORT_CACHE = {}
+
+def get_fit_file_sport(file_name):
+    """
+    隨需快速查詢特定 FIT 檔案的官方 sport / sub_sport，具備記憶快取（秒開、不卡頓）
+    """
+    if not file_name:
+        return None
+    fn_clean = os.path.basename(str(file_name)).strip()
+    m_fit = re.search(r'([\w\-]+\.fit)', fn_clean, re.IGNORECASE)
+    target_fit = m_fit.group(1) if m_fit else (fn_clean if fn_clean.lower().endswith('.fit') else None)
+    if not target_fit:
+        return None
+        
+    if target_fit in _FIT_SPORT_CACHE:
+        return _FIT_SPORT_CACHE[target_fit]
+        
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(cur_dir)
+    search_dirs = [cur_dir, parent_dir]
+    sub_names = ["DataYen", "DataMindy", "DataSunday", "0521", "RunDataRead", "RunDataDayu", "RunDataMei", "bikeData", "."]
+    
+    found_path = None
+    for b in search_dirs:
+        for s in sub_names:
+            p = os.path.normpath(os.path.join(b, s, target_fit))
+            if os.path.isfile(p):
+                found_path = p
+                break
+        if found_path:
+            break
+            
+    if found_path:
+        try:
+            import fitparse
+            fit = fitparse.FitFile(found_path, check_crc=False)
+            sp = None
+            sub = 'generic'
+            for m in fit.get_messages('sport'):
+                vals = {x.name: x.value for x in m.fields}
+                if vals.get('sport'):
+                    sp = str(vals.get('sport')).lower()
+                    if vals.get('sub_sport'):
+                        sub = str(vals.get('sub_sport')).lower()
+                    break
+            if not sp:
+                for m in fit.get_messages('session'):
+                    vals = {x.name: x.value for x in m.fields}
+                    if vals.get('sport'):
+                        sp = str(vals.get('sport')).lower()
+                        if vals.get('sub_sport'):
+                            sub = str(vals.get('sub_sport')).lower()
+                        break
+            if sp:
+                _FIT_SPORT_CACHE[target_fit] = (sp, sub)
+                _FIT_SPORT_CACHE[target_fit.replace('.fit', '')] = (sp, sub)
+                return (sp, sub)
+        except Exception:
+            pass
+            
+    return None
+
 
 def get_workspace_fit_sport_cache():
-    """
-    掃描本地工作區所有已知 FIT 檔案，提取原生官方 sport 與 sub_sport，
-    建立以檔名為鍵的索引表，以達到 100% 精準匹配。
-    """
-    global _FIT_SPORT_CACHE
-    if _FIT_SPORT_CACHE is not None:
-        return _FIT_SPORT_CACHE
-        
-    cache = {}
-    try:
-        import fitparse
-        search_dirs = [".", "DataYen", "DataMindy", "DataSunday", "0521", "RunDataRead"]
-        seen_files = set()
-        for s_dir in search_dirs:
-            if not os.path.exists(s_dir):
-                continue
-            for root, _, files in os.walk(s_dir):
-                for f in files:
-                    if f.endswith('.fit') and f not in seen_files:
-                        seen_files.add(f)
-                        p = os.path.join(root, f)
-                        try:
-                            fit = fitparse.FitFile(p)
-                            sp = None
-                            sub = 'generic'
-                            for m in fit.get_messages('sport'):
-                                vals = {x.name: x.value for x in m.fields}
-                                if vals.get('sport'):
-                                    sp = str(vals.get('sport')).lower()
-                                    if vals.get('sub_sport'):
-                                        sub = str(vals.get('sub_sport')).lower()
-                            if not sp:
-                                for m in fit.get_messages('session'):
-                                    vals = {x.name: x.value for x in m.fields}
-                                    if vals.get('sport'):
-                                        sp = str(vals.get('sport')).lower()
-                                        if vals.get('sub_sport'):
-                                            sub = str(vals.get('sub_sport')).lower()
-                            if sp:
-                                cache[f] = (sp, sub)
-                                cache[f.replace('.fit', '')] = (sp, sub)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-        
-    _FIT_SPORT_CACHE = cache
     return _FIT_SPORT_CACHE
 
 
 def resolve_sport_type(filename_or_text, avg_power=0, avg_hr=0, cadence=0, default_sport=None):
     """
     結合 FIT 檔官方資訊、檔名關鍵字、步頻特徵與功率水準綜合研判真實運動專項。
+    特別注意：受試者佩戴 Stryd 跑步功率計時功率常在 280W~350W，且心率在 150~180bpm；
+    自行車飛輪訓練功率多在 100W~180W。若歷史資料庫曾誤將跑步存為 cycling，特徵規則將自動修正。
     """
     fn_clean = os.path.basename(str(filename_or_text)).strip()
     
-    # 1. 優先從 FIT 檔官方快取查詢
-    cache = get_workspace_fit_sport_cache()
-    m_fit = re.search(r'([\w\-]+\.fit)', fn_clean, re.IGNORECASE)
-    if m_fit and m_fit.group(1) in cache:
-        return cache[m_fit.group(1)]
-    if fn_clean in cache:
-        return cache[fn_clean]
+    # 1. 優先從 FIT 檔官方快取查詢 (秒開精確解析)
+    fit_res = get_fit_file_sport(fn_clean)
+    if fit_res:
+        return fit_res
     
     # 2. 檢查檔名與文字中的明確關鍵字
     txt_lower = fn_clean.lower()
@@ -101,15 +114,19 @@ def resolve_sport_type(filename_or_text, avg_power=0, avg_hr=0, cadence=0, defau
     if 40 <= cadence <= 120 and avg_power > 0:
         return ('cycling', 'indoor_cycling')
         
-    # 4. 如果已有明確的 default_sport (且非 unknown)
-    if default_sport and default_sport not in ['unknown', 'None', '']:
+    # 4. 生理與功率特徵優先覆蓋（防止歷史匯入將跑步功率計紀錄誤存為 cycling）
+    # Stryd 跑步動態功率通常 >= 250W 且心率較高
+    if avg_power >= 250 and avg_hr >= 140:
+        return ('running', 'generic')
+
+    # 5. 若已具備可靠的 default_sport (且非 unknown)
+    if default_sport and default_sport not in ['unknown', 'None', '', 'generic']:
+        # 若標記為 cycling 但功率高達 220W+ 且無自行車踏頻，再次防禦
+        if default_sport == 'cycling' and avg_power >= 250:
+            return ('running', 'generic')
         return (default_sport, 'generic')
         
-    # 5. 特徵啟發判斷：若功率極高 (例如 >=260W) 且心率很高 (>=145bpm)，常為 Stryd 跑步功率計
-    # 自行車飛輪受試者功率多在 100~150W
-    if avg_power >= 260 and avg_hr >= 145:
-        return ('running', 'generic')
-        
+    # 6. 一般自行車飛輪特徵 (1~249W)
     if avg_power > 0 and avg_power < 250:
         return ('cycling', 'indoor_cycling')
         
