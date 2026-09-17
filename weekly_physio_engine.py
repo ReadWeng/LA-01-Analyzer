@@ -346,6 +346,31 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                 avg_hr = _get_fs_val(f.get("avg_hr", {}), 0.0)
                 max_hr = _get_fs_val(f.get("max_hr", {}), 0.0)
 
+                ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
+
+                # 核心計算：若 avg_power 為空或 0，自動從 30 秒平均功率數列 (time_series) 計算出整場總平均功率
+                if ts_values:
+                    pwrs_30s = []
+                    hrs_30s = []
+                    for pt in ts_values:
+                        pf = pt.get("mapValue", {}).get("fields", {})
+                        p = _get_fs_val(pf.get("power_30s", {}), 0.0)
+                        if p <= 0:
+                            p = _get_fs_val(pf.get("power", {}), 0.0)
+                        if p > 0:
+                            pwrs_30s.append(p)
+                        h = _get_fs_val(fields.get("heart_rate", {}), 0.0) if 'fields' in locals() else _get_fs_val(pf.get("heart_rate", {}), 0.0)
+                        if h > 0:
+                            hrs_30s.append(h)
+                    if pwrs_30s:
+                        computed_avg_pwr = round(float(sum(pwrs_30s)) / len(pwrs_30s), 1)
+                        if avg_pwr <= 0:
+                            avg_pwr = computed_avg_pwr
+                        if max_pwr <= 0:
+                            max_pwr = round(float(max(pwrs_30s)), 1)
+                    if hrs_30s and avg_hr <= 0:
+                        avg_hr = round(float(sum(hrs_30s)) / len(hrs_30s), 1)
+
                 raw_sport = f.get("sport", {}).get("stringValue", "")
                 raw_sub = f.get("sub_sport", {}).get("stringValue", "")
                 
@@ -376,7 +401,6 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                             avg_hr=avg_hr,
                             default_sport=raw_sport
                         )
-                    ts_values = f.get("time_series", {}).get("arrayValue", {}).get("values", [])
                     duration_min = _get_fs_val(f.get("duration_minutes", {}), 0.0)
                     if duration_min <= 0 and ts_values:
                         last_pt = ts_values[-1].get("mapValue", {}).get("fields", {})
@@ -425,7 +449,7 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                     "lactate_readings": []
                 })
 
-            # 1.1 自動回補 Intervals.icu 手錶日常運動的缺失功率，不再空著
+            # 1.1 自動回補 Intervals.icu 手錶日常運動的缺失 30 秒平均功率與總平均功率
             missing_pwr_icu = [s for s in fit_sessions if s.get("source") == "intervals_icu" and (s.get("avg_power", 0) <= 0) and s.get("start_time")]
             if missing_pwr_icu and uid and active_token:
                 try:
@@ -451,7 +475,17 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                                 try:
                                     clean_a_ts = a_start_str.replace("Z", "+00:00")
                                     a_dt = datetime.fromisoformat(clean_a_ts)
-                                    pwr_val, max_pwr_val = ic.extract_intervals_power(a)
+                                    a_id = str(a.get("id", ""))
+                                    
+                                    # 先嘗試從串流提取 30 秒平均功率與總平均功率
+                                    streams = ic.fetch_intervals_activity_streams(api_key, a_id) if a_id else {}
+                                    ts_pts, stream_pwr, stream_max_pwr = ic.process_intervals_streams_to_30s(streams) if streams else ([], 0.0, 0.0)
+                                    
+                                    pwr_val = stream_pwr
+                                    max_pwr_val = stream_max_pwr
+                                    if pwr_val <= 0:
+                                        pwr_val, max_pwr_val = ic.extract_intervals_power(a)
+                                        
                                     if pwr_val > 0:
                                         for s in missing_pwr_icu:
                                             if abs((s["start_time"].replace(tzinfo=None) - a_dt.replace(tzinfo=None)).total_seconds()) <= 300:
@@ -459,16 +493,18 @@ def fetch_firestore_dataset_with_status(uid, token, session_limit=7, sport_filte
                                                 s["max_power"] = max_pwr_val
                                                 doc_id_val = s.get("id")
                                                 if doc_id_val:
-                                                    patch_payload = {
-                                                        "fields": {
-                                                            "avg_power": {"integerValue": str(int(pwr_val))},
-                                                            "max_power": {"integerValue": str(int(max_pwr_val))}
-                                                        }
+                                                    patch_fields = {
+                                                        "avg_power": {"integerValue": str(int(pwr_val))},
+                                                        "max_power": {"integerValue": str(int(max_pwr_val))}
                                                     }
-                                                    mask_u = f"https://firestore.googleapis.com/v1/{doc_id_val}?updateMask.fieldPaths=avg_power&updateMask.fieldPaths=max_power"
-                                                    requests.patch(mask_u, headers=headers, json=patch_payload, timeout=5)
-                                except Exception:
-                                    pass
+                                                    mask_str = "updateMask.fieldPaths=avg_power&updateMask.fieldPaths=max_power"
+                                                    if ts_pts:
+                                                        patch_fields["time_series"] = {"arrayValue": {"values": ts_pts}}
+                                                        mask_str += "&updateMask.fieldPaths=time_series"
+                                                    mask_u = f"https://firestore.googleapis.com/v1/{doc_id_val}?{mask_str}"
+                                                    requests.patch(mask_u, headers=headers, json={"fields": patch_fields}, timeout=5)
+                                except Exception as err:
+                                    print(f"Error patching power for act: {err}")
                 except Exception as e:
                     print(f"Auto-patching intervals power failed: {e}")
         else:

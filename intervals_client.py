@@ -202,9 +202,114 @@ def extract_intervals_power(act: Dict[str, Any]) -> Tuple[float, float]:
     return avg_pwr, max_pwr
 
 
-def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any]) -> Dict[str, Any]:
+def fetch_intervals_activity_streams(api_key: str, activity_id: str) -> Dict[str, List[Any]]:
     """
-    將 Intervals.icu 的單場活動轉換為標準 Firestore fit_records 格式
+    從 Intervals.icu 下載活動的詳細數據串流 (streams: time, watts, heartrate, cadence, etc.)
+    """
+    if not api_key or not activity_id:
+        return {}
+    url = f"{INTERVALS_BASE_URL}/activity/{activity_id}/streams"
+    headers = get_basic_auth_header(api_key)
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            stream_dict = {}
+            if isinstance(data, list):
+                for item in data:
+                    stype = item.get("type")
+                    sdata = item.get("data")
+                    if stype and sdata:
+                        stream_dict[stype] = sdata
+            return stream_dict
+        elif resp.status_code == 404:
+            alt_url = f"{INTERVALS_BASE_URL}/athlete/0/activities/{activity_id}/streams"
+            r_alt = requests.get(alt_url, headers=headers, timeout=10)
+            if r_alt.status_code == 200:
+                data = r_alt.json()
+                stream_dict = {}
+                if isinstance(data, list):
+                    for item in data:
+                        stype = item.get("type")
+                        sdata = item.get("data")
+                        if stype and sdata:
+                            stream_dict[stype] = sdata
+                return stream_dict
+    except Exception as e:
+        print(f"Error fetching activity {activity_id} streams: {e}")
+    return {}
+
+
+def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple[List[Dict[str, Any]], float, float]:
+    """
+    將 Intervals.icu 數據串流 (time, watts, heartrate) 降採樣為 30 秒平均 (30s bins)，
+    登錄為標準 Firestore time_series 點位 (含 power, power_30s, heart_rate)，
+    並計算出整場運動的【總平均功率】與【最大功率】。
+    """
+    time_arr = stream_dict.get("time", [])
+    watts_arr = stream_dict.get("watts", [])
+    hr_arr = stream_dict.get("heartrate", [])
+    
+    if not time_arr:
+        return [], 0.0, 0.0
+        
+    n = len(time_arr)
+    bins = {}
+    for i in range(n):
+        t = float(time_arr[i])
+        b_idx = int(t // 30)
+        if b_idx not in bins:
+            bins[b_idx] = {'pwrs': [], 'hrs': []}
+        if i < len(watts_arr) and watts_arr[i] is not None:
+            try:
+                w = float(watts_arr[i])
+                if w >= 0:
+                    bins[b_idx]['pwrs'].append(w)
+            except (ValueError, TypeError):
+                pass
+        if i < len(hr_arr) and hr_arr[i] is not None:
+            try:
+                h = float(hr_arr[i])
+                if h > 0:
+                    bins[b_idx]['hrs'].append(h)
+            except (ValueError, TypeError):
+                pass
+                
+    time_series_points = []
+    all_30s_pwrs = []
+    max_pwr = 0.0
+    
+    for b_idx in sorted(bins.keys()):
+        b_data = bins[b_idx]
+        bin_min = round((b_idx * 30.0) / 60.0, 2)
+        pt_fields = {
+            "elapsed_minutes": {"doubleValue": bin_min}
+        }
+        if b_data['pwrs']:
+            mean_pwr = round(sum(b_data['pwrs']) / len(b_data['pwrs']), 1)
+            pt_fields["power"] = {"doubleValue": mean_pwr}
+            pt_fields["power_30s"] = {"doubleValue": mean_pwr}
+            all_30s_pwrs.append(mean_pwr)
+            if mean_pwr > max_pwr:
+                max_pwr = mean_pwr
+        if b_data['hrs']:
+            mean_hr = round(sum(b_data['hrs']) / len(b_data['hrs']), 1)
+            pt_fields["heart_rate"] = {"doubleValue": mean_hr}
+            
+        time_series_points.append({
+            "mapValue": {
+                "fields": pt_fields
+            }
+        })
+        
+    total_avg_pwr = round(sum(all_30s_pwrs) / len(all_30s_pwrs), 1) if all_30s_pwrs else 0.0
+    return time_series_points, total_avg_pwr, max_pwr
+
+
+def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any], api_key: Optional[str] = None) -> Dict[str, Any]:
+    """
+    將 Intervals.icu 的單場活動轉換為標準 Firestore fit_records 格式，
+    自動抓取串流並降採樣為 30 秒平均功率數列 (time_series)，計算總平均功率。
     """
     start_str = act.get("start_date_local") or act.get("start_date")
     start_dt = None
@@ -235,6 +340,19 @@ def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any]) -> Di
     act_id = str(act.get("id", ""))
     act_name = act.get("name", f"{sport.capitalize()} Session")
 
+    # 嘗試抓取 30 秒串流數據
+    time_series_points = []
+    if api_key and act_id:
+        streams = fetch_intervals_activity_streams(api_key, act_id)
+        if streams:
+            ts_pts, stream_avg_pwr, stream_max_pwr = process_intervals_streams_to_30s(streams)
+            if ts_pts:
+                time_series_points = ts_pts
+            if stream_avg_pwr > 0:
+                avg_pwr = stream_avg_pwr
+            if stream_max_pwr > max_pwr:
+                max_pwr = stream_max_pwr
+
     clean_time = start_dt.strftime("%Y%m%d_%H%M%S")
     doc_id = f"fit_{clean_time}_icu_{act_id}"
 
@@ -257,7 +375,7 @@ def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any]) -> Di
             "icu_intensity": {"doubleValue": round(intensity, 2)},
             "source": {"stringValue": "intervals_icu"},
             "has_lactate": {"booleanValue": False}, # 標記為日常訓練（無採樣乳酸）
-            "time_series": {"arrayValue": {"values": []}}
+            "time_series": {"arrayValue": {"values": time_series_points}}
         }
     }
 
@@ -368,7 +486,7 @@ def sync_pre_lactate_activities_to_firebase(
     skipped_count = 0
 
     for act in all_activities:
-        rec = convert_intervals_activity_to_firebase_fit_record(act)
+        rec = convert_intervals_activity_to_firebase_fit_record(act, api_key=intervals_api_key)
         act_start = rec["start_time"]
 
         # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！

@@ -165,7 +165,8 @@ def render_modern_html_report(report_data):
         has_la = (s.get('avg_lactate', 0) > 0) or (len(s.get('lactate_readings', [])) > 0)
         
         eff_str = f"{s.get('metabolic_efficiency', 0)} {s.get('efficiency_unit', '')}" if (s.get('metabolic_efficiency') is not None and s.get('metabolic_efficiency', 0) > 0) else "<span style='color:#64748b;'>—</span>"
-        pwr_str = f"{s.get('avg_power', 0)} W" if s.get('avg_power', 0) > 0 else "<span style='color:#64748b;'>—</span>"
+        pwr_val = float(s.get('avg_power', 0)) if s.get('avg_power') is not None else 0.0
+        pwr_str = f"{pwr_val:.1f} W" if pwr_val > 0 else "<span style='color:#64748b;'>—</span>"
         hr_str = f"{s.get('avg_hr', 0)} bpm" if s.get('avg_hr', 0) > 0 else "<span style='color:#64748b;'>—</span>"
         intv_badge = f"<span class='intv-pill'>{s.get('interval_desc')}</span>"
         sport_disp = s.get('sport_display', '🏅 運動')

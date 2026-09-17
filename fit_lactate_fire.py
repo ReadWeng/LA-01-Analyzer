@@ -662,7 +662,9 @@ def import_historical_html_to_firebase(html_content, file_name):
                             }
                         }
                         if 'power' in row and pd.notna(row['power']):
-                            pt['mapValue']['fields']['power'] = {'doubleValue': round(float(row['power']), 1)}
+                            p_val = round(float(row['power']), 1)
+                            pt['mapValue']['fields']['power'] = {'doubleValue': p_val}
+                            pt['mapValue']['fields']['power_30s'] = {'doubleValue': p_val}
                         if 'heart_rate' in row and pd.notna(row['heart_rate']):
                             pt['mapValue']['fields']['heart_rate'] = {'doubleValue': round(float(row['heart_rate']), 1)}
                         if 'core_temp' in row and pd.notna(row['core_temp']):
@@ -670,6 +672,14 @@ def import_historical_html_to_firebase(html_content, file_name):
                         time_series_points.append(pt)
             except Exception as e:
                 print('Error parsing plotly json in html import:', e)
+
+    # 若 avg_power 為 0，自動由 30 秒平均功率數列計算總平均功率
+    if avg_power <= 0 and time_series_points:
+        pwrs = [float(p['mapValue']['fields']['power']['doubleValue']) for p in time_series_points if 'power' in p['mapValue']['fields']]
+        if pwrs:
+            avg_power = int(round(sum(pwrs) / len(pwrs)))
+            if max_power <= 0:
+                max_power = int(round(max(pwrs)))
 
     if duration_min <= 0:
         duration_min = 60.0
@@ -787,7 +797,9 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
             if pd.notna(row.get('heart_rate')):
                 point['mapValue']['fields']['heart_rate'] = {'doubleValue': round(float(row['heart_rate']), 1)}
             if pd.notna(row.get('power')):
-                point['mapValue']['fields']['power'] = {'doubleValue': round(float(row['power']), 1)}
+                p_val = round(float(row['power']), 1)
+                point['mapValue']['fields']['power'] = {'doubleValue': p_val}
+                point['mapValue']['fields']['power_30s'] = {'doubleValue': p_val}
             if pd.notna(row.get('core_temp')):
                 point['mapValue']['fields']['core_temp'] = {'doubleValue': round(float(row['core_temp']), 2)}
             if 'cadence' in row and pd.notna(row.get('cadence')):
@@ -803,6 +815,12 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
                 point['mapValue']['fields']['distance'] = {'doubleValue': round(float(row['distance']), 1)}
             time_series.append(point)
             
+        # 若 avg_power 為 0，自動由 30 秒平均功率數列計算總平均功率
+        if avg_power <= 0 and ('power' in df_res.columns) and df_res['power'].notna().any():
+            avg_power = int(round(df_res['power'].mean()))
+            if max_power <= 0:
+                max_power = int(round(df_res['power'].max()))
+
         # JSON payload for Firestore
         has_gps = ('lat' in df.columns and df['lat'].notna().any() and
                    'lng' in df.columns and df['lng'].notna().any())
@@ -1440,7 +1458,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
     from datetime import datetime
 
     # 自動快取失效機制（當調整場次、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20260917_v11_intervals_power_recovery"
+    REPORT_VERSION = "20260917_v12_30s_power_matrix"
     current_cache_key = f"{uid}_{athlete_name}_{lactate_session_target}_{sport_filter}_{REPORT_VERSION}"
     if st.session_state.get("cached_report_key") != current_cache_key:
         st.session_state.pop("cached_weekly_report_html", None)
