@@ -21,6 +21,101 @@ import pandas as pd
 import requests
 
 
+_FIT_SPORT_CACHE = None
+
+def get_workspace_fit_sport_cache():
+    """
+    掃描本地工作區所有已知 FIT 檔案，提取原生官方 sport 與 sub_sport，
+    建立以檔名為鍵的索引表，以達到 100% 精準匹配。
+    """
+    global _FIT_SPORT_CACHE
+    if _FIT_SPORT_CACHE is not None:
+        return _FIT_SPORT_CACHE
+        
+    cache = {}
+    try:
+        import fitparse
+        search_dirs = [".", "DataYen", "DataMindy", "DataSunday", "0521", "RunDataRead"]
+        seen_files = set()
+        for s_dir in search_dirs:
+            if not os.path.exists(s_dir):
+                continue
+            for root, _, files in os.walk(s_dir):
+                for f in files:
+                    if f.endswith('.fit') and f not in seen_files:
+                        seen_files.add(f)
+                        p = os.path.join(root, f)
+                        try:
+                            fit = fitparse.FitFile(p)
+                            sp = None
+                            sub = 'generic'
+                            for m in fit.get_messages('sport'):
+                                vals = {x.name: x.value for x in m.fields}
+                                if vals.get('sport'):
+                                    sp = str(vals.get('sport')).lower()
+                                    if vals.get('sub_sport'):
+                                        sub = str(vals.get('sub_sport')).lower()
+                            if not sp:
+                                for m in fit.get_messages('session'):
+                                    vals = {x.name: x.value for x in m.fields}
+                                    if vals.get('sport'):
+                                        sp = str(vals.get('sport')).lower()
+                                        if vals.get('sub_sport'):
+                                            sub = str(vals.get('sub_sport')).lower()
+                            if sp:
+                                cache[f] = (sp, sub)
+                                cache[f.replace('.fit', '')] = (sp, sub)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+        
+    _FIT_SPORT_CACHE = cache
+    return _FIT_SPORT_CACHE
+
+
+def resolve_sport_type(filename_or_text, avg_power=0, avg_hr=0, cadence=0, default_sport=None):
+    """
+    結合 FIT 檔官方資訊、檔名關鍵字、步頻特徵與功率水準綜合研判真實運動專項。
+    """
+    fn_clean = os.path.basename(str(filename_or_text)).strip()
+    
+    # 1. 優先從 FIT 檔官方快取查詢
+    cache = get_workspace_fit_sport_cache()
+    m_fit = re.search(r'([\w\-]+\.fit)', fn_clean, re.IGNORECASE)
+    if m_fit and m_fit.group(1) in cache:
+        return cache[m_fit.group(1)]
+    if fn_clean in cache:
+        return cache[fn_clean]
+    
+    # 2. 檢查檔名與文字中的明確關鍵字
+    txt_lower = fn_clean.lower()
+    if any(k in txt_lower for k in ['run', '跑步', '慢跑', '路跑', 'treadmill']):
+        return ('running', 'generic')
+    if any(k in txt_lower for k in ['bike', 'cycling', '自行車', '騎行', '單車', '飛輪', 'indoor_cycling']):
+        return ('cycling', 'indoor_cycling')
+        
+    # 3. 檢查步頻 (Cadence): 跑步步頻通常在 140~200，自行車踏頻在 60~110
+    if cadence > 130:
+        return ('running', 'generic')
+    if 40 <= cadence <= 120 and avg_power > 0:
+        return ('cycling', 'indoor_cycling')
+        
+    # 4. 如果已有明確的 default_sport (且非 unknown)
+    if default_sport and default_sport not in ['unknown', 'None', '']:
+        return (default_sport, 'generic')
+        
+    # 5. 特徵啟發判斷：若功率極高 (例如 >=260W) 且心率很高 (>=145bpm)，常為 Stryd 跑步功率計
+    # 自行車飛輪受試者功率多在 100~150W
+    if avg_power >= 260 and avg_hr >= 145:
+        return ('running', 'generic')
+        
+    if avg_power > 0 and avg_power < 250:
+        return ('cycling', 'indoor_cycling')
+        
+    return ('running', 'generic')
+
+
 def parse_duration_to_minutes(text):
     """精準解析 '59 分 59 秒' 或 '40.5 分' 或 '01:15:30' 為浮點數分鐘"""
     if not text:
@@ -177,46 +272,9 @@ def parse_local_html_report(fpath):
             duration_min = 60.0
 
         # 6. 解析運動類型 (sport, sub_sport)
-        sport = 'unknown'
-        sub_sport = 'generic'
-        
-        # 檢查 HTML 是否包含運動類型文字
-        sp_m = re.search(r'運動類型.*?([a-zA-Z\u4e00-\u9fa5]+)', content)
-        if sp_m:
-            sp_txt = sp_m.group(1).lower()
-            if any(k in sp_txt for k in ['bike', 'cycling', '自行車', '騎行']):
-                sport = 'cycling'
-            elif any(k in sp_txt for k in ['run', '跑步', '慢跑']):
-                sport = 'running'
-                
-        # 檢查 HTML 內對應之 FIT 檔案名稱並直接嘗試讀取 FIT 的 sport 訊息
         fit_match = re.search(r'([\w\-]+\.fit)', content, re.IGNORECASE)
-        fit_fn = fit_match.group(1) if fit_match else None
-        if sport == 'unknown' and fit_fn:
-            fit_p = os.path.join(os.path.dirname(fpath), fit_fn)
-            if os.path.isfile(fit_p):
-                try:
-                    import fitparse
-                    ff = fitparse.FitFile(fit_p)
-                    for s_msg in ff.get_messages('sport'):
-                        for f_f in s_msg.fields:
-                            if f_f.name == 'sport' and f_f.value is not None:
-                                sport = str(f_f.value).lower()
-                            elif f_f.name == 'sub_sport' and f_f.value is not None:
-                                sub_sport = str(f_f.value).lower()
-                    if sport == 'unknown':
-                        for s_msg in ff.get_messages('session'):
-                            for f_f in s_msg.fields:
-                                if f_f.name == 'sport' and f_f.value is not None:
-                                    sport = str(f_f.value).lower()
-                                elif f_f.name == 'sub_sport' and f_f.value is not None:
-                                    sub_sport = str(f_f.value).lower()
-                except Exception:
-                    pass
-
-        # 若仍為 unknown，以是否有功率判定（自行車多有功率計，跑步多無）
-        if sport == 'unknown':
-            sport = 'cycling' if avg_p > 0 else 'running'
+        ref_fn = fit_match.group(1) if fit_match else os.path.basename(fpath)
+        sport, sub_sport = resolve_sport_type(ref_fn, avg_power=avg_p, avg_hr=avg_h)
 
         sport_icon_map = {
             'cycling': ('🚴 自行車', '#00f2fe'),
@@ -323,11 +381,18 @@ def fetch_firestore_dataset(uid, token, session_limit=7, sport_filter="all"):
                 avg_hr = _get_fs_val(f.get("avg_hr", {}), 0.0)
                 max_hr = _get_fs_val(f.get("max_hr", {}), 0.0)
 
-                # 讀取運動專項 (sport / sub_sport)
-                sport = f.get("sport", {}).get("stringValue")
-                sub_sport = f.get("sub_sport", {}).get("stringValue", "generic")
-                if not sport:
-                    sport = "cycling" if avg_pwr > 0 else "running"
+                # 讀取運動專項 (sport / sub_sport) 並透過工作區快取與特徵進行智能校正
+                raw_sport = f.get("sport", {}).get("stringValue")
+                raw_sub = f.get("sub_sport", {}).get("stringValue")
+                
+                sport, sub_sport = resolve_sport_type(
+                    file_name,
+                    avg_power=avg_pwr,
+                    avg_hr=avg_hr,
+                    default_sport=raw_sport
+                )
+                if raw_sub and sub_sport == 'generic':
+                    sub_sport = raw_sub
 
                 sport_icon_map = {
                     'cycling': ('🚴 自行車', '#00f2fe'),
