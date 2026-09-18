@@ -208,6 +208,51 @@ if "google_uid" in st.query_params:
     st.query_params.clear()
     st.rerun()
 
+# 檢查 Intervals.icu OAuth 2.0 回呼跳轉 (Authorization Code Grant)
+if "code" in st.query_params and str(st.query_params.get("state", "")).startswith("icu_"):
+    oauth_code = st.query_params.get("code")
+    target_uid = str(st.query_params.get("state", ""))[4:]
+    cur_uid = st.session_state.get('firebase_uid')
+    cur_token = st.session_state.get('firebase_token')
+
+    effective_uid = cur_uid or target_uid
+    if effective_uid and cur_token:
+        import intervals_client as ic
+        oauth_cfg = ic.get_intervals_oauth_config()
+        if oauth_cfg["client_id"] and oauth_cfg["client_secret"]:
+            ok, tok_data, msg = ic.exchange_intervals_oauth_code(
+                client_id=oauth_cfg["client_id"],
+                client_secret=oauth_cfg["client_secret"],
+                code=oauth_code,
+                redirect_uri=oauth_cfg["redirect_uri"]
+            )
+            if ok:
+                ath = tok_data.get("athlete", {})
+                ath_id = str(ath.get("id", "0"))
+                ath_name = ath.get("name") or ath_id
+                acc_tok = tok_data.get("access_token", "")
+                ic.save_user_intervals_oauth(
+                    uid=effective_uid,
+                    firebase_token=cur_token,
+                    access_token=acc_tok,
+                    athlete_id=ath_id,
+                    athlete_name=ath_name,
+                    scope=tok_data.get("scope", "")
+                )
+                st.session_state["intervals_oauth_connected"] = True
+                st.session_state["intervals_athlete_id"] = ath_id
+                st.session_state["intervals_athlete_name"] = ath_name
+                st.session_state["intervals_api_key"] = acc_tok
+                st.session_state["intervals_is_oauth"] = True
+                st.toast(f"🎉 Intervals.icu 授權成功！已連結運動員：{ath_name}", icon="✅")
+            else:
+                st.error(f"❌ Intervals.icu OAuth 授權失敗: {msg}")
+
+    for q_param in ["code", "state", "scope"]:
+        if q_param in st.query_params:
+            del st.query_params[q_param]
+    st.rerun()
+
 def login_to_firebase(email, password):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
     payload = {
@@ -1298,74 +1343,87 @@ st.sidebar.markdown("---")
 if st.session_state.get('firebase_uid'):
     with st.sidebar.expander("🔗 運動手錶雲端綁定 (Garmin / COROS)", expanded=False):
         st.markdown("**支援 Garmin Connect、COROS 等設備**")
-        st.caption("透過 Intervals.icu 自動同步開始收乳酸前 1 週至後 1 週日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
+        st.caption("透過 Intervals.icu 自動同步日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
 
         icu_uid = st.session_state.get('firebase_uid')
         icu_token = st.session_state.get('firebase_token')
+        import intervals_client as ic
 
-        if "intervals_api_key" not in st.session_state:
-            st.session_state["intervals_api_key"] = ""
-            st.session_state["intervals_athlete_id"] = "0"
-            try:
-                cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{icu_uid}/settings/intervals_icu"
-                r_cfg = requests.get(cfg_url, headers={"Authorization": f"Bearer {icu_token}"}, timeout=4)
-                if r_cfg.status_code == 200:
-                    f_cfg = r_cfg.json().get("fields", {})
-                    st.session_state["intervals_api_key"] = f_cfg.get("api_key", {}).get("stringValue", "")
-                    st.session_state["intervals_athlete_id"] = f_cfg.get("athlete_id", {}).get("stringValue", "0")
-            except Exception:
-                pass
+        # 讀取當前儲存的認證資訊 (支援 OAuth 2.0 與 API Key)
+        icu_creds = ic.get_user_intervals_credentials(icu_uid, icu_token)
+        oauth_cfg = ic.get_intervals_oauth_config()
 
-        ath_id_val = st.text_input("Intervals.icu Athlete ID", value=st.session_state.get("intervals_athlete_id", "0"), help="個人帳號請填 0，或填入如 i123456")
-        api_key_val = st.text_input("Intervals.icu API Key", value=st.session_state.get("intervals_api_key", ""), type="password", help="登入 intervals.icu -> Settings (設定) 頁面最下方即可複製 API Key")
-
-        col_b1, col_b2 = st.columns(2)
-        with col_b1:
-            if st.button("🔌 測試連線", use_container_width=True, key="btn_test_icu"):
-                import intervals_client as ic
-                ok, msg = ic.test_intervals_connection(api_key_val, ath_id_val)
-                if ok:
-                    st.success(msg)
-                    st.session_state["intervals_api_key"] = api_key_val
-                    st.session_state["intervals_athlete_id"] = ath_id_val
-                    try:
-                        cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{icu_uid}/settings/intervals_icu"
-                        requests.patch(cfg_url, headers={"Authorization": f"Bearer {icu_token}", "Content-Type": "application/json"}, json={
-                            "fields": {
-                                "api_key": {"stringValue": api_key_val},
-                                "athlete_id": {"stringValue": ath_id_val}
-                            }
-                        }, timeout=5)
-                    except Exception:
-                        pass
-                else:
-                    st.error(msg)
-        with col_b2:
-            sync_btn = st.button("🔄 同步", use_container_width=True, key="btn_sync_icu")
-
-        if sync_btn:
-            if not api_key_val:
-                st.warning("請先輸入 API Key！")
+        if icu_creds["configured"]:
+            if icu_creds["is_oauth"]:
+                ath_display = icu_creds.get("athlete_name") or icu_creds.get("athlete_id") or "已認證"
+                st.success(f"✅ **已透過 OAuth 2.0 連線**\n\n👤 運動員：**{ath_display}** (ID: `{icu_creds['athlete_id']}`)")
             else:
+                st.info(f"🔑 **已透過 API Key 連線**\n\n🆔 Athlete ID: `{icu_creds['athlete_id']}`")
+
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                sync_btn = st.button("🔄 同步", use_container_width=True, key="btn_sync_icu")
+            with col_a2:
+                if st.button("🔌 解除連結", use_container_width=True, key="btn_disconnect_icu"):
+                    ic.disconnect_user_intervals(icu_uid, icu_token)
+                    st.session_state.pop("intervals_api_key", None)
+                    st.session_state.pop("intervals_athlete_id", None)
+                    st.session_state.pop("intervals_oauth_connected", None)
+                    st.toast("已解除 Intervals.icu 連結", icon="👋")
+                    st.rerun()
+
+            if sync_btn:
                 with st.spinner("正在計算乳酸日期並同步前 1 週與後 1 週日常訓練數據至 Firebase..."):
-                    import intervals_client as ic
                     s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
                         uid=icu_uid,
                         firebase_token=icu_token,
-                        intervals_api_key=api_key_val,
-                        athlete_id=ath_id_val,
+                        intervals_api_key=icu_creds["token"],
+                        athlete_id=icu_creds["athlete_id"],
                         lookback_days=7,
-                        lookahead_days=7
+                        lookahead_days=7,
+                        is_oauth=icu_creds["is_oauth"]
                     )
-                    st.session_state["intervals_api_key"] = api_key_val
-                    st.session_state["intervals_athlete_id"] = ath_id_val
                     if s_count > 0:
                         st.success(s_msg)
                         st.session_state.pop("cached_weekly_report_html", None)
-                        st.session_state.pop(f"date_bounds_{icu_uid}", None)
+                        st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
                         st.rerun()
                     else:
                         st.info(s_msg)
+        else:
+            # 未連線狀態：優先展示 OAuth 2.0 一鍵授權
+            if oauth_cfg["client_id"]:
+                redirect_target = oauth_cfg["redirect_uri"] or "http://localhost:8501/"
+                auth_url = ic.get_intervals_oauth_authorize_url(
+                    client_id=oauth_cfg["client_id"],
+                    redirect_uri=redirect_target,
+                    state=f"icu_{icu_uid}"
+                )
+                st.link_button("🔗 一鍵授權連結 Intervals.icu (OAuth 2.0)", auth_url, type="primary", use_container_width=True)
+            else:
+                st.info("💡 **OAuth 2.0 系統端已就緒**\n\n收到官方審核之 `client_id` 與 `client_secret` 填入即可啟用一鍵授權！目前可先使用下方 API Key 連結。")
+
+            with st.expander("🛠️ 手動輸入 API Key 與 Athlete ID (傳統備用)", expanded=not oauth_cfg["client_id"]):
+                ath_id_input = st.text_input("Intervals.icu Athlete ID", value="0", help="個人帳號請填 0，或填入如 i123456", key="input_ath_id")
+                api_key_input = st.text_input("Intervals.icu API Key", type="password", help="登入 intervals.icu -> Settings (設定) 頁面最下方即可複製 API Key", key="input_api_key")
+
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("🔌 測試連線", use_container_width=True, key="btn_test_icu"):
+                        ok, msg = ic.test_intervals_connection(api_key_input, ath_id_input, is_oauth=False)
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                with col_b2:
+                    if st.button("💾 儲存並連線", use_container_width=True, key="btn_save_icu_key"):
+                        ok, msg = ic.test_intervals_connection(api_key_input, ath_id_input, is_oauth=False)
+                        if ok:
+                            ic.save_user_intervals_apikey(icu_uid, icu_token, api_key_input, ath_id_input)
+                            st.toast("已儲存 API Key 連線！", icon="✅")
+                            st.rerun()
+                        else:
+                            st.error(f"連線失敗: {msg}")
 
     st.sidebar.markdown("---")
 

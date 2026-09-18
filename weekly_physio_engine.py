@@ -535,58 +535,57 @@ def fetch_firestore_dataset_with_status(
             missing_pwr_icu = [s for s in fit_sessions if s.get("source") == "intervals_icu" and (s.get("avg_power", 0) <= 0) and s.get("start_time")]
             if missing_pwr_icu and uid and active_token:
                 try:
-                    cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
-                    r_cfg = requests.get(cfg_url, headers=headers, timeout=5)
-                    if r_cfg.status_code == 200:
-                        cfg_fields = r_cfg.json().get("fields", {})
-                        api_key = cfg_fields.get("api_key", {}).get("stringValue", "")
-                        ath_id = cfg_fields.get("athlete_id", {}).get("stringValue", "0")
-                        if api_key:
-                            import intervals_client as ic
-                            earliest_missing = min(s["start_time"] for s in missing_pwr_icu) - timedelta(days=1)
-                            latest_missing = max(s["start_time"] for s in missing_pwr_icu) + timedelta(days=1)
-                            acts = ic.fetch_intervals_activities(
-                                api_key, athlete_id=ath_id,
-                                oldest=earliest_missing.strftime("%Y-%m-%d"),
-                                newest=latest_missing.strftime("%Y-%m-%d")
-                            )
-                            for a in acts:
-                                a_start_str = a.get("start_date_local") or a.get("start_date")
-                                if not a_start_str:
-                                    continue
-                                try:
-                                    clean_a_ts = a_start_str.replace("Z", "+00:00")
-                                    a_dt = datetime.fromisoformat(clean_a_ts)
-                                    a_id = str(a.get("id", ""))
-                                    
-                                    # 先嘗試從串流提取 30 秒平均功率與總平均功率
-                                    streams = ic.fetch_intervals_activity_streams(api_key, a_id) if a_id else {}
-                                    ts_pts, stream_pwr, stream_max_pwr = ic.process_intervals_streams_to_30s(streams) if streams else ([], 0.0, 0.0)
-                                    
-                                    pwr_val = stream_pwr
-                                    max_pwr_val = stream_max_pwr
-                                    if pwr_val <= 0:
-                                        pwr_val, max_pwr_val = ic.extract_intervals_power(a)
+                    import intervals_client as ic
+                    icu_creds = ic.get_user_intervals_credentials(uid, active_token)
+                    if icu_creds["configured"]:
+                        api_key = icu_creds["token"]
+                        ath_id = icu_creds["athlete_id"]
+                        is_oauth = icu_creds["is_oauth"]
+                        earliest_missing = min(s["start_time"] for s in missing_pwr_icu) - timedelta(days=1)
+                        latest_missing = max(s["start_time"] for s in missing_pwr_icu) + timedelta(days=1)
+                        acts = ic.fetch_intervals_activities(
+                            api_key, athlete_id=ath_id,
+                            oldest=earliest_missing.strftime("%Y-%m-%d"),
+                            newest=latest_missing.strftime("%Y-%m-%d"),
+                            is_oauth=is_oauth
+                        )
+                        for a in acts:
+                            a_start_str = a.get("start_date_local") or a.get("start_date")
+                            if not a_start_str:
+                                continue
+                            try:
+                                clean_a_ts = a_start_str.replace("Z", "+00:00")
+                                a_dt = datetime.fromisoformat(clean_a_ts)
+                                a_id = str(a.get("id", ""))
+                                
+                                # 先嘗試從串流提取 30 秒平均功率與總平均功率
+                                streams = ic.fetch_intervals_activity_streams(api_key, a_id, is_oauth=is_oauth) if a_id else {}
+                                ts_pts, stream_pwr, stream_max_pwr = ic.process_intervals_streams_to_30s(streams) if streams else ([], 0.0, 0.0)
+                                
+                                pwr_val = stream_pwr
+                                max_pwr_val = stream_max_pwr
+                                if pwr_val <= 0:
+                                    pwr_val, max_pwr_val = ic.extract_intervals_power(a)
                                         
-                                    if pwr_val > 0:
-                                        for s in missing_pwr_icu:
-                                            if abs((s["start_time"].replace(tzinfo=None) - a_dt.replace(tzinfo=None)).total_seconds()) <= 300:
-                                                s["avg_power"] = pwr_val
-                                                s["max_power"] = max_pwr_val
-                                                doc_id_val = s.get("id")
-                                                if doc_id_val:
-                                                    patch_fields = {
-                                                        "avg_power": {"integerValue": str(int(pwr_val))},
-                                                        "max_power": {"integerValue": str(int(max_pwr_val))}
-                                                    }
-                                                    mask_str = "updateMask.fieldPaths=avg_power&updateMask.fieldPaths=max_power"
-                                                    if ts_pts:
-                                                        patch_fields["time_series"] = {"arrayValue": {"values": ts_pts}}
-                                                        mask_str += "&updateMask.fieldPaths=time_series"
-                                                    mask_u = f"https://firestore.googleapis.com/v1/{doc_id_val}?{mask_str}"
-                                                    requests.patch(mask_u, headers=headers, json={"fields": patch_fields}, timeout=5)
-                                except Exception as err:
-                                    print(f"Error patching power for act: {err}")
+                                if pwr_val > 0:
+                                    for s in missing_pwr_icu:
+                                        if abs((s["start_time"].replace(tzinfo=None) - a_dt.replace(tzinfo=None)).total_seconds()) <= 300:
+                                            s["avg_power"] = pwr_val
+                                            s["max_power"] = max_pwr_val
+                                            doc_id_val = s.get("id")
+                                            if doc_id_val:
+                                                patch_fields = {
+                                                    "avg_power": {"integerValue": str(int(pwr_val))},
+                                                    "max_power": {"integerValue": str(int(max_pwr_val))}
+                                                }
+                                                mask_str = "updateMask.fieldPaths=avg_power&updateMask.fieldPaths=max_power"
+                                                if ts_pts:
+                                                    patch_fields["time_series"] = {"arrayValue": {"values": ts_pts}}
+                                                    mask_str += "&updateMask.fieldPaths=time_series"
+                                                mask_u = f"https://firestore.googleapis.com/v1/{doc_id_val}?{mask_str}"
+                                                requests.patch(mask_u, headers=headers, json={"fields": patch_fields}, timeout=5)
+                            except Exception as err:
+                                print(f"Error patching power for act: {err}")
                 except Exception as e:
                     print(f"Auto-patching intervals power failed: {e}")
         else:
@@ -734,32 +733,30 @@ def fetch_firestore_dataset_with_status(
     # 5. 從 Intervals.icu 撈取對應週期的晨間 HRV (rMSSD) 與靜息心率 (Resting HR) 數據
     if final_sessions and uid and active_token:
         try:
-            cfg_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
-            r_cfg = requests.get(cfg_url, headers=headers, timeout=5)
-            if r_cfg.status_code == 200:
-                cfg_fields = r_cfg.json().get("fields", {})
-                icu_api_key = cfg_fields.get("api_key", {}).get("stringValue", "")
-                icu_ath_id = cfg_fields.get("athlete_id", {}).get("stringValue", "0")
-                if icu_api_key:
-                    import intervals_client as ic
-                    if start_date and end_date:
-                        d_start = str(start_date)[:10]
-                        d_end = str(end_date)[:10]
-                    else:
-                        d_start = (final_sessions[0]["start_time"] - timedelta(days=2)).strftime("%Y-%m-%d")
-                        d_end = (final_sessions[-1]["start_time"] + timedelta(days=1)).strftime("%Y-%m-%d")
-                    wellness_map = ic.get_intervals_wellness_map(
-                        icu_api_key, athlete_id=icu_ath_id, oldest=d_start, newest=d_end
-                    )
-                    for s in final_sessions:
-                        s_date_str = s["start_time"].strftime("%Y-%m-%d")
-                        w_data = wellness_map.get(s_date_str, {})
-                        s["hrv"] = w_data.get("hrv")
-                        s["hrv_sd"] = w_data.get("hrv_sd")
-                        s["resting_hr"] = w_data.get("resting_hr")
-                        s["readiness"] = w_data.get("readiness")
-                        s["sleep_hours"] = w_data.get("sleep_hours")
-                        s["fatigue"] = w_data.get("fatigue")
+            import intervals_client as ic
+            icu_creds = ic.get_user_intervals_credentials(uid, active_token)
+            if icu_creds["configured"]:
+                icu_token = icu_creds["token"]
+                icu_ath_id = icu_creds["athlete_id"]
+                icu_is_oauth = icu_creds["is_oauth"]
+                if start_date and end_date:
+                    d_start = str(start_date)[:10]
+                    d_end = str(end_date)[:10]
+                else:
+                    d_start = (final_sessions[0]["start_time"] - timedelta(days=2)).strftime("%Y-%m-%d")
+                    d_end = (final_sessions[-1]["start_time"] + timedelta(days=1)).strftime("%Y-%m-%d")
+                wellness_map = ic.get_intervals_wellness_map(
+                    icu_token, athlete_id=icu_ath_id, oldest=d_start, newest=d_end, is_oauth=icu_is_oauth
+                )
+                for s in final_sessions:
+                    s_date_str = s["start_time"].strftime("%Y-%m-%d")
+                    w_data = wellness_map.get(s_date_str, {})
+                    s["hrv"] = w_data.get("hrv")
+                    s["hrv_sd"] = w_data.get("hrv_sd")
+                    s["resting_hr"] = w_data.get("resting_hr")
+                    s["readiness"] = w_data.get("readiness")
+                    s["sleep_hours"] = w_data.get("sleep_hours")
+                    s["fatigue"] = w_data.get("fatigue")
         except Exception as e:
             print(f"Failed to fetch Intervals wellness data: {e}")
 

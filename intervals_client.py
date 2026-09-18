@@ -13,32 +13,272 @@ from typing import List, Dict, Any, Tuple, Optional
 
 
 INTERVALS_BASE_URL = "https://intervals.icu/api/v1"
+INTERVALS_AUTH_URL = "https://intervals.icu/oauth/authorize"
+INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 
 
-def get_basic_auth_header(api_key: str) -> Dict[str, str]:
+def get_intervals_oauth_config() -> Dict[str, str]:
     """
-    產生 Intervals.icu Basic Auth Header
-    用戶名固定為 'API_KEY'，密碼為使用者的 API Key
+    讀取系統設定之 Intervals.icu OAuth Client ID, Client Secret 與 Redirect URI
+    優先序: Streamlit secrets -> 環境變數
     """
-    token = base64.b64encode(f"API_KEY:{api_key.strip()}".encode("utf-8")).decode("utf-8")
+    client_id = ""
+    client_secret = ""
+    redirect_uri = ""
+
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            if "intervals" in st.secrets:
+                client_id = st.secrets["intervals"].get("client_id", "")
+                client_secret = st.secrets["intervals"].get("client_secret", "")
+                redirect_uri = st.secrets["intervals"].get("redirect_uri", "")
+            else:
+                client_id = st.secrets.get("INTERVALS_CLIENT_ID", "")
+                client_secret = st.secrets.get("INTERVALS_CLIENT_SECRET", "")
+                redirect_uri = st.secrets.get("INTERVALS_REDIRECT_URI", "")
+    except Exception:
+        pass
+
+    if not client_id:
+        client_id = os.environ.get("INTERVALS_CLIENT_ID", "")
+    if not client_secret:
+        client_secret = os.environ.get("INTERVALS_CLIENT_SECRET", "")
+    if not redirect_uri:
+        redirect_uri = os.environ.get("INTERVALS_REDIRECT_URI", "")
+
+    return {
+        "client_id": str(client_id).strip(),
+        "client_secret": str(client_secret).strip(),
+        "redirect_uri": str(redirect_uri).strip()
+    }
+
+
+def get_intervals_oauth_authorize_url(client_id: str, redirect_uri: str, state: str = "") -> str:
+    """
+    產生 Intervals.icu OAuth 2.0 授權跳轉網址
+    包含 ACTIVITY:READ 與 WELLNESS:READ 權限
+    """
+    from urllib.parse import urlencode
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": "ACTIVITY:READ,WELLNESS:READ",
+        "response_type": "code"
+    }
+    if state:
+        params["state"] = state
+    return f"{INTERVALS_AUTH_URL}?{urlencode(params)}"
+
+
+def exchange_intervals_oauth_code(client_id: str, client_secret: str, code: str, redirect_uri: str = "") -> Tuple[bool, Dict[str, Any], str]:
+    """
+    向 Intervals.icu 交換 OAuth 2.0 Access Token
+    回傳: (成功與否, 資料字典, 訊息)
+    資料字典包含: access_token, athlete: {id, name}, scope, token_type
+    """
+    if not client_id or not client_secret or not code:
+        return False, {}, "缺少 client_id, client_secret 或 authorization code"
+
+    data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code
+    }
+    if redirect_uri:
+        data["redirect_uri"] = redirect_uri
+
+    try:
+        resp = requests.post(INTERVALS_TOKEN_URL, data=data, timeout=12)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            ath = res_json.get("athlete", {})
+            ath_name = ath.get("name") or ath.get("id") or "運動員"
+            return True, res_json, f"授權成功！歡迎，{ath_name}"
+        else:
+            err_msg = resp.text[:200]
+            return False, {}, f"交換 Token 失敗 (HTTP {resp.status_code}): {err_msg}"
+    except Exception as e:
+        return False, {}, f"連線逾時或網路錯誤: {e}"
+
+
+def get_intervals_auth_header(token_or_key: str, is_oauth: bool = False) -> Dict[str, str]:
+    """
+    產生 Intervals.icu 認證 Header：
+    - 若為 OAuth 2.0，使用 Bearer Token：Authorization: Bearer <token>
+    - 若為 API Key，使用 Basic Auth：Authorization: Basic <base64(API_KEY:key)>
+    """
+    t = str(token_or_key).strip() if token_or_key else ""
+    if is_oauth:
+        return {
+            "Authorization": f"Bearer {t}",
+            "Content-Type": "application/json"
+        }
+    token = base64.b64encode(f"API_KEY:{t}".encode("utf-8")).decode("utf-8")
     return {
         "Authorization": f"Basic {token}",
         "Content-Type": "application/json"
     }
 
 
-def test_intervals_connection(api_key: str, athlete_id: str = "0") -> Tuple[bool, str]:
+def get_basic_auth_header(api_key: str) -> Dict[str, str]:
     """
-    測試 Intervals.icu API Key 是否有效
+    向後相容保留：產生 Intervals.icu Basic Auth Header
+    """
+    return get_intervals_auth_header(api_key, is_oauth=False)
+
+
+def get_user_intervals_credentials(uid: str, firebase_token: str) -> Dict[str, Any]:
+    """
+    從 Firestore users/{uid}/settings/intervals_icu 讀取使用者的認證設定
+    支援 OAuth 2.0 與傳統 API Key 雙軌
+    回傳:
+    {
+        "configured": bool,
+        "auth_type": "oauth" | "api_key" | "none",
+        "token": str,
+        "athlete_id": str,
+        "athlete_name": str,
+        "is_oauth": bool
+    }
+    """
+    res = {
+        "configured": False,
+        "auth_type": "none",
+        "token": "",
+        "athlete_id": "0",
+        "athlete_name": "",
+        "is_oauth": False
+    }
+    if not uid or not firebase_token:
+        return res
+
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+    headers = {"Authorization": f"Bearer {firebase_token}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            fields = resp.json().get("fields", {})
+            auth_type = fields.get("auth_type", {}).get("stringValue", "")
+            access_token = fields.get("access_token", {}).get("stringValue", "")
+            api_key = fields.get("api_key", {}).get("stringValue", "")
+            ath_id = fields.get("athlete_id", {}).get("stringValue", "0")
+            ath_name = fields.get("athlete_name", {}).get("stringValue", "")
+
+            if auth_type == "oauth" and access_token:
+                res.update({
+                    "configured": True,
+                    "auth_type": "oauth",
+                    "token": access_token,
+                    "athlete_id": ath_id,
+                    "athlete_name": ath_name,
+                    "is_oauth": True
+                })
+            elif api_key:
+                res.update({
+                    "configured": True,
+                    "auth_type": "api_key",
+                    "token": api_key,
+                    "athlete_id": ath_id,
+                    "athlete_name": ath_name or "API Key 用戶",
+                    "is_oauth": False
+                })
+    except Exception:
+        pass
+    return res
+
+
+def save_user_intervals_oauth(
+    uid: str,
+    firebase_token: str,
+    access_token: str,
+    athlete_id: str,
+    athlete_name: str = "",
+    scope: str = ""
+) -> bool:
+    """
+    將 OAuth 2.0 授權結果儲存至 Firestore
+    """
+    if not uid or not firebase_token or not access_token:
+        return False
+
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+    headers = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
+    payload = {
+        "fields": {
+            "auth_type": {"stringValue": "oauth"},
+            "access_token": {"stringValue": access_token},
+            "athlete_id": {"stringValue": athlete_id or "0"},
+            "athlete_name": {"stringValue": athlete_name},
+            "scope": {"stringValue": scope},
+            "updated_at": {"timestampValue": datetime.utcnow().isoformat() + "Z"}
+        }
+    }
+    try:
+        resp = requests.patch(url, headers=headers, json=payload, timeout=6)
+        return resp.status_code in [200, 201]
+    except Exception:
+        return False
+
+
+def save_user_intervals_apikey(
+    uid: str,
+    firebase_token: str,
+    api_key: str,
+    athlete_id: str = "0"
+) -> bool:
+    """
+    將手動輸入之 API Key 儲存至 Firestore
+    """
+    if not uid or not firebase_token or not api_key:
+        return False
+
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+    headers = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
+    payload = {
+        "fields": {
+            "auth_type": {"stringValue": "api_key"},
+            "api_key": {"stringValue": api_key},
+            "athlete_id": {"stringValue": athlete_id or "0"},
+            "athlete_name": {"stringValue": ""},
+            "updated_at": {"timestampValue": datetime.utcnow().isoformat() + "Z"}
+        }
+    }
+    try:
+        resp = requests.patch(url, headers=headers, json=payload, timeout=6)
+        return resp.status_code in [200, 201]
+    except Exception:
+        return False
+
+
+def disconnect_user_intervals(uid: str, firebase_token: str) -> bool:
+    """
+    清除 Firestore 中 Intervals.icu 的連線紀錄
+    """
+    if not uid or not firebase_token:
+        return False
+
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/settings/intervals_icu"
+    headers = {"Authorization": f"Bearer {firebase_token}"}
+    try:
+        resp = requests.delete(url, headers=headers, timeout=6)
+        return resp.status_code in [200, 204]
+    except Exception:
+        return False
+
+
+def test_intervals_connection(token_or_key: str, athlete_id: str = "0", is_oauth: bool = False) -> Tuple[bool, str]:
+    """
+    測試 Intervals.icu 連線 (支援 OAuth 2.0 Bearer 與 API Key Basic)
     回傳 (是否成功, 訊息/運動員名稱)
     """
-    if not api_key or not api_key.strip():
-        return False, "API Key 不能為空"
-        
+    if not token_or_key or not str(token_or_key).strip():
+        return False, "金鑰或 Token 不能為空"
+
     ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
     url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}"
-    headers = get_basic_auth_header(api_key)
-    
+    headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
+
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -46,7 +286,7 @@ def test_intervals_connection(api_key: str, athlete_id: str = "0") -> Tuple[bool
             ath_name = data.get("name") or data.get("id") or "運動員"
             return True, f"連線成功！歡迎，{ath_name}"
         elif resp.status_code == 401:
-            return False, "授權失敗：請檢查 Intervals.icu API Key 是否正確"
+            return False, "授權失敗：憑證無效或已過期"
         elif resp.status_code == 404:
             return False, f"找不到 Athlete ID: {ath_id}，若為個人帳號請填入 0"
         else:
@@ -100,14 +340,20 @@ def calculate_pre_lactate_date_ranges(lactate_dates: List[datetime], lookback_da
     return calculate_lactate_surrounding_date_ranges(lactate_dates, lookback_days=lookback_days, lookahead_days=lookahead_days)
 
 
-def fetch_intervals_activities(api_key: str, athlete_id: str = "0", oldest: str = None, newest: str = None) -> List[Dict[str, Any]]:
+def fetch_intervals_activities(
+    token_or_key: str,
+    athlete_id: str = "0",
+    oldest: str = None,
+    newest: str = None,
+    is_oauth: bool = False
+) -> List[Dict[str, Any]]:
     """
-    從 Intervals.icu 拉取指定日期區間內的活動
+    從 Intervals.icu 拉取指定日期區間內的活動 (支援 OAuth 2.0 與 API Key)
     oldest, newest 格式: 'YYYY-MM-DD'
     """
     ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
     url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}/activities"
-    headers = get_basic_auth_header(api_key)
+    headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
     params = {}
     if oldest:
         params["oldest"] = oldest
@@ -127,10 +373,11 @@ def fetch_intervals_activities(api_key: str, athlete_id: str = "0", oldest: str 
 
 
 def fetch_intervals_wellness(
-    api_key: str,
+    token_or_key: str,
     athlete_id: str = "0",
     oldest: str = None,
-    newest: str = None
+    newest: str = None,
+    is_oauth: bool = False
 ) -> List[Dict[str, Any]]:
     """
     從 Intervals.icu 下載指定日期區間的每日生理健康與自律神經數據 (Wellness)，包含：
@@ -142,12 +389,12 @@ def fetch_intervals_wellness(
     - sleepScore: 睡眠品質評分
     - fatigue, soreness, stress, mood: 主觀身心疲勞程度 (1-5)
     """
-    if not api_key:
+    if not token_or_key:
         return []
 
     ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
     url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}/wellness"
-    headers = get_basic_auth_header(api_key)
+    headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
     params = {}
     if oldest:
         params["oldest"] = oldest
@@ -171,15 +418,16 @@ def fetch_intervals_wellness(
 
 
 def get_intervals_wellness_map(
-    api_key: str,
+    token_or_key: str,
     athlete_id: str = "0",
     oldest: str = None,
-    newest: str = None
+    newest: str = None,
+    is_oauth: bool = False
 ) -> Dict[str, Dict[str, Any]]:
     """
     下載並回傳以日期字串 ('YYYY-MM-DD') 為 key 的每日 HRV 與生理狀態對照表
     """
-    records = fetch_intervals_wellness(api_key, athlete_id=athlete_id, oldest=oldest, newest=newest)
+    records = fetch_intervals_wellness(token_or_key, athlete_id=athlete_id, oldest=oldest, newest=newest, is_oauth=is_oauth)
     w_map = {}
     for r in records:
         date_k = str(r.get("id", ""))
@@ -303,14 +551,14 @@ def extract_intervals_power(act: Dict[str, Any]) -> Tuple[float, float]:
     return avg_pwr, max_pwr
 
 
-def fetch_intervals_activity_streams(api_key: str, activity_id: str) -> Dict[str, List[Any]]:
+def fetch_intervals_activity_streams(token_or_key: str, activity_id: str, is_oauth: bool = False) -> Dict[str, List[Any]]:
     """
     從 Intervals.icu 下載活動的詳細數據串流 (streams: time, watts, heartrate, cadence, etc.)
     """
-    if not api_key or not activity_id:
+    if not token_or_key or not activity_id:
         return {}
     url = f"{INTERVALS_BASE_URL}/activity/{activity_id}/streams"
-    headers = get_basic_auth_header(api_key)
+    headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -407,7 +655,11 @@ def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple
     return time_series_points, total_avg_pwr, max_pwr
 
 
-def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any], api_key: Optional[str] = None) -> Dict[str, Any]:
+def convert_intervals_activity_to_firebase_fit_record(
+    act: Dict[str, Any],
+    token_or_key: Optional[str] = None,
+    is_oauth: bool = False
+) -> Dict[str, Any]:
     """
     將 Intervals.icu 的單場活動轉換為標準 Firestore fit_records 格式，
     自動抓取串流並降採樣為 30 秒平均功率數列 (time_series)，計算總平均功率。
@@ -443,8 +695,8 @@ def convert_intervals_activity_to_firebase_fit_record(act: Dict[str, Any], api_k
 
     # 嘗試抓取 30 秒串流數據
     time_series_points = []
-    if api_key and act_id:
-        streams = fetch_intervals_activity_streams(api_key, act_id)
+    if token_or_key and act_id:
+        streams = fetch_intervals_activity_streams(token_or_key, act_id, is_oauth=is_oauth)
         if streams:
             ts_pts, stream_avg_pwr, stream_max_pwr = process_intervals_streams_to_30s(streams)
             if ts_pts:
@@ -494,10 +746,11 @@ def sync_pre_lactate_activities_to_firebase(
     intervals_api_key: str,
     athlete_id: str = "0",
     lookback_days: int = 7,
-    lookahead_days: int = 7
+    lookahead_days: int = 7,
+    is_oauth: bool = False
 ) -> Tuple[int, int, str]:
     """
-    高階整合同步主函式：
+    高階整合同步主函式 (支援 OAuth 2.0 與 API Key 雙軌)：
     1. 從 Firestore 讀取現有所有的乳酸採樣日期。
     2. 自動推算所有「開始收乳酸前 lookback_days 天至後 lookahead_days 天」（預設前後各 1 週）的有效日期區間。
     3. 呼叫 Intervals.icu 抓取日常運動數據。
@@ -508,7 +761,7 @@ def sync_pre_lactate_activities_to_firebase(
     if not uid or not firebase_token:
         return 0, 0, "未登入 Firebase 雲端帳號"
     if not intervals_api_key:
-        return 0, 0, "未提供 Intervals.icu API Key"
+        return 0, 0, "未提供 Intervals.icu 認證憑證 (API Key 或 OAuth Token)"
 
     headers_fb = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
 
@@ -573,7 +826,9 @@ def sync_pre_lactate_activities_to_firebase(
     all_activities = []
     seen_act_ids = set()
     for oldest, newest in date_ranges:
-        acts = fetch_intervals_activities(intervals_api_key, athlete_id=athlete_id, oldest=oldest, newest=newest)
+        acts = fetch_intervals_activities(
+            intervals_api_key, athlete_id=athlete_id, oldest=oldest, newest=newest, is_oauth=is_oauth
+        )
         for a in acts:
             aid = str(a.get("id"))
             if aid not in seen_act_ids:
@@ -588,7 +843,7 @@ def sync_pre_lactate_activities_to_firebase(
     skipped_count = 0
 
     for act in all_activities:
-        rec = convert_intervals_activity_to_firebase_fit_record(act, api_key=intervals_api_key)
+        rec = convert_intervals_activity_to_firebase_fit_record(act, token_or_key=intervals_api_key, is_oauth=is_oauth)
         act_start = rec["start_time"]
 
         # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！
