@@ -3,8 +3,51 @@ import streamlit as st
 import json
 import base64
 import time
+from datetime import datetime
 
 FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+
+def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
+    """
+    確保 Firebase Firestore 中的 users/{uid} 根文件必定標記 email 與最後登入時間。
+    使用 updateMask 進行 upsert，若文件不存在則自動建立，若已存在則安全合併欄位。
+    """
+    if not uid or not email or not token:
+        return
+    
+    clean_email = str(email).strip()
+    if not clean_email or "@" not in clean_email:
+        return
+
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    fields = {
+        "email": {"stringValue": clean_email},
+        "last_login": {"timestampValue": now_iso}
+    }
+    field_paths = ["email", "last_login"]
+    
+    if display_name:
+        fields["display_name"] = {"stringValue": str(display_name).strip()}
+        field_paths.append("display_name")
+        
+    mask_str = "&".join([f"updateMask.fieldPaths={fp}" for fp in field_paths])
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}?{mask_str}"
+    
+    payload = {
+        "fields": fields
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    try:
+        r = requests.patch(url, headers=headers, json=payload, timeout=4)
+        if r.status_code in [200, 201]:
+            st.session_state["_user_email_synced_to_firestore"] = uid
+        else:
+            print(f"寫入 users/{uid} email 失敗 ({r.status_code}): {r.text[:100]}")
+    except Exception as e:
+        print(f"連線寫入 users/{uid} 失敗: {e}")
 
 def parse_jwt_payload(token):
     """解析 JWT Payload 以取得 iat (簽發時間) 與 exp (過期時間)"""
@@ -22,7 +65,7 @@ def logout_firebase():
     keys_to_clear = [
         "firebase_uid", "firebase_email", "firebase_token", "firebase_refresh_token",
         "cached_weekly_report_html", "cached_report_key", "google_token_processed",
-        "intervals_api_key", "intervals_athlete_id"
+        "intervals_api_key", "intervals_athlete_id", "_user_email_synced_to_firestore"
     ]
     for k in keys_to_clear:
         st.session_state.pop(k, None)
@@ -49,10 +92,14 @@ def login_with_google_id_token(id_token):
         res = requests.post(url, json=payload, timeout=8)
         data = res.json()
         if "localId" in data:
-            st.session_state["firebase_uid"] = data["localId"]
-            st.session_state["firebase_token"] = data["idToken"]
+            u_uid = data["localId"]
+            u_token = data["idToken"]
+            u_email = data.get("email", "")
+            st.session_state["firebase_uid"] = u_uid
+            st.session_state["firebase_token"] = u_token
             st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
-            st.session_state["firebase_email"] = data.get("email", "")
+            st.session_state["firebase_email"] = u_email
+            ensure_user_profile_in_firestore(u_uid, u_email, u_token, display_name=data.get("displayName"))
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
             return True, "成功"
@@ -123,10 +170,19 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                 res = requests.post(url, json=payload, timeout=8)
                 data = res.json()
                 if "localId" in data:
-                    st.session_state["firebase_uid"] = data["localId"]
-                    st.session_state["firebase_token"] = data["idToken"]
+                    u_uid = data["localId"]
+                    u_token = data["idToken"]
+                    user_email = data.get("email", getattr(st.user, "email", ""))
+                    st.session_state["firebase_uid"] = u_uid
+                    st.session_state["firebase_token"] = u_token
                     st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
-                    st.session_state["firebase_email"] = data.get("email", getattr(st.user, "email", ""))
+                    st.session_state["firebase_email"] = user_email
+                    ensure_user_profile_in_firestore(
+                        u_uid,
+                        user_email,
+                        u_token,
+                        display_name=data.get("displayName", getattr(st.user, "name", None))
+                    )
                     st.session_state.pop("cached_weekly_report_html", None)
                     st.session_state.pop("cached_report_key", None)
                     st.rerun()
@@ -140,9 +196,13 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
 
 # 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:
-    st.session_state["firebase_uid"] = st.query_params.get("google_uid")
-    st.session_state["firebase_email"] = st.query_params.get("google_email", "")
-    st.session_state["firebase_token"] = st.query_params.get("google_token", "")
+    qp_uid = st.query_params.get("google_uid")
+    qp_email = st.query_params.get("google_email", "")
+    qp_token = st.query_params.get("google_token", "")
+    st.session_state["firebase_uid"] = qp_uid
+    st.session_state["firebase_email"] = qp_email
+    st.session_state["firebase_token"] = qp_token
+    ensure_user_profile_in_firestore(qp_uid, qp_email, qp_token)
     st.session_state.pop("cached_weekly_report_html", None)
     st.session_state.pop("cached_report_key", None)
     st.query_params.clear()
@@ -159,10 +219,18 @@ def login_to_firebase(email, password):
         res = requests.post(url, json=payload, timeout=5)
         data = res.json()
         if "localId" in data:
-            st.session_state["firebase_uid"] = data["localId"]
-            st.session_state["firebase_token"] = data["idToken"]
+            u_uid = data["localId"]
+            u_token = data["idToken"]
+            st.session_state["firebase_uid"] = u_uid
+            st.session_state["firebase_token"] = u_token
             st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
             st.session_state["firebase_email"] = email
+            ensure_user_profile_in_firestore(
+                u_uid,
+                email,
+                u_token,
+                display_name=data.get("displayName")
+            )
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
             st.sidebar.success("MyLactate 雲端登入成功！")
@@ -192,10 +260,17 @@ def register_to_firebase(email, password):
         res = requests.post(url, json=payload, timeout=5)
         data = res.json()
         if "localId" in data:
-            st.session_state["firebase_uid"] = data["localId"]
-            st.session_state["firebase_token"] = data["idToken"]
+            u_uid = data["localId"]
+            u_token = data["idToken"]
+            st.session_state["firebase_uid"] = u_uid
+            st.session_state["firebase_token"] = u_token
             st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
             st.session_state["firebase_email"] = email
+            ensure_user_profile_in_firestore(
+                u_uid,
+                email,
+                u_token
+            )
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
             st.sidebar.success("MyLactate 帳號註冊成功並已登入！")
@@ -1123,6 +1198,13 @@ def parse_fit_file_data(uploaded_file_bytes):
 # MyLactate 雲端登入區
 st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
 if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
+    # 確保 Firestore users/{uid} 根文件必定標記 email 與最新登入時間
+    if st.session_state.get("_user_email_synced_to_firestore") != st.session_state["firebase_uid"]:
+        ensure_user_profile_in_firestore(
+            st.session_state["firebase_uid"],
+            st.session_state.get("firebase_email", ""),
+            st.session_state.get("firebase_token", "")
+        )
     logged_email = st.session_state.get('firebase_email') or "已認證用戶"
     st.sidebar.success(f"已登入: {logged_email}")
     if st.sidebar.button("🚪 登出並清除所有紀錄", use_container_width=True):
