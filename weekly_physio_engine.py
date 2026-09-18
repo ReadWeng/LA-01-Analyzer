@@ -288,12 +288,13 @@ def get_user_training_date_bounds(uid, token, refresh_token=None):
     """
     快速查詢使用者的運動與乳酸測試歷史的最早與最晚日期，作為前端日期區間拉桿的 min_value 與 max_value
     回傳: (slider_min: date, slider_max: date, default_start: date, default_end: date)
+    邊界右端點為今天 (不出現未來時間)，預設選取範圍為今天往前 7 天 (方便滑鼠點選與縮放)。
     """
     today = datetime.now().date()
     if not uid or not token:
         min_d = today - timedelta(days=60)
-        max_d = today + timedelta(days=7)
-        return min_d, max_d, today - timedelta(days=14), today
+        max_d = today
+        return min_d, max_d, today - timedelta(days=7), today
 
     headers = {"Authorization": f"Bearer {token}"}
     fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
@@ -309,7 +310,9 @@ def get_user_training_date_bounds(uid, token, refresh_token=None):
                 if st_val:
                     try:
                         clean_ts = st_val.replace("Z", "+00:00")
-                        all_dates.add(datetime.fromisoformat(clean_ts).date())
+                        d_fit = datetime.fromisoformat(clean_ts).date()
+                        if d_fit <= today:
+                            all_dates.add(d_fit)
                     except Exception:
                         pass
     except Exception:
@@ -328,45 +331,36 @@ def get_user_training_date_bounds(uid, token, refresh_token=None):
                 if y > 0 and m > 0 and day > 0:
                     fy = y + 2000 if y < 100 else y
                     d_obj = date(fy, m, day)
-                    all_dates.add(d_obj)
-                    la_dates.append(d_obj)
+                    if d_obj <= today:
+                        all_dates.add(d_obj)
+                        la_dates.append(d_obj)
     except Exception:
         pass
 
     if all_dates:
         sorted_all = sorted(all_dates)
         earliest = sorted_all[0]
-        latest = sorted_all[-1]
 
-        # 拉桿最小與最大範圍：包含最早訓練日前 14 天，至最晚紀錄（或今天）後 7 天
-        slider_min = min(earliest - timedelta(days=14), today - timedelta(days=60))
-        slider_max = max(latest + timedelta(days=7), today)
+        # 拉桿最小與最大範圍：最小到歷史最早紀錄，邊界最大到今天（不含未來時間）
+        slider_min = min(earliest, today - timedelta(days=60))
+        slider_max = today
 
-        # 預設選取區間：如果有乳酸日期，預設為最近 5 場乳酸最早的一場至最新紀錄日
-        if la_dates:
-            sorted_la = sorted(la_dates)
-            target_la = sorted_la[-5:]
-            def_start = target_la[0]
-            def_start = max(slider_min, def_start)
-            def_end = latest
-        else:
-            def_start = max(slider_min, latest - timedelta(days=14))
-            def_end = latest
+        # 預設選取區間：今天向前 7 天 (方便滑鼠選取與微調)
+        def_end = today
+        def_start = today - timedelta(days=7)
 
+        if slider_min > def_start:
+            slider_min = def_start - timedelta(days=7)
         if slider_min >= slider_max:
             slider_min = slider_max - timedelta(days=14)
-        if def_start > def_end:
-            def_start = def_end - timedelta(days=7)
         if def_start < slider_min:
             def_start = slider_min
-        if def_end > slider_max:
-            def_end = slider_max
 
         return slider_min, slider_max, def_start, def_end
     else:
         min_d = today - timedelta(days=60)
-        max_d = today + timedelta(days=7)
-        return min_d, max_d, today - timedelta(days=14), today
+        max_d = today
+        return min_d, max_d, today - timedelta(days=7), today
 
 
 def fetch_firestore_dataset_with_status(

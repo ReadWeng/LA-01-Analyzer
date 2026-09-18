@@ -1516,7 +1516,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
 
     col_ctl1, col_ctl2, col_ctl3 = st.columns([3, 2, 1])
     with col_ctl1:
-        bounds_key = f"date_bounds_{uid}"
+        bounds_key = f"date_bounds_v4_{uid}"
         if bounds_key not in st.session_state:
             st.session_state[bounds_key] = wpe.get_user_training_date_bounds(uid, token, ref_token)
         slider_min, slider_max, def_start, def_end = st.session_state[bounds_key]
@@ -1528,7 +1528,7 @@ if app_mode == "AI 運動生理週報與下一次處方":
             value=(def_start, def_end),
             format="YYYY-MM-DD",
             help="直接拖拉起始與結束日期，系統將自動納入該區間內的所有汗乳酸關鍵測驗、日常手錶運動與 Intervals.icu 晨間 HRV 數據",
-            key="ai_report_date_slider"
+            key="ai_report_date_slider_v4"
         )
         if isinstance(selected_date_range, (list, tuple)) and len(selected_date_range) == 2:
             start_date_sel, end_date_sel = selected_date_range[0], selected_date_range[1]
