@@ -1504,11 +1504,27 @@ theme_str = "dark" if "Dark" in chart_theme else "light"
 st.sidebar.markdown("---")
 
 st.sidebar.markdown("### 🛠️ 整合分析工具模式")
+if "app_mode" in st.query_params:
+    qp_m = st.query_params.get("app_mode")
+    if qp_m == "multi":
+        st.session_state["app_mode_select"] = "多期數據整合儀表板 (LacV5)"
+    elif qp_m == "single":
+        st.session_state["app_mode_select"] = "單期分析與資料登錄"
+    elif qp_m == "ai":
+        st.session_state["app_mode_select"] = "AI 運動生理週報與下一次處方"
+
 app_mode = st.sidebar.radio(
     "功能模式選擇",
     ["單期分析與資料登錄", "多期數據整合儀表板 (LacV5)", "AI 運動生理週報與下一次處方"],
     key="app_mode_select"
 )
+# 同步 query_params 保持狀態純淨
+mode_to_param = {
+    "單期分析與資料登錄": "single",
+    "多期數據整合儀表板 (LacV5)": "multi",
+    "AI 運動生理週報與下一次處方": "ai"
+}
+st.query_params["app_mode"] = mode_to_param.get(app_mode, "single")
 
 if app_mode == "多期數據整合儀表板 (LacV5)":
     st.markdown('<div class="title-container" style="display: flex; align-items: center;"><h1 style="margin: 0; color: #00f2fe;">📊 多期數據整合儀表板 (LacV5)</h1></div>', unsafe_allow_html=True)
@@ -2341,7 +2357,8 @@ else:
         activity_calendar.render_activity_calendar(
             uid=st.session_state['firebase_uid'],
             token=st.session_state.get('firebase_token', ''),
-            theme=theme_str
+            theme=theme_str,
+            mode="single"
         )
     else:
         st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是登入 MyLactate 雲端帳號以啟用活動月曆瀏覽手錶擷取之運動紀錄。")

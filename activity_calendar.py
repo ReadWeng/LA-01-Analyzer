@@ -492,20 +492,65 @@ def save_bound_lactate_to_firestore(
 
 def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: str = "single"):
     """
-    手機極致響應式運動數據月曆：
-    1. 採用純 CSS Grid (repeat(7, 1fr))，在手機螢幕上絕不縱向折疊破版，全月 31 天一覽無遺。
-    2. 點擊日期格子立即切換選定日期，下方展開活動卡片。
-    3. 同步提供拇指友善的快速日期下拉選單，雙重保障手機端體驗。
+    手機極致響應式運動數據月曆 (支援單期/多期模式、單擊選取/單擊取消、URL模式記憶)
     """
     today = date.today()
     if "cal_view_year" not in st.session_state:
         st.session_state["cal_view_year"] = today.year
         st.session_state["cal_view_month"] = today.month
 
-    # 處理來自 HTML 點擊的 Query Params 跳轉
+    mode_param = "multi" if mode == "multi" else "single"
+
+    # 先抓取資料庫快取以利點選切換邏輯
+    cache_key = f"cal_data_cache_{uid}"
+    acts_cached, las_cached = st.session_state.get(cache_key, ({}, {}))
+
+    # 處理來自 HTML 點擊的 Query Params 跳轉 (支援單擊選取 / 選中後單擊取消)
     if "cal_date" in st.query_params:
-        st.session_state["cal_selected_date"] = st.query_params.get("cal_date")
+        clicked_date = st.query_params.get("cal_date")
+        
+        if mode == "multi":
+            cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
+            day_acts = acts_cached.get(clicked_date, [])
+            day_las = las_cached.get(clicked_date, [])
+
+            matching_keys = [k for k in cloud_pool.keys() if k.startswith(clicked_date)]
+            if matching_keys:
+                # 已選中 -> 單擊取消！
+                for k in matching_keys:
+                    cloud_pool.pop(k, None)
+                st.toast(f"🗑️ 已取消選取 {clicked_date}", icon="ℹ️")
+            else:
+                # 未選中 -> 單擊選取！
+                if day_acts:
+                    for a_i, a in enumerate(day_acts):
+                        k = f"{clicked_date}_{a.get('doc_id', a_i)}"
+                        cloud_pool[k] = convert_firebase_activity_to_session_dict(a, day_las)
+                    st.toast(f"✅ 已選取 {clicked_date} 加入多期對照！", icon="📊")
+                elif day_las:
+                    fake_act = {
+                        "start_time": day_las[0].get("record_time", datetime.strptime(clicked_date, "%Y-%m-%d")),
+                        "duration_minutes": 30.0,
+                        "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
+                        "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
+                    }
+                    cloud_pool[clicked_date] = convert_firebase_activity_to_session_dict(fake_act, day_las)
+                    st.toast(f"✅ 已選取 {clicked_date} 乳酸紀錄加入多期對照！", icon="💧")
+                else:
+                    st.toast(f"💡 {clicked_date} 無手錶或乳酸數據", icon="ℹ️")
+
+            st.session_state["cal_selected_date"] = clicked_date
+        else:
+            # 單期模式：單擊選中，再次單擊取消
+            curr_selected = st.session_state.get("cal_selected_date")
+            if curr_selected == clicked_date:
+                st.session_state["cal_selected_date"] = None
+                st.toast(f"ℹ️ 已取消選取 {clicked_date}", icon="ℹ️")
+            else:
+                st.session_state["cal_selected_date"] = clicked_date
+
         del st.query_params["cal_date"]
+        st.query_params["app_mode"] = mode_param
         st.rerun()
 
     if "cal_m" in st.query_params:
@@ -528,6 +573,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
             st.session_state["cal_view_year"] = today.year
             st.session_state["cal_view_month"] = today.month
         del st.query_params["cal_m"]
+        st.query_params["app_mode"] = mode_param
         st.rerun()
 
     v_year = st.session_state["cal_view_year"]
@@ -669,13 +715,13 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
     <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:8px; background:{pal['bg_nav']}; border:{pal['bd_nav']}; border-radius:10px; overflow:hidden;">
       <tr>
         <td style="width:20%; text-align:left; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=prev" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
+          <a href="?cal_m=prev&app_mode={mode_param}" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
         </td>
         <td style="width:60%; text-align:center; padding:7px 2px; vertical-align:middle;">
           <div style="font-size:14px; font-weight:800; color:{pal['title_nav']}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📅 {v_year} 年 {v_month:02d} 月</div>
         </td>
         <td style="width:20%; text-align:right; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=next" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
+          <a href="?cal_m=next&app_mode={mode_param}" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
         </td>
       </tr>
     </table>
@@ -741,8 +787,11 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
             day_acts = acts_by_date.get(d_str, [])
             day_las = las_by_date.get(d_str, [])
 
-            # 樣式計算 (全部行內樣式，不受 Streamlit CSS 影響)
-            if is_selected:
+            # 樣式計算 (多期模式下檢查是否已被勾選入池)
+            cloud_pool = st.session_state.get("multi_selected_cloud_sessions", {})
+            is_multi_sel = (mode == "multi" and any(k.startswith(d_str) for k in cloud_pool.keys()))
+
+            if is_multi_sel or (mode == "single" and is_selected):
                 bg = pal['cell_bg_sel']
                 bd = pal['cell_bd_sel']
                 box_sh = pal['cell_sh_sel']
@@ -758,20 +807,27 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                 box_sh = ""
                 num_col = pal['cell_num_normal']
 
-            # 徽章標示 (乳酸改為流汗水滴 💧)
+            # 徽章標示 (乳酸改為流汗水滴 💧，多期選中時附加 ✓ 標籤)
+            badges = []
+            if is_multi_sel:
+                badges.append('<span style="background:#dcfce7; color:#15803d; border-radius:3px; padding:0 2px; font-size:9px; font-weight:800; line-height:1;">✓</span>')
+
             if day_acts and day_las:
-                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">💧</span>'
+                badges.append(f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">💧</span>')
             elif day_acts:
                 sp_ico, _ = get_sport_badge(day_acts[0].get("sport", ""))
-                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>'
+                badges.append(f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>')
             elif day_las:
-                badge_html = f'<span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">💧</span>'
+                badges.append(f'<span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">💧</span>')
             else:
-                badge_html = f'<span style="color:{pal["dot_empty"]}; font-size:10px; line-height:1;">·</span>'
+                if not badges:
+                    badges.append(f'<span style="color:{pal["dot_empty"]}; font-size:10px; line-height:1;">·</span>')
+
+            badge_html = "".join(badges)
 
             cell_html = (
                 f'<td style="width:14.28%; height:44px; padding:1px; vertical-align:middle; text-align:center; background:{bg}; border:{bd}; border-radius:6px; {box_sh}">'
-                f'<a href="?cal_date={d_str}" target="_self" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; text-decoration:none;" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">'
+                f'<a href="?cal_date={d_str}&app_mode={mode_param}" target="_self" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; text-decoration:none;" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">'
                 f'<span style="font-size:13px; font-weight:700; line-height:1.1; color:{num_col};">{day_num}</span>'
                 f'<div style="margin-top:2px; height:12px; display:flex; align-items:center; justify-content:center;">{badge_html}</div>'
                 f'</a>'
