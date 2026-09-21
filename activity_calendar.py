@@ -501,18 +501,25 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
     mode_param = "multi" if mode == "multi" else "single"
 
-    # 先抓取資料庫快取以利點選切換邏輯
-    cache_key = f"cal_data_cache_{uid}"
-    acts_cached, las_cached = st.session_state.get(cache_key, ({}, {}))
+    # 1. 抓取雲端數據 (優先載入，以提供點選及月曆運算所需之資料)
+    acts_by_date, las_by_date = fetch_user_calendar_data(uid, token)
 
     # 處理來自 HTML 點擊的 Query Params 跳轉 (支援單擊選取 / 選中後單擊取消)
     if "cal_date" in st.query_params:
         clicked_date = st.query_params.get("cal_date")
         
+        # 確保畫面聚焦於點擊日期所屬的年/月
+        try:
+            c_y, c_m = [int(p) for p in clicked_date.split("-")[:2]]
+            st.session_state["cal_view_year"] = c_y
+            st.session_state["cal_view_month"] = c_m
+        except Exception:
+            pass
+
         if mode == "multi":
             cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
-            day_acts = acts_cached.get(clicked_date, [])
-            day_las = las_cached.get(clicked_date, [])
+            day_acts = acts_by_date.get(clicked_date, [])
+            day_las = las_by_date.get(clicked_date, [])
 
             matching_keys = [k for k in cloud_pool.keys() if k.startswith(clicked_date)]
             if matching_keys:
@@ -540,6 +547,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                     st.toast(f"💡 {clicked_date} 無手錶或乳酸數據", icon="ℹ️")
 
             st.session_state["cal_selected_date"] = clicked_date
+            st.session_state.pop("cal_quick_date_select", None)
         else:
             # 單期模式：單擊選中，再次單擊取消
             curr_selected = st.session_state.get("cal_selected_date")
@@ -548,6 +556,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                 st.toast(f"ℹ️ 已取消選取 {clicked_date}", icon="ℹ️")
             else:
                 st.session_state["cal_selected_date"] = clicked_date
+            st.session_state.pop("cal_quick_date_select", None)
 
         del st.query_params["cal_date"]
         st.query_params["app_mode"] = mode_param
@@ -572,16 +581,13 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
         elif m_act == "current":
             st.session_state["cal_view_year"] = today.year
             st.session_state["cal_view_month"] = today.month
+        st.session_state.pop("cal_quick_date_select", None)
         del st.query_params["cal_m"]
         st.query_params["app_mode"] = mode_param
         st.rerun()
 
     v_year = st.session_state["cal_view_year"]
     v_month = st.session_state["cal_view_month"]
-
-    # 1. 抓取雲端數據
-    with st.spinner("載入雲端活動與乳酸紀錄中..."):
-        acts_by_date, las_by_date = fetch_user_calendar_data(uid, token)
 
     # 2. 月份統計運算
     month_prefix = f"{v_year:04d}-{v_month:02d}"
@@ -870,6 +876,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
         for i, opt in enumerate(date_options):
             if date_map[opt] == selected_date:
                 cur_idx = i
+                st.session_state["cal_quick_date_select"] = opt
                 break
 
         col_q1, col_q2 = st.columns([3, 1])

@@ -148,14 +148,13 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
         if g_token:
             is_jwt = isinstance(g_token, str) and g_token.count(".") == 2
             
-            # 若為 JWT，檢查是否為重開後的過期/舊憑證 (若簽發超過 5 分鐘或已過期，代表為前次關閉前殘留的舊 Cookie)
+            # 若為 JWT，檢查是否為已過期憑證
             if is_jwt:
                 payload_info = parse_jwt_payload(g_token)
-                iat = payload_info.get("iat", 0)
                 exp = payload_info.get("exp", 0)
                 now_ts = time.time()
-                # 若憑證過期或簽發時間超過 300 秒 (5分鐘)，自動清除舊 Cookie，讓每次重開都是乾淨的登入畫面
-                if (exp > 0 and now_ts > exp) or (iat > 0 and (now_ts - iat) > 300):
+                # 若憑證已過期，自動清除過期憑證，回到乾淨登入畫面
+                if exp > 0 and now_ts > exp:
                     logout_firebase()
 
             post_body = f"id_token={g_token}&providerId=google.com" if is_jwt else f"access_token={g_token}&providerId=google.com"
