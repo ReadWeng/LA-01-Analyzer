@@ -271,6 +271,136 @@ def build_session_from_fit_record(
     }
 
 
+def convert_firebase_activity_to_session_dict(
+    act_item: Dict[str, Any],
+    lactates_on_day: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """
+    將 Firestore 中的 fit_record 與當日乳酸紀錄，轉換為 integrate_reports.build_integrated_html()
+    所要求的多期 session_dict 結構。
+    """
+    raw_fields = act_item.get("raw_fields", {})
+    ts_values = raw_fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
+    start_time = act_item.get("start_time", datetime.now())
+    duration_min = float(act_item.get("duration_minutes", 0.0))
+
+    power_30s = []
+    hr_30s = []
+    temp_10s = []
+
+    # 降採樣以維持前端 Chart.js 極致效能 (~500 點)
+    step = max(1, len(ts_values) // 500) if ts_values else 1
+
+    for i in range(0, len(ts_values), step):
+        pt = ts_values[i]
+        pf = pt.get("mapValue", {}).get("fields", {})
+        el_min = round(float(_get_fs_field(pf.get("elapsed_minutes"), 0.0)), 2)
+
+        pwr = _get_fs_field(pf.get("power"))
+        if pwr is None:
+            pwr = _get_fs_field(pf.get("power_30s"))
+        if pwr is not None and not np.isnan(float(pwr)):
+            power_30s.append({'x': el_min, 'y': round(float(pwr), 1)})
+
+        hr = _get_fs_field(pf.get("heart_rate"))
+        if hr is not None and not np.isnan(float(hr)):
+            hr_30s.append({'x': el_min, 'y': round(float(hr), 1)})
+
+        core = _get_fs_field(pf.get("core_temp"))
+        if core is not None and not np.isnan(float(core)):
+            temp_10s.append({'x': el_min, 'y': round(float(core), 2)})
+
+    if not power_30s and duration_min > 0:
+        avg_p = float(act_item.get("avg_power", 0))
+        avg_h = float(act_item.get("avg_hr", 0))
+        for m in [0.0, round(duration_min / 2.0, 1), round(duration_min, 1)]:
+            if avg_p > 0:
+                power_30s.append({'x': m, 'y': avg_p})
+            if avg_h > 0:
+                hr_30s.append({'x': m, 'y': avg_h})
+
+    lactate_pts = []
+    glucose_pts = []
+
+    if lactates_on_day:
+        for la in lactates_on_day:
+            la_time = la.get("record_time", start_time)
+            diff_min = round((la_time - start_time).total_seconds() / 60.0, 1)
+            if abs(diff_min) > duration_min * 2 and duration_min > 0:
+                diff_min = 0.0
+
+            pw_at_t = None
+            hr_at_t = None
+            if power_30s:
+                nearest_pw = min(power_30s, key=lambda pt: abs(pt['x'] - diff_min))
+                if abs(nearest_pw['x'] - diff_min) <= 3.0:
+                    pw_at_t = int(nearest_pw['y'])
+            if hr_30s:
+                nearest_hr = min(hr_30s, key=lambda pt: abs(pt['x'] - diff_min))
+                if abs(nearest_hr['x'] - diff_min) <= 3.0:
+                    hr_at_t = int(nearest_hr['y'])
+
+            la_val = la.get("lactate_mmol")
+            if la_val is not None:
+                item = {
+                    'x': diff_min,
+                    'y': float(la_val),
+                    'source': la.get("source", "採樣點")
+                }
+                if pw_at_t is not None:
+                    item['power'] = pw_at_t
+                if hr_at_t is not None:
+                    item['hr'] = hr_at_t
+                lactate_pts.append(item)
+
+            glu_val = la.get("glucose_mgdl")
+            if glu_val is not None and str(glu_val) != "-":
+                item_g = {
+                    'x': diff_min,
+                    'y': float(glu_val),
+                    'source': la.get("source", "採樣點")
+                }
+                if pw_at_t is not None:
+                    item_g['power'] = pw_at_t
+                if hr_at_t is not None:
+                    item_g['hr'] = hr_at_t
+                glucose_pts.append(item_g)
+
+    lactate_pts.sort(key=lambda p: p['x'])
+    glucose_pts.sort(key=lambda p: p['x'])
+
+    dur_m = int(duration_min)
+    dur_s = int(round((duration_min - dur_m) * 60))
+    dur_str = f"{dur_m:02d}:{dur_s:02d}"
+
+    stats = {
+        'duration': dur_str,
+        'avg_power': int(act_item.get("avg_power", 0)),
+        'max_power': int(act_item.get("max_power", 0)),
+        'avg_hr': int(act_item.get("avg_hr", 0)),
+        'max_hr': int(act_item.get("max_hr", 0)),
+    }
+    if lactate_pts:
+        max_lac = max(pt['y'] for pt in lactate_pts if pt.get('y') is not None)
+        stats['max_lactate'] = f"{max_lac:.1f} mmol/L"
+    if glucose_pts:
+        max_glu = max(pt['y'] for pt in glucose_pts if pt.get('y') is not None)
+        stats['max_glucose'] = f"{int(max_glu)} mg/dL"
+
+    st_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        'startTime': st_str,
+        'power_30s': power_30s,
+        'hr_30s': hr_30s,
+        'temp_10s': temp_10s,
+        'lactate': lactate_pts,
+        'glucose': glucose_pts,
+        'stats': stats,
+        'source': 'firebase',
+        'activity_name': act_item.get("activity_name", act_item.get("file_name", "Cloud Activity"))
+    }
+
+
 def get_sport_badge(sport: str, sub_sport: str = "") -> Tuple[str, str]:
     """取得運動項目的 Emoji 圖示與顏色"""
     sp = str(sport).lower()
@@ -360,7 +490,7 @@ def save_bound_lactate_to_firestore(
     return True, f"成功綁定並儲存 {valid_count} 筆乳酸數據至雲端！"
 
 
-def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
+def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: str = "single"):
     """
     手機極致響應式運動數據月曆：
     1. 採用純 CSS Grid (repeat(7, 1fr))，在手機螢幕上絕不縱向折疊破版，全月 31 天一覽無遺。
@@ -741,14 +871,30 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
                 </div>
                 ''', unsafe_allow_html=True)
                 
-                btn_text = "🔄 載入活動並修改乳酸數據" if (has_la or len(sel_las) > 0) else "🚀 載入此活動並標定乳酸數據"
-                if st.button(btn_text, key=f"btn_load_act_{act['doc_id']}_{idx}", type="primary", use_container_width=True):
-                    session_obj = build_session_from_fit_record(act, sel_las)
-                    st.session_state["active_cloud_session"] = session_obj
-                    st.session_state["custom_lactate"] = session_obj["lactate_df"]
-                    st.session_state.pop("custom_lactate_editor", None)
-                    st.toast(f"✅ 成功載入 {curr_sel} 運動數據！正在開啟分析圖表與乳酸編輯器...", icon="🚀")
-                    st.rerun()
+                if mode == "multi":
+                    cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
+                    sess_key = f"{curr_sel}_{act.get('doc_id', idx)}"
+                    is_in_pool = sess_key in cloud_pool
+
+                    if is_in_pool:
+                        if st.button(f"✅ 已在多期對照清單中（點擊移除）", key=f"btn_rem_multi_{act.get('doc_id', idx)}_{idx}", use_container_width=True):
+                            cloud_pool.pop(sess_key, None)
+                            st.rerun()
+                    else:
+                        if st.button(f"➕ 加入此活動至多期對照清單", key=f"btn_add_multi_{act.get('doc_id', idx)}_{idx}", type="primary", use_container_width=True):
+                            sess_dict = convert_firebase_activity_to_session_dict(act, sel_las)
+                            cloud_pool[sess_key] = sess_dict
+                            st.toast(f"✅ 已將 {curr_sel} 運動加入多期對照清單！", icon="📊")
+                            st.rerun()
+                else:
+                    btn_text = "🔄 載入活動並修改乳酸數據" if (has_la or len(sel_las) > 0) else "🚀 載入此活動並標定乳酸數據"
+                    if st.button(btn_text, key=f"btn_load_act_{act['doc_id']}_{idx}", type="primary", use_container_width=True):
+                        session_obj = build_session_from_fit_record(act, sel_las)
+                        st.session_state["active_cloud_session"] = session_obj
+                        st.session_state["custom_lactate"] = session_obj["lactate_df"]
+                        st.session_state.pop("custom_lactate_editor", None)
+                        st.toast(f"✅ 成功載入 {curr_sel} 運動數據！正在開啟分析圖表與乳酸編輯器...", icon="🚀")
+                        st.rerun()
 
         if sel_las and not sel_acts:
             st.markdown("#### 💧 當日乳酸紀錄（未關聯手錶 FIT 檔案）：")
