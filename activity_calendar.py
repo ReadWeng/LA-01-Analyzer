@@ -599,6 +599,88 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
     dur_m = int(tot_dur % 60)
     unbound_count = len(month_acts) - len(month_acts_with_la)
 
+    # 多期模式：頂部連續批次勾選區 (支援連續點選不跳轉，先選完再統一運算)
+    if mode == "multi":
+        st.markdown("#### 📅 連續選取要納入多期對照的歷史期數")
+        st.caption("💡 請在下方多選清單中**連續勾選要比較的日期**（或點擊快捷按鈕）。選取完畢後，月曆會同步高亮標記；最後滑至下方點擊「🚀 開始整合並繪製多期對照圖表」即可。")
+
+        cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
+        currently_selected_dates = sorted(
+            list(set([k.split("_")[0] for k in cloud_pool.keys()])),
+            reverse=True
+        )
+
+        all_dates = sorted(list(set(list(acts_by_date.keys()) + list(las_by_date.keys()))), reverse=True)
+        month_dates = [d for d in all_dates if d.startswith(month_prefix)]
+
+        def _format_date_label(d_val):
+            d_acts = acts_by_date.get(d_val, [])
+            d_las = las_by_date.get(d_val, [])
+            parts = []
+            if d_acts:
+                sp_ico, _ = get_sport_badge(d_acts[0].get("sport", ""))
+                tot_m = int(sum(a.get("duration_minutes", 0) for a in d_acts))
+                parts.append(f"{sp_ico}{tot_m}分({len(d_acts)}場)")
+            if d_las:
+                parts.append(f"💧{len(d_las)}筆乳酸")
+            return f"{d_val} | {' · '.join(parts)}" if parts else d_val
+
+        col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 3])
+        with col_b1:
+            if st.button(f"➕ 全選當月 ({len(month_dates)}天)", key=f"btn_add_month_{v_year}_{v_month}", use_container_width=True):
+                for d_str in month_dates:
+                    day_acts = acts_by_date.get(d_str, [])
+                    day_las = las_by_date.get(d_str, [])
+                    if day_acts:
+                        for a_i, a in enumerate(day_acts):
+                            cloud_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
+                    elif day_las:
+                        fake_act = {
+                            "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
+                            "duration_minutes": 30.0,
+                            "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
+                            "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
+                        }
+                        cloud_pool[d_str] = convert_firebase_activity_to_session_dict(fake_act, day_las)
+                st.session_state.pop('latest_output_html', None)
+                st.rerun()
+        with col_b2:
+            if st.button("🗑️ 清空所有勾選", key="btn_clear_all_multi_dates", use_container_width=True):
+                st.session_state["multi_selected_cloud_sessions"] = {}
+                st.session_state.pop('latest_output_html', None)
+                st.rerun()
+
+        picked_dates = st.multiselect(
+            "請連續點選要比較的日期（支援多選與搜尋）：",
+            options=all_dates,
+            default=[d for d in currently_selected_dates if d in all_dates],
+            format_func=_format_date_label,
+            key="multi_cloud_dates_picker",
+            placeholder="點擊連續加入要對照的日期..."
+        )
+
+        if set(picked_dates) != set(currently_selected_dates):
+            new_pool = {}
+            for d_str in picked_dates:
+                day_acts = acts_by_date.get(d_str, [])
+                day_las = las_by_date.get(d_str, [])
+                if day_acts:
+                    for a_i, a in enumerate(day_acts):
+                        new_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
+                elif day_las:
+                    fake_act = {
+                        "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
+                        "duration_minutes": 30.0,
+                        "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
+                        "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
+                    }
+                    new_pool[d_str] = convert_firebase_activity_to_session_dict(fake_act, day_las)
+            st.session_state["multi_selected_cloud_sessions"] = new_pool
+            st.session_state.pop('latest_output_html', None)
+            st.rerun()
+
+        st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
+
     selected_date = st.session_state.get("cal_selected_date")
     if not selected_date or not selected_date.startswith(month_prefix):
         month_active_dates = sorted([d for d in acts_by_date.keys() if d.startswith(month_prefix)], reverse=True)
@@ -716,22 +798,29 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
     html_parts = []
     
-    # (A) 月曆頂部導覽列 (Table 版，防 flex 折疊)
-    html_parts.append(f'''
-    <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:8px; background:{pal['bg_nav']}; border:{pal['bd_nav']}; border-radius:10px; overflow:hidden;">
-      <tr>
-        <td style="width:20%; text-align:left; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=prev&app_mode={mode_param}" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
-        </td>
-        <td style="width:60%; text-align:center; padding:7px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:{pal['title_nav']}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📅 {v_year} 年 {v_month:02d} 月</div>
-        </td>
-        <td style="width:20%; text-align:right; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=next&app_mode={mode_param}" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
-        </td>
-      </tr>
-    </table>
-    ''')
+    # (A) 月曆頂部導覽列 (原生按鈕版，點擊完全不跳轉不重載)
+    col_nav1, col_nav2, col_nav3 = st.columns([1.2, 2.6, 1.2])
+    with col_nav1:
+        if st.button("◀ 上月", key=f"btn_cal_nav_prev_{mode}_{v_year}_{v_month}", use_container_width=True):
+            if v_month == 1:
+                st.session_state["cal_view_year"] = v_year - 1
+                st.session_state["cal_view_month"] = 12
+            else:
+                st.session_state["cal_view_month"] = v_month - 1
+            st.session_state.pop("cal_quick_date_select", None)
+            st.rerun()
+    with col_nav2:
+        t_color = pal["title_nav"]
+        st.markdown(f"<div style='text-align:center; font-weight:800; font-size:15px; color:{t_color}; padding:6px 0; white-space:nowrap;'>📅 {v_year} 年 {v_month:02d} 月</div>", unsafe_allow_html=True)
+    with col_nav3:
+        if st.button("下月 ▶", key=f"btn_cal_nav_next_{mode}_{v_year}_{v_month}", use_container_width=True):
+            if v_month == 12:
+                st.session_state["cal_view_year"] = v_year + 1
+                st.session_state["cal_view_month"] = 1
+            else:
+                st.session_state["cal_view_month"] = v_month + 1
+            st.session_state.pop("cal_quick_date_select", None)
+            st.rerun()
 
     # (B) 當月運動摘要統計列 (4 格等寬 Table，永不換行)
     html_parts.append(f'''
@@ -846,6 +935,14 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
     # 一次性渲染原生 Table 月曆
     st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+    if mode == "multi":
+        cloud_pool = st.session_state.get("multi_selected_cloud_sessions", {})
+        if cloud_pool:
+            st.success(f"📋 目前已連續加入 **{len(cloud_pool)}** 個歷史期數（請至下方「📋 待整合之多期數據清單」確認並點擊開始運算）。")
+        else:
+            st.info("💡 目前尚未勾選任何期數。請於上方多選清單中連續點選要比較的歷史期數。")
+        return
 
 
     # 5. 手機友善的快速日期下拉選單 (供拇指快速切換)

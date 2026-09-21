@@ -1647,6 +1647,7 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
         with col_p2:
             if st.button("🗑️ 清空選定清單", use_container_width=True):
                 st.session_state['multi_selected_cloud_sessions'] = {}
+                st.session_state.pop('latest_output_html', None)
                 st.rerun()
     else:
         st.info("💡 目前尚未選取任何期數。請至上方「📅 從 Firebase 雲端月曆直接點選數據」點選活動加入，或於「📂 上傳單期 HTML 報告檔案」中選取檔案。")
@@ -1671,7 +1672,7 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
                     st.error(f"整合過程中發生錯誤: {e}")
 
     # 如果有成功輸出的報告檔，提供預覽與下載
-    latest_out = st.session_state.get('latest_output_html', output_html_path)
+    latest_out = st.session_state.get('latest_output_html')
     if latest_out and os.path.exists(latest_out):
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### 📊 整合報告互動預覽 (Chart.js)")
