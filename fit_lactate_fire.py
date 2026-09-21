@@ -220,11 +220,12 @@ if "code" in st.query_params and str(st.query_params.get("state", "")).startswit
         import intervals_client as ic
         oauth_cfg = ic.get_intervals_oauth_config()
         if oauth_cfg["client_id"] and oauth_cfg["client_secret"]:
+            redirect_target = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
             ok, tok_data, msg = ic.exchange_intervals_oauth_code(
                 client_id=oauth_cfg["client_id"],
                 client_secret=oauth_cfg["client_secret"],
                 code=oauth_code,
-                redirect_uri=oauth_cfg["redirect_uri"]
+                redirect_uri=redirect_target
             )
             if ok:
                 ath = tok_data.get("athlete", {})
@@ -1393,7 +1394,7 @@ if st.session_state.get('firebase_uid'):
         else:
             # 未連線狀態：優先展示 OAuth 2.0 一鍵授權
             if oauth_cfg["client_id"]:
-                redirect_target = oauth_cfg["redirect_uri"] or "http://localhost:8501/"
+                redirect_target = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
                 auth_url = ic.get_intervals_oauth_authorize_url(
                     client_id=oauth_cfg["client_id"],
                     redirect_uri=redirect_target,

@@ -17,10 +17,40 @@ INTERVALS_AUTH_URL = "https://intervals.icu/oauth/authorize"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 
 
+DEFAULT_INTERVALS_CLIENT_ID = "1038"
+DEFAULT_INTERVALS_CLIENT_SECRET = "ebb88ff05c8240dd98143baca7764a4f"
+
+
+def resolve_redirect_uri(configured_uri: str = "") -> str:
+    """
+    智慧解析 OAuth 回呼網址：
+    1. 若已設定 (secrets 或 env)，直接使用
+    2. 若處於 Streamlit 執行環境，嘗試從 st.context.headers 偵測當前 host (例如 assemzyme.com 或 streamlit.app)
+    3. 否則預設使用 http://localhost:8501/
+    """
+    if configured_uri and str(configured_uri).strip():
+        u = str(configured_uri).strip()
+        if not u.endswith("/"):
+            u += "/"
+        return u
+
+    try:
+        import streamlit as st
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            host = st.context.headers.get("host", "")
+            if host:
+                proto = "https" if "localhost" not in host and "127.0.0.1" not in host else "http"
+                return f"{proto}://{host}/"
+    except Exception:
+        pass
+
+    return "http://localhost:8501/"
+
+
 def get_intervals_oauth_config() -> Dict[str, str]:
     """
     讀取系統設定之 Intervals.icu OAuth Client ID, Client Secret 與 Redirect URI
-    優先序: Streamlit secrets -> 環境變數
+    優先序: Streamlit secrets -> 環境變數 -> 官方核發之預設金鑰
     """
     client_id = ""
     client_secret = ""
@@ -46,6 +76,12 @@ def get_intervals_oauth_config() -> Dict[str, str]:
         client_secret = os.environ.get("INTERVALS_CLIENT_SECRET", "")
     if not redirect_uri:
         redirect_uri = os.environ.get("INTERVALS_REDIRECT_URI", "")
+
+    # 若未在外部環境變數設定，使用官方核發之正式憑證
+    if not client_id:
+        client_id = DEFAULT_INTERVALS_CLIENT_ID
+    if not client_secret:
+        client_secret = DEFAULT_INTERVALS_CLIENT_SECRET
 
     return {
         "client_id": str(client_id).strip(),
