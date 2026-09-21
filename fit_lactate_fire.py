@@ -1792,6 +1792,9 @@ file_name = ""
 if uploaded_file is not None:
     fit_bytes = uploaded_file.read()
     file_name = uploaded_file.name
+    # 若手動上傳新檔案，清除從雲端月曆載入的 session
+    st.session_state.pop('active_cloud_session', None)
+
 if 'last_file' not in st.session_state:
     st.session_state['last_file'] = None
 
@@ -1807,16 +1810,38 @@ if file_name and file_name != st.session_state['last_file']:
     if 'custom_lactate_editor' in st.session_state:
         del st.session_state['custom_lactate_editor']
 
+# 檢查是否有從雲端月曆點入之活動 Session
+loaded_cloud_session = st.session_state.get('active_cloud_session')
+
 # 主流程
-if fit_bytes is not None:
-    with st.spinner("正在解析 FIT 檔案中..."):
-        parsed_res = parse_fit_file_data(fit_bytes)
-        if len(parsed_res) == 5:
-            df, df_laps, start_time, sport, sub_sport = parsed_res
-        else:
-            df, df_laps, start_time = parsed_res
-            sport = df.attrs.get('sport', 'unknown')
-            sub_sport = df.attrs.get('sub_sport', 'generic')
+if fit_bytes is not None or loaded_cloud_session is not None:
+    if fit_bytes is not None:
+        with st.spinner("正在解析 FIT 檔案中..."):
+            parsed_res = parse_fit_file_data(fit_bytes)
+            if len(parsed_res) == 5:
+                df, df_laps, start_time, sport, sub_sport = parsed_res
+            else:
+                df, df_laps, start_time = parsed_res
+                sport = df.attrs.get('sport', 'unknown')
+                sub_sport = df.attrs.get('sub_sport', 'generic')
+    else:
+        # 載入雲端選定之活動
+        df = loaded_cloud_session['df']
+        df_laps = loaded_cloud_session.get('df_laps', pd.DataFrame())
+        start_time = loaded_cloud_session['start_time']
+        sport = loaded_cloud_session.get('sport', 'running')
+        sub_sport = loaded_cloud_session.get('sub_sport', 'generic')
+        file_name = loaded_cloud_session.get('file_name', 'Cloud_Activity.fit')
+        act_title = loaded_cloud_session.get('activity_name') or file_name
+
+        # 頂部提示與返回月曆按鈕
+        col_c_info, col_c_back = st.columns([4, 1])
+        with col_c_info:
+            st.info(f"☁️ **已載入雲端活動**：`{act_title}` (開始時間: {start_time.strftime('%Y-%m-%d %H:%M')})，您可以直接在下方標定或編輯乳酸與血糖數據。")
+        with col_c_back:
+            if st.button("📅 返回活動月曆", key="btn_back_to_cal_top", use_container_width=True):
+                st.session_state.pop('active_cloud_session', None)
+                st.rerun()
         
     if df.empty:
         st.error("FIT 檔案解析失敗或無有效 Record 數據。")
@@ -1911,6 +1936,29 @@ if fit_bytes is not None:
             key="custom_lactate_editor"
         )
         
+        col_s1, col_s2 = st.columns([2.5, 1.5])
+        with col_s2:
+            if st.button("💾 儲存並綁定乳酸數據至此活動", type="primary", use_container_width=True, help="將上方編輯的乳酸數據直接綁定寫入此運動活動的 Firebase 紀錄中"):
+                if not st.session_state.get('firebase_uid'):
+                    st.error("請先在左側邊欄登入 MyLactate 雲端帳號！")
+                else:
+                    import activity_calendar
+                    act_obj = st.session_state.get('active_cloud_session', {})
+                    fit_doc_id = act_obj.get('doc_id') or f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
+                    with st.spinner("正在儲存並綁定乳酸數據至雲端..."):
+                        ok, msg = activity_calendar.save_bound_lactate_to_firestore(
+                            uid=st.session_state['firebase_uid'],
+                            token=st.session_state.get('firebase_token', ''),
+                            fit_doc_id=fit_doc_id,
+                            start_time=start_time,
+                            lactate_df=edited_custom_df
+                        )
+                        if ok:
+                            st.toast(msg, icon="✅")
+                            st.success(f"🎉 {msg}")
+                        else:
+                            st.error(f"儲存失敗: {msg}")
+
         # 彙整 custom 乳酸與血糖點
         custom_lactate_points = []
         for idx, row in edited_custom_df.iterrows():
@@ -2242,9 +2290,16 @@ if fit_bytes is not None:
                 mime="text/csv"
             )
 else:
-    # 歡迎畫面
-    
-    st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是點擊載入系統內建的測試檔案來開始分析。")
+    # 歡迎畫面與雲端運動活動月曆
+    if st.session_state.get('firebase_uid'):
+        import activity_calendar
+        activity_calendar.render_activity_calendar(
+            uid=st.session_state['firebase_uid'],
+            token=st.session_state.get('firebase_token', ''),
+            theme=theme_str
+        )
+    else:
+        st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是登入 MyLactate 雲端帳號以啟用活動月曆瀏覽手錶擷取之運動紀錄。")
     
     if st.session_state.get('firebase_uid'):
         with st.spinner('正在載入歷史乳酸紀錄...'):
