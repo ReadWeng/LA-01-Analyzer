@@ -426,231 +426,80 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             selected_date = f"{v_year:04d}-{v_month:02d}-{today.day:02d}" if (today.year == v_year and today.month == v_month) else f"{v_year:04d}-{v_month:02d}-01"
         st.session_state["cal_selected_date"] = selected_date
 
-    # 3. 建立極致響應式 CSS 樣式 (完美適應手機 360px ~ 420px 寬度)
-    css_styles = f"""
-    <style>
-    .m-cal-container {{
-        width: 100%;
-        max-width: 100%;
-        margin: 0 auto 12px auto;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        box-sizing: border-box;
-    }}
-    .m-cal-nav {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background: linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(79, 172, 254, 0.06));
-        border: 1px solid rgba(0, 242, 254, 0.25);
-        border-radius: 10px;
-        padding: 8px 10px;
-        margin-bottom: 8px;
-    }}
-    .m-cal-nav-title {{
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: #00f2fe;
-        text-align: center;
-        flex-grow: 1;
-        margin: 0 4px;
-    }}
-    .m-cal-nav-btn {{
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        border-radius: 6px;
-        color: #e2e8f0 !important;
-        text-decoration: none !important;
-        font-size: 0.8rem;
-        font-weight: 600;
-        padding: 5px 9px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        white-space: nowrap;
-        transition: all 0.15s;
-    }}
-    .m-cal-nav-btn:hover {{
-        background: rgba(0, 242, 254, 0.25);
-        border-color: #00f2fe;
-        color: #ffffff !important;
-    }}
-    .m-cal-stats-bar {{
-        display: flex;
-        gap: 5px;
-        margin-bottom: 8px;
-        width: 100%;
-    }}
-    .m-cal-stat-pill {{
-        flex: 1;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        padding: 6px 2px;
-        text-align: center;
-        min-width: 0;
-    }}
-    .m-cal-stat-pill .num {{
-        font-size: 0.95rem;
-        font-weight: 700;
-        line-height: 1.1;
-    }}
-    .m-cal-stat-pill .lbl {{
-        font-size: 0.65rem;
-        color: #94a3b8;
-        line-height: 1.1;
-        margin-top: 2px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }}
-    .m-cal-legend {{
-        display: flex;
-        justify-content: center;
-        gap: 10px;
-        font-size: 0.72rem;
-        color: #94a3b8;
-        margin-bottom: 6px;
-        flex-wrap: wrap;
-    }}
-    .m-cal-legend span {{
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-    }}
-    .m-cal-grid {{
-        display: grid !important;
-        grid-template-columns: repeat(7, 1fr) !important;
-        gap: 3px !important;
-        width: 100% !important;
-        box-sizing: border-box !important;
-    }}
-    .m-cal-wkday {{
-        text-align: center;
-        font-size: 0.75rem;
-        font-weight: 700;
-        color: #94a3b8;
-        padding: 4px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }}
-    .m-cal-cell {{
-        aspect-ratio: 1 / 1;
-        min-height: 42px;
-        max-height: 54px;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 6px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-decoration: none !important;
-        color: #cbd5e1 !important;
-        padding: 1px;
-        box-sizing: border-box;
-        position: relative;
-        transition: all 0.15s ease;
-    }}
-    .m-cal-cell:hover {{
-        border-color: #00f2fe;
-        background: rgba(0, 242, 254, 0.15);
-    }}
-    .m-cal-cell.empty {{
-        background: transparent;
-        border: none;
-        pointer-events: none;
-    }}
-    .m-cal-cell.today {{
-        border: 1.5px solid #ffab00 !important;
-    }}
-    .m-cal-cell.selected {{
-        background: rgba(0, 242, 254, 0.22) !important;
-        border: 2px solid #00f2fe !important;
-        box-shadow: 0 0 8px rgba(0, 242, 254, 0.4);
-    }}
-    .m-day-num {{
-        font-size: 0.8rem;
-        font-weight: 700;
-        line-height: 1;
-    }}
-    .m-badges-row {{
-        display: flex;
-        gap: 2px;
-        margin-top: 2px;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.6rem;
-        line-height: 1;
-    }}
-    .dot-fit {{
-        background-color: #00e676;
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        display: inline-block;
-    }}
-    .dot-la {{
-        background-color: #ff5252;
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        display: inline-block;
-    }}
-    .tag-fit {{
-        background: rgba(0, 230, 118, 0.2);
-        color: #00e676;
-        border-radius: 3px;
-        padding: 0 2px;
-        font-size: 0.58rem;
-        font-weight: 700;
-    }}
-    .tag-la {{
-        background: rgba(255, 82, 82, 0.25);
-        color: #ff5252;
-        border-radius: 3px;
-        padding: 0 2px;
-        font-size: 0.58rem;
-        font-weight: 700;
-    }}
-    </style>
-    """
-
-    # 4. 生成 HTML 月曆元件
+    # 3. 生成絕對防折疊之原生 HTML Table 月曆 (保證手機 360px~420px 絕不塌陷為直條)
     cal_matrix = calendar.monthcalendar(v_year, v_month)
     weekdays_zh = ["一", "二", "三", "四", "五", "六", "日"]
 
-    html_parts = [
-        css_styles,
-        '<div class="m-cal-container">',
-        '  <div class="m-cal-nav">',
-        '    <a href="?cal_m=prev" target="_self" class="m-cal-nav-btn">◀ 上月</a>',
-        f'   <div class="m-cal-nav-title">📅 {v_year} 年 {v_month:02d} 月</div>',
-        '    <a href="?cal_m=next" target="_self" class="m-cal-nav-btn">下月 ▶</a>',
-        '    <a href="?cal_m=current" target="_self" class="m-cal-nav-btn" style="margin-left:4px;">本月</a>',
-        '  </div>',
-        '  <div class="m-cal-stats-bar">',
-        f'   <div class="m-cal-stat-pill"><div class="num" style="color:#00f2fe;">{len(month_acts)}</div><div class="lbl">🏃 FIT運動</div></div>',
-        f'   <div class="m-cal-stat-pill"><div class="num" style="color:#4facfe;">{dur_h}h{dur_m}m</div><div class="lbl">⏱️ 總時長</div></div>',
-        f'   <div class="m-cal-stat-pill"><div class="num" style="color:#ff5252;">{len(month_acts_with_la)}</div><div class="lbl">🩸 已測乳酸</div></div>',
-        f'   <div class="m-cal-stat-pill"><div class="num" style="color:#00e676;">{unbound_count}</div><div class="lbl">⚡ 待標乳酸</div></div>',
-        '  </div>',
-        '  <div class="m-cal-legend">',
-        '    <span><span class="dot-fit"></span> FIT運動</span>',
-        '    <span><span class="dot-la"></span> 乳酸數據</span>',
-        '    <span><span style="border:1px solid #ffab00; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 今日</span>',
-        '    <span><span style="border:1.5px solid #00f2fe; background:rgba(0,242,254,0.3); border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 選中</span>',
-        '  </div>',
-        '  <div class="m-cal-grid">'
-    ]
+    html_parts = []
+    
+    # (A) 月曆頂部導覽列 (Table 版，防 flex 折疊)
+    html_parts.append(f'''
+    <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:8px; background:linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(79, 172, 254, 0.06)); border:1px solid rgba(0, 242, 254, 0.28); border-radius:10px; overflow:hidden;">
+      <tr>
+        <td style="width:20%; text-align:left; padding:7px 8px; vertical-align:middle;">
+          <a href="?cal_m=prev" target="_self" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); border-radius:6px; color:#e2e8f0; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
+        </td>
+        <td style="width:60%; text-align:center; padding:7px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:#00f2fe; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📅 {v_year} 年 {v_month:02d} 月 <span style="font-size:10px; color:#94a3b8; font-weight:normal;">(極致手機版)</span></div>
+        </td>
+        <td style="width:20%; text-align:right; padding:7px 8px; vertical-align:middle;">
+          <a href="?cal_m=next" target="_self" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); border-radius:6px; color:#e2e8f0; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
+        </td>
+      </tr>
+    </table>
+    ''')
 
-    # 星期標題
+    # (B) 當月運動摘要統計列 (4 格等寬 Table，永不換行)
+    html_parts.append(f'''
+    <table style="width:100%; table-layout:fixed; border-collapse:separate; border-spacing:4px; margin-bottom:8px;">
+      <tr>
+        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:#00f2fe; line-height:1.1;">{len(month_acts)}</div>
+          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">🏃 FIT運動</div>
+        </td>
+        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:#4facfe; line-height:1.1;">{dur_h}h{dur_m}m</div>
+          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">⏱️ 總時長</div>
+        </td>
+        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:#ff5252; line-height:1.1;">{len(month_acts_with_la)}</div>
+          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">🩸 已測乳酸</div>
+        </td>
+        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:#00e676; line-height:1.1;">{unbound_count}</div>
+          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">⚡ 待標乳酸</div>
+        </td>
+      </tr>
+    </table>
+    ''')
+
+    # (C) 圖例列
+    html_parts.append('''
+    <div style="display:flex; justify-content:center; gap:8px; font-size:11px; color:#94a3b8; margin-bottom:6px; flex-wrap:wrap;">
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#00e676; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> FIT運動</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#ff5252; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> 乳酸數據</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1px solid #ffab00; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 今日</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1.5px solid #00f2fe; background:rgba(0,242,254,0.3); border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 選中</span>
+    </div>
+    ''')
+
+    # (D) 月曆主表格 (HTML Table，瀏覽器原生 7 欄約束，手機絕對不變直條)
+    html_parts.append('<table style="width:100%; table-layout:fixed; border-collapse:separate; border-spacing:3px; margin:0 auto 10px auto; box-sizing:border-box;">')
+    
+    # 星期標題 (Th)
+    html_parts.append('<thead><tr>')
     for w in weekdays_zh:
-        html_parts.append(f'<div class="m-cal-wkday">{w}</div>')
+        color = "#ff7979" if w in ["六", "日"] else "#94a3b8"
+        html_parts.append(f'<th style="width:14.28%; text-align:center; padding:3px 0; font-size:12px; font-weight:700; color:{color}; border-bottom:1px solid rgba(255,255,255,0.1);">{w}</th>')
+    html_parts.append('</tr></thead>')
 
-    # 繪製日期方格
+    # 日期方格 (Tb)
+    html_parts.append('<tbody>')
     for week in cal_matrix:
+        html_parts.append('<tr>')
         for day_num in week:
             if day_num == 0:
-                html_parts.append('<div class="m-cal-cell empty"></div>')
+                html_parts.append('<td style="width:14.28%; height:44px; background:transparent; border:none;"></td>')
                 continue
 
             d_str = f"{v_year:04d}-{v_month:02d}-{day_num:02d}"
@@ -660,37 +509,50 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             day_acts = acts_by_date.get(d_str, [])
             day_las = las_by_date.get(d_str, [])
 
-            cell_cls = ["m-cal-cell"]
+            # 樣式計算 (全部行內樣式，不受 Streamlit CSS 影響)
             if is_selected:
-                cell_cls.append("selected")
-            if is_today:
-                cell_cls.append("today")
+                bg = "rgba(0, 242, 254, 0.25)"
+                bd = "2px solid #00f2fe"
+                box_sh = "box-shadow:0 0 8px rgba(0,242,254,0.45);"
+                num_col = "#ffffff"
+            elif is_today:
+                bg = "rgba(255, 171, 0, 0.12)"
+                bd = "1.5px solid #ffab00"
+                box_sh = ""
+                num_col = "#ffab00"
+            else:
+                bg = "rgba(255, 255, 255, 0.04)"
+                bd = "1px solid rgba(255, 255, 255, 0.09)"
+                box_sh = ""
+                num_col = "#cbd5e1"
 
             # 徽章標示
-            badge_html = ""
             if day_acts and day_las:
-                badge_html = '<div class="m-badges-row"><span class="tag-fit">🏃</span><span class="tag-la">🩸</span></div>'
+                badge_html = '<span style="background:rgba(0,230,118,0.25); color:#00e676; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:rgba(255,82,82,0.3); color:#ff5252; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">🩸</span>'
             elif day_acts:
                 sp_ico, _ = get_sport_badge(day_acts[0].get("sport", ""))
-                badge_html = f'<div class="m-badges-row"><span class="tag-fit">{sp_ico}</span></div>'
+                badge_html = f'<span style="background:rgba(0,230,118,0.25); color:#00e676; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>'
             elif day_las:
-                badge_html = f'<div class="m-badges-row"><span class="tag-la">🩸</span></div>'
+                badge_html = '<span style="background:rgba(255,82,82,0.3); color:#ff5252; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🩸</span>'
             else:
-                badge_html = '<div class="m-badges-row" style="color:rgba(255,255,255,0.15);">·</div>'
+                badge_html = '<span style="color:rgba(255,255,255,0.12); font-size:10px; line-height:1;">·</span>'
 
-            cell_html = f"""
-            <a href="?cal_date={d_str}" target="_self" class="{' '.join(cell_cls)}" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">
-              <span class="m-day-num">{day_num}</span>
-              {badge_html}
-            </a>
-            """
+            cell_html = (
+                f'<td style="width:14.28%; height:44px; padding:1px; vertical-align:middle; text-align:center; background:{bg}; border:{bd}; border-radius:6px; {box_sh}">'
+                f'<a href="?cal_date={d_str}" target="_self" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; text-decoration:none;" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">'
+                f'<span style="font-size:13px; font-weight:700; line-height:1.1; color:{num_col};">{day_num}</span>'
+                f'<div style="margin-top:2px; height:12px; display:flex; align-items:center; justify-content:center;">{badge_html}</div>'
+                f'</a>'
+                f'</td>'
+            )
             html_parts.append(cell_html)
+        html_parts.append('</tr>')
 
-    html_parts.append('  </div>')
-    html_parts.append('</div>')
+    html_parts.append('</tbody></table>')
 
-    # 一次性渲染完整月曆
+    # 一次性渲染原生 Table 月曆
     st.markdown("".join(html_parts), unsafe_allow_html=True)
+
 
     # 5. 手機友善的快速日期下拉選單 (供拇指快速切換)
     all_dates_with_data = sorted(

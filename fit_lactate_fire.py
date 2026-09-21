@@ -2293,6 +2293,8 @@ else:
     # 歡迎畫面與雲端運動活動月曆
     if st.session_state.get('firebase_uid'):
         import activity_calendar
+        import importlib
+        importlib.reload(activity_calendar)
         activity_calendar.render_activity_calendar(
             uid=st.session_state['firebase_uid'],
             token=st.session_state.get('firebase_token', ''),
