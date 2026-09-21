@@ -426,7 +426,107 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             selected_date = f"{v_year:04d}-{v_month:02d}-{today.day:02d}" if (today.year == v_year and today.month == v_month) else f"{v_year:04d}-{v_month:02d}-01"
         st.session_state["cal_selected_date"] = selected_date
 
-    # 3. 生成絕對防折疊之原生 HTML Table 月曆 (保證手機 360px~420px 絕不塌陷為直條)
+    # 3. 雙模式配色設定 (Dark / Light 明確對比，Light 下柔和清晰不刺眼)
+    is_dark = (str(theme).lower() != "light")
+
+    if not is_dark:
+        pal = {
+            "bg_nav": "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
+            "bd_nav": "1px solid #bae6fd",
+            "title_nav": "#0369a1",
+            "btn_bg": "#ffffff",
+            "btn_bd": "1px solid #cbd5e1",
+            "btn_color": "#1e293b",
+            "stat_bg": "#f8fafc",
+            "stat_bd": "1px solid #e2e8f0",
+            "stat_lbl": "#64748b",
+            "stat_fit": "#0284c7",
+            "stat_dur": "#2563eb",
+            "stat_la": "#dc2626",
+            "stat_unbound": "#16a34a",
+            "th_normal": "#475569",
+            "th_weekend": "#e11d48",
+            "th_bd": "1px solid #cbd5e1",
+            "cell_bg_normal": "#ffffff",
+            "cell_bd_normal": "1px solid #e2e8f0",
+            "cell_num_normal": "#1e293b",
+            "cell_bg_today": "#fffbeb",
+            "cell_bd_today": "2px solid #f59e0b",
+            "cell_num_today": "#b45309",
+            "cell_bg_sel": "#e0f2fe",
+            "cell_bd_sel": "2px solid #0284c7",
+            "cell_sh_sel": "box-shadow: 0 0 6px rgba(2, 132, 199, 0.35);",
+            "cell_num_sel": "#0369a1",
+            "badge_fit_bg": "#dcfce7",
+            "badge_fit_col": "#15803d",
+            "badge_la_bg": "#fee2e2",
+            "badge_la_col": "#b91c1c",
+            "dot_empty": "#cbd5e1",
+            "legend_col": "#64748b",
+            "legend_today_bg": "#fffbeb",
+            "legend_today_bd": "#f59e0b",
+            "legend_sel_bg": "#e0f2fe",
+            "legend_sel_bd": "#0284c7",
+            "card_bg": "#ffffff",
+            "card_bd": "1px solid #e2e8f0",
+            "card_sh": "box-shadow: 0 2px 5px rgba(0,0,0,0.05);",
+            "card_title": "#0f172a",
+            "card_time": "#0284c7",
+            "card_meta": "#475569",
+            "card_meta_bold": "#0f172a",
+            "card_bound_la": "#dc2626",
+            "card_unbound_la": "#16a34a"
+        }
+    else:
+        pal = {
+            "bg_nav": "linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(79, 172, 254, 0.06))",
+            "bd_nav": "1px solid rgba(0, 242, 254, 0.28)",
+            "title_nav": "#00f2fe",
+            "btn_bg": "rgba(255,255,255,0.08)",
+            "btn_bd": "1px solid rgba(255,255,255,0.2)",
+            "btn_color": "#e2e8f0",
+            "stat_bg": "rgba(255, 255, 255, 0.03)",
+            "stat_bd": "1px solid rgba(255, 255, 255, 0.08)",
+            "stat_lbl": "#94a3b8",
+            "stat_fit": "#00f2fe",
+            "stat_dur": "#4facfe",
+            "stat_la": "#ff5252",
+            "stat_unbound": "#00e676",
+            "th_normal": "#94a3b8",
+            "th_weekend": "#ff7979",
+            "th_bd": "1px solid rgba(255,255,255,0.1)",
+            "cell_bg_normal": "rgba(255, 255, 255, 0.04)",
+            "cell_bd_normal": "1px solid rgba(255, 255, 255, 0.09)",
+            "cell_num_normal": "#cbd5e1",
+            "cell_bg_today": "rgba(255, 171, 0, 0.12)",
+            "cell_bd_today": "1.5px solid #ffab00",
+            "cell_num_today": "#ffab00",
+            "cell_bg_sel": "rgba(0, 242, 254, 0.25)",
+            "cell_bd_sel": "2px solid #00f2fe",
+            "cell_sh_sel": "box-shadow: 0 0 8px rgba(0,242,254,0.45);",
+            "cell_num_sel": "#ffffff",
+            "badge_fit_bg": "rgba(0,230,118,0.25)",
+            "badge_fit_col": "#00e676",
+            "badge_la_bg": "rgba(255,82,82,0.3)",
+            "badge_la_col": "#ff5252",
+            "dot_empty": "rgba(255,255,255,0.12)",
+            "legend_col": "#94a3b8",
+            "legend_today_bg": "transparent",
+            "legend_today_bd": "#ffab00",
+            "legend_sel_bg": "rgba(0,242,254,0.3)",
+            "legend_sel_bd": "#00f2fe",
+            "card_bg": "rgba(255, 255, 255, 0.04)",
+            "card_bd": "1px solid rgba(255, 255, 255, 0.12)",
+            "card_sh": "",
+            "card_title": "#f8fafc",
+            "card_time": "#00f2fe",
+            "card_meta": "#94a3b8",
+            "card_meta_bold": "#e2e8f0",
+            "card_bound_la": "#ff5252",
+            "card_unbound_la": "#00e676"
+        }
+
+    # 4. 生成原生 HTML Table 月曆 (手機嚴格 7 欄不折疊)
     cal_matrix = calendar.monthcalendar(v_year, v_month)
     weekdays_zh = ["一", "二", "三", "四", "五", "六", "日"]
 
@@ -434,16 +534,16 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
     
     # (A) 月曆頂部導覽列 (Table 版，防 flex 折疊)
     html_parts.append(f'''
-    <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:8px; background:linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(79, 172, 254, 0.06)); border:1px solid rgba(0, 242, 254, 0.28); border-radius:10px; overflow:hidden;">
+    <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:8px; background:{pal['bg_nav']}; border:{pal['bd_nav']}; border-radius:10px; overflow:hidden;">
       <tr>
         <td style="width:20%; text-align:left; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=prev" target="_self" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); border-radius:6px; color:#e2e8f0; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
+          <a href="?cal_m=prev" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">◀ 上月</a>
         </td>
         <td style="width:60%; text-align:center; padding:7px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:#00f2fe; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📅 {v_year} 年 {v_month:02d} 月 <span style="font-size:10px; color:#94a3b8; font-weight:normal;">(極致手機版)</span></div>
+          <div style="font-size:14px; font-weight:800; color:{pal['title_nav']}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📅 {v_year} 年 {v_month:02d} 月</div>
         </td>
         <td style="width:20%; text-align:right; padding:7px 8px; vertical-align:middle;">
-          <a href="?cal_m=next" target="_self" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); border-radius:6px; color:#e2e8f0; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
+          <a href="?cal_m=next" target="_self" style="background:{pal['btn_bg']}; border:{pal['btn_bd']}; border-radius:6px; color:{pal['btn_color']}; text-decoration:none; font-size:12px; font-weight:700; padding:5px 8px; display:inline-block; white-space:nowrap;">下月 ▶</a>
         </td>
       </tr>
     </table>
@@ -453,33 +553,33 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
     html_parts.append(f'''
     <table style="width:100%; table-layout:fixed; border-collapse:separate; border-spacing:4px; margin-bottom:8px;">
       <tr>
-        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:#00f2fe; line-height:1.1;">{len(month_acts)}</div>
-          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">🏃 FIT運動</div>
+        <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:{pal['stat_fit']}; line-height:1.1;">{len(month_acts)}</div>
+          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">🏃 FIT運動</div>
         </td>
-        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:#4facfe; line-height:1.1;">{dur_h}h{dur_m}m</div>
-          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">⏱️ 總時長</div>
+        <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:{pal['stat_dur']}; line-height:1.1;">{dur_h}h{dur_m}m</div>
+          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">⏱️ 總時長</div>
         </td>
-        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:#ff5252; line-height:1.1;">{len(month_acts_with_la)}</div>
-          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">🩸 已測乳酸</div>
+        <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:{pal['stat_la']}; line-height:1.1;">{len(month_acts_with_la)}</div>
+          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">🩸 已測乳酸</div>
         </td>
-        <td style="width:25%; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
-          <div style="font-size:14px; font-weight:800; color:#00e676; line-height:1.1;">{unbound_count}</div>
-          <div style="font-size:10px; color:#94a3b8; margin-top:2px; white-space:nowrap;">⚡ 待標乳酸</div>
+        <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
+          <div style="font-size:14px; font-weight:800; color:{pal['stat_unbound']}; line-height:1.1;">{unbound_count}</div>
+          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">⚡ 待標乳酸</div>
         </td>
       </tr>
     </table>
     ''')
 
     # (C) 圖例列
-    html_parts.append('''
-    <div style="display:flex; justify-content:center; gap:8px; font-size:11px; color:#94a3b8; margin-bottom:6px; flex-wrap:wrap;">
-      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#00e676; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> FIT運動</span>
-      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#ff5252; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> 乳酸數據</span>
-      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1px solid #ffab00; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 今日</span>
-      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1.5px solid #00f2fe; background:rgba(0,242,254,0.3); border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 選中</span>
+    html_parts.append(f'''
+    <div style="display:flex; justify-content:center; gap:8px; font-size:11px; color:{pal['legend_col']}; margin-bottom:6px; flex-wrap:wrap;">
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#16a34a; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> FIT運動</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#dc2626; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> 乳酸數據</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1px solid {pal['legend_today_bd']}; background:{pal['legend_today_bg']}; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 今日</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1.5px solid {pal['legend_sel_bd']}; background:{pal['legend_sel_bg']}; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 選中</span>
     </div>
     ''')
 
@@ -489,8 +589,8 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
     # 星期標題 (Th)
     html_parts.append('<thead><tr>')
     for w in weekdays_zh:
-        color = "#ff7979" if w in ["六", "日"] else "#94a3b8"
-        html_parts.append(f'<th style="width:14.28%; text-align:center; padding:3px 0; font-size:12px; font-weight:700; color:{color}; border-bottom:1px solid rgba(255,255,255,0.1);">{w}</th>')
+        color = pal['th_weekend'] if w in ["六", "日"] else pal['th_normal']
+        html_parts.append(f'<th style="width:14.28%; text-align:center; padding:3px 0; font-size:12px; font-weight:700; color:{color}; border-bottom:{pal["th_bd"]};">{w}</th>')
     html_parts.append('</tr></thead>')
 
     # 日期方格 (Tb)
@@ -511,31 +611,31 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
 
             # 樣式計算 (全部行內樣式，不受 Streamlit CSS 影響)
             if is_selected:
-                bg = "rgba(0, 242, 254, 0.25)"
-                bd = "2px solid #00f2fe"
-                box_sh = "box-shadow:0 0 8px rgba(0,242,254,0.45);"
-                num_col = "#ffffff"
+                bg = pal['cell_bg_sel']
+                bd = pal['cell_bd_sel']
+                box_sh = pal['cell_sh_sel']
+                num_col = pal['cell_num_sel']
             elif is_today:
-                bg = "rgba(255, 171, 0, 0.12)"
-                bd = "1.5px solid #ffab00"
+                bg = pal['cell_bg_today']
+                bd = pal['cell_bd_today']
                 box_sh = ""
-                num_col = "#ffab00"
+                num_col = pal['cell_num_today']
             else:
-                bg = "rgba(255, 255, 255, 0.04)"
-                bd = "1px solid rgba(255, 255, 255, 0.09)"
+                bg = pal['cell_bg_normal']
+                bd = pal['cell_bd_normal']
                 box_sh = ""
-                num_col = "#cbd5e1"
+                num_col = pal['cell_num_normal']
 
             # 徽章標示
             if day_acts and day_las:
-                badge_html = '<span style="background:rgba(0,230,118,0.25); color:#00e676; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:rgba(255,82,82,0.3); color:#ff5252; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">🩸</span>'
+                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">🩸</span>'
             elif day_acts:
                 sp_ico, _ = get_sport_badge(day_acts[0].get("sport", ""))
-                badge_html = f'<span style="background:rgba(0,230,118,0.25); color:#00e676; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>'
+                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>'
             elif day_las:
-                badge_html = '<span style="background:rgba(255,82,82,0.3); color:#ff5252; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🩸</span>'
+                badge_html = f'<span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🩸</span>'
             else:
-                badge_html = '<span style="color:rgba(255,255,255,0.12); font-size:10px; line-height:1;">·</span>'
+                badge_html = f'<span style="color:{pal["dot_empty"]}; font-size:10px; line-height:1;">·</span>'
 
             cell_html = (
                 f'<td style="width:14.28%; height:44px; padding:1px; vertical-align:middle; text-align:center; background:{bg}; border:{bd}; border-radius:6px; {box_sh}">'
@@ -622,21 +722,23 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             max_h = act.get("max_hr", 0)
             has_la = act.get("has_lactate", False)
 
+            la_badge = f'<span style="color:{pal["card_bound_la"]}; font-weight:700;">🩸 已綁定乳酸數據</span>' if (has_la or len(sel_las) > 0) else f'<span style="color:{pal["card_unbound_la"]}; font-weight:700;">⚡ 待標定乳酸</span>'
+
             with st.container():
-                st.markdown(f"""
-                <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; padding: 12px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span style="font-size: 1.05rem; font-weight: 700; color: #f8fafc;">{sp_icon} {act.get('activity_name', act.get('file_name'))}</span>
-                        <span style="font-size: 0.85rem; color: #00f2fe; font-weight: 600;">🕒 {st_time_str} ({dur}分鐘)</span>
+                st.markdown(f'''
+                <div style="background:{pal['card_bg']}; border:{pal['card_bd']}; {pal['card_sh']} border-radius:10px; padding:12px; margin-bottom:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span style="font-size:1.05rem; font-weight:700; color:{pal['card_title']};">{sp_icon} {act.get('activity_name', act.get('file_name'))}</span>
+                        <span style="font-size:0.85rem; color:{pal['card_time']}; font-weight:600;">🕒 {st_time_str} ({dur}分鐘)</span>
                     </div>
-                    <div style="display: flex; gap: 12px; font-size: 0.85rem; color: #94a3b8; margin-bottom: 8px; flex-wrap: wrap;">
-                        <span>⚡ 功率: <b style="color:#e2e8f0;">{avg_p}</b> / {max_p} W</span>
-                        <span>❤️ 心率: <b style="color:#e2e8f0;">{avg_h}</b> / {max_h} bpm</span>
-                        <span>{'<span style="color:#ff5252; font-weight:700;">🩸 已綁定乳酸數據</span>' if (has_la or len(sel_las) > 0) else '<span style="color:#00e676; font-weight:700;">⚡ 待標定乳酸</span>'}</span>
+                    <div style="display:flex; gap:12px; font-size:0.85rem; color:{pal['card_meta']}; margin-bottom:8px; flex-wrap:wrap;">
+                        <span>⚡ 功率: <b style="color:{pal['card_meta_bold']};">{avg_p}</b> / {max_p} W</span>
+                        <span>❤️ 心率: <b style="color:{pal['card_meta_bold']};">{avg_h}</b> / {max_h} bpm</span>
+                        <span>{la_badge}</span>
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
-
+                ''', unsafe_allow_html=True)
+                
                 btn_text = "🔄 載入活動並修改乳酸數據" if (has_la or len(sel_las) > 0) else "🚀 載入此活動並標定乳酸數據"
                 if st.button(btn_text, key=f"btn_load_act_{act['doc_id']}_{idx}", type="primary", use_container_width=True):
                     session_obj = build_session_from_fit_record(act, sel_las)

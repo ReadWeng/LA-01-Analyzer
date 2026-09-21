@@ -2290,7 +2290,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 mime="text/csv"
             )
 else:
-    # 歡迎畫面與雲端運動活動月曆
+    # 歡迎畫面與雲端運動活動月曆 (高對比自適應版)
     if st.session_state.get('firebase_uid'):
         import activity_calendar
         import importlib
