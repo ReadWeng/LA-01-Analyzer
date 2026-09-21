@@ -1504,27 +1504,42 @@ theme_str = "dark" if "Dark" in chart_theme else "light"
 st.sidebar.markdown("---")
 
 st.sidebar.markdown("### 🛠️ 整合分析工具模式")
-if "app_mode" in st.query_params:
-    qp_m = st.query_params.get("app_mode")
-    if qp_m == "multi":
-        st.session_state["app_mode_select"] = "多期數據整合儀表板 (LacV5)"
-    elif qp_m == "single":
-        st.session_state["app_mode_select"] = "單期分析與資料登錄"
-    elif qp_m == "ai":
-        st.session_state["app_mode_select"] = "AI 運動生理週報與下一次處方"
+MODE_OPTIONS = ["單期分析與資料登錄", "多期數據整合儀表板 (LacV5)", "AI 運動生理週報與下一次處方"]
+PARAM_TO_MODE = {
+    "single": "單期分析與資料登錄",
+    "multi": "多期數據整合儀表板 (LacV5)",
+    "ai": "AI 運動生理週報與下一次處方"
+}
+MODE_TO_PARAM = {v: k for k, v in PARAM_TO_MODE.items()}
+
+# 僅在初次載入或收到來自 URL/外部跳轉且與上次同步不同的參數時，才由 query_params 更新 session_state
+qp_m = st.query_params.get("app_mode")
+if qp_m in PARAM_TO_MODE:
+    target_mode = PARAM_TO_MODE[qp_m]
+    if st.session_state.get("_last_synced_app_mode") != qp_m:
+        st.session_state["app_mode_select"] = target_mode
+        st.session_state["_last_synced_app_mode"] = qp_m
+
+def _on_app_mode_change():
+    sel = st.session_state.get("app_mode_select")
+    new_param = MODE_TO_PARAM.get(sel, "single")
+    st.query_params["app_mode"] = new_param
+    st.session_state["_last_synced_app_mode"] = new_param
+
+if "app_mode_select" not in st.session_state or st.session_state["app_mode_select"] not in MODE_OPTIONS:
+    st.session_state["app_mode_select"] = MODE_OPTIONS[0]
 
 app_mode = st.sidebar.radio(
     "功能模式選擇",
-    ["單期分析與資料登錄", "多期數據整合儀表板 (LacV5)", "AI 運動生理週報與下一次處方"],
-    key="app_mode_select"
+    MODE_OPTIONS,
+    key="app_mode_select",
+    on_change=_on_app_mode_change
 )
-# 同步 query_params 保持狀態純淨
-mode_to_param = {
-    "單期分析與資料登錄": "single",
-    "多期數據整合儀表板 (LacV5)": "multi",
-    "AI 運動生理週報與下一次處方": "ai"
-}
-st.query_params["app_mode"] = mode_to_param.get(app_mode, "single")
+
+# 保持 query_params 與 session 紀錄一致
+current_param = MODE_TO_PARAM.get(app_mode, "single")
+st.query_params["app_mode"] = current_param
+st.session_state["_last_synced_app_mode"] = current_param
 
 if app_mode == "多期數據整合儀表板 (LacV5)":
     st.markdown('<div class="title-container" style="display: flex; align-items: center;"><h1 style="margin: 0; color: #00f2fe;">📊 多期數據整合儀表板 (LacV5)</h1></div>', unsafe_allow_html=True)
