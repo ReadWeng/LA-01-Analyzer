@@ -426,104 +426,106 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             selected_date = f"{v_year:04d}-{v_month:02d}-{today.day:02d}" if (today.year == v_year and today.month == v_month) else f"{v_year:04d}-{v_month:02d}-01"
         st.session_state["cal_selected_date"] = selected_date
 
-    # 3. 雙模式配色設定 (Dark / Light 明確對比，Light 下柔和清晰不刺眼)
+    # 3. 雙模式配色設定 (Dark / Light 護眼高對比，全面移除刺眼螢光，乳酸改用水滴💧)
     is_dark = (str(theme).lower() != "light")
 
     if not is_dark:
+        # 淺色模式：採用自然中性石板灰底與低飽和水滴藍，徹底告別刺眼與眩光
         pal = {
-            "bg_nav": "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
-            "bd_nav": "1px solid #bae6fd",
-            "title_nav": "#0369a1",
+            "bg_nav": "#f8fafc",
+            "bd_nav": "1px solid #e2e8f0",
+            "title_nav": "#1e293b",       # 典雅石板黑灰 (高對比、不刺眼)
             "btn_bg": "#ffffff",
             "btn_bd": "1px solid #cbd5e1",
-            "btn_color": "#1e293b",
-            "stat_bg": "#f8fafc",
+            "btn_color": "#334155",
+            "stat_bg": "#ffffff",
             "stat_bd": "1px solid #e2e8f0",
             "stat_lbl": "#64748b",
-            "stat_fit": "#0284c7",
-            "stat_dur": "#2563eb",
-            "stat_la": "#dc2626",
-            "stat_unbound": "#16a34a",
-            "th_normal": "#475569",
+            "stat_fit": "#0f766e",        # 沉著森林青綠
+            "stat_dur": "#475569",        # 沉穩石板灰
+            "stat_la": "#0284c7",         # 沉穩水滴藍 (象徵汗水乳酸)
+            "stat_unbound": "#16a34a",    # 溫潤綠
+            "th_normal": "#64748b",
             "th_weekend": "#e11d48",
-            "th_bd": "1px solid #cbd5e1",
+            "th_bd": "1px solid #e2e8f0",
             "cell_bg_normal": "#ffffff",
             "cell_bd_normal": "1px solid #e2e8f0",
-            "cell_num_normal": "#1e293b",
-            "cell_bg_today": "#fffbeb",
+            "cell_num_normal": "#334155",
+            "cell_bg_today": "#fefce8",   # 柔和暖象牙底
             "cell_bd_today": "2px solid #f59e0b",
             "cell_num_today": "#b45309",
-            "cell_bg_sel": "#e0f2fe",
-            "cell_bd_sel": "2px solid #0284c7",
-            "cell_sh_sel": "box-shadow: 0 0 6px rgba(2, 132, 199, 0.35);",
-            "cell_num_sel": "#0369a1",
-            "badge_fit_bg": "#dcfce7",
-            "badge_fit_col": "#15803d",
-            "badge_la_bg": "#fee2e2",
-            "badge_la_col": "#b91c1c",
+            "cell_bg_sel": "#f1f5f9",     # 低飽和石板灰底 (取代刺眼天藍)
+            "cell_bd_sel": "2px solid #334155", # 沉著深灰外框
+            "cell_sh_sel": "box-shadow: 0 1px 3px rgba(0,0,0,0.12);",
+            "cell_num_sel": "#0f172a",
+            "badge_fit_bg": "#ecfdf5",
+            "badge_fit_col": "#047857",
+            "badge_la_bg": "#f0f9ff",     # 輕柔水滴藍
+            "badge_la_col": "#0369a1",
             "dot_empty": "#cbd5e1",
             "legend_col": "#64748b",
-            "legend_today_bg": "#fffbeb",
+            "legend_today_bg": "#fefce8",
             "legend_today_bd": "#f59e0b",
-            "legend_sel_bg": "#e0f2fe",
-            "legend_sel_bd": "#0284c7",
+            "legend_sel_bg": "#f1f5f9",
+            "legend_sel_bd": "#334155",
             "card_bg": "#ffffff",
             "card_bd": "1px solid #e2e8f0",
-            "card_sh": "box-shadow: 0 2px 5px rgba(0,0,0,0.05);",
+            "card_sh": "box-shadow: 0 1px 3px rgba(0,0,0,0.05);",
             "card_title": "#0f172a",
-            "card_time": "#0284c7",
-            "card_meta": "#475569",
-            "card_meta_bold": "#0f172a",
-            "card_bound_la": "#dc2626",
+            "card_time": "#475569",
+            "card_meta": "#64748b",
+            "card_meta_bold": "#1e293b",
+            "card_bound_la": "#0284c7",   # 水滴藍
             "card_unbound_la": "#16a34a"
         }
     else:
+        # 深色模式：科技暗黑風格
         pal = {
-            "bg_nav": "linear-gradient(135deg, rgba(0, 242, 254, 0.12), rgba(79, 172, 254, 0.06))",
-            "bd_nav": "1px solid rgba(0, 242, 254, 0.28)",
-            "title_nav": "#00f2fe",
+            "bg_nav": "linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(30, 41, 59, 0.4))",
+            "bd_nav": "1px solid rgba(56, 189, 248, 0.28)",
+            "title_nav": "#38bdf8",
             "btn_bg": "rgba(255,255,255,0.08)",
             "btn_bd": "1px solid rgba(255,255,255,0.2)",
             "btn_color": "#e2e8f0",
             "stat_bg": "rgba(255, 255, 255, 0.03)",
             "stat_bd": "1px solid rgba(255, 255, 255, 0.08)",
             "stat_lbl": "#94a3b8",
-            "stat_fit": "#00f2fe",
-            "stat_dur": "#4facfe",
-            "stat_la": "#ff5252",
-            "stat_unbound": "#00e676",
+            "stat_fit": "#38bdf8",
+            "stat_dur": "#818cf8",
+            "stat_la": "#38bdf8",
+            "stat_unbound": "#34d399",
             "th_normal": "#94a3b8",
-            "th_weekend": "#ff7979",
+            "th_weekend": "#f87171",
             "th_bd": "1px solid rgba(255,255,255,0.1)",
             "cell_bg_normal": "rgba(255, 255, 255, 0.04)",
             "cell_bd_normal": "1px solid rgba(255, 255, 255, 0.09)",
             "cell_num_normal": "#cbd5e1",
-            "cell_bg_today": "rgba(255, 171, 0, 0.12)",
-            "cell_bd_today": "1.5px solid #ffab00",
-            "cell_num_today": "#ffab00",
-            "cell_bg_sel": "rgba(0, 242, 254, 0.25)",
-            "cell_bd_sel": "2px solid #00f2fe",
-            "cell_sh_sel": "box-shadow: 0 0 8px rgba(0,242,254,0.45);",
+            "cell_bg_today": "rgba(251, 191, 36, 0.12)",
+            "cell_bd_today": "1.5px solid #fbbf24",
+            "cell_num_today": "#fbbf24",
+            "cell_bg_sel": "rgba(56, 189, 248, 0.2)",
+            "cell_bd_sel": "2px solid #38bdf8",
+            "cell_sh_sel": "box-shadow: 0 0 8px rgba(56, 189, 248, 0.35);",
             "cell_num_sel": "#ffffff",
-            "badge_fit_bg": "rgba(0,230,118,0.25)",
-            "badge_fit_col": "#00e676",
-            "badge_la_bg": "rgba(255,82,82,0.3)",
-            "badge_la_col": "#ff5252",
+            "badge_fit_bg": "rgba(52, 211, 153, 0.2)",
+            "badge_fit_col": "#34d399",
+            "badge_la_bg": "rgba(56, 189, 248, 0.25)",
+            "badge_la_col": "#38bdf8",
             "dot_empty": "rgba(255,255,255,0.12)",
             "legend_col": "#94a3b8",
             "legend_today_bg": "transparent",
-            "legend_today_bd": "#ffab00",
-            "legend_sel_bg": "rgba(0,242,254,0.3)",
-            "legend_sel_bd": "#00f2fe",
+            "legend_today_bd": "#fbbf24",
+            "legend_sel_bg": "rgba(56, 189, 248, 0.3)",
+            "legend_sel_bd": "#38bdf8",
             "card_bg": "rgba(255, 255, 255, 0.04)",
             "card_bd": "1px solid rgba(255, 255, 255, 0.12)",
             "card_sh": "",
             "card_title": "#f8fafc",
-            "card_time": "#00f2fe",
+            "card_time": "#38bdf8",
             "card_meta": "#94a3b8",
             "card_meta_bold": "#e2e8f0",
-            "card_bound_la": "#ff5252",
-            "card_unbound_la": "#00e676"
+            "card_bound_la": "#38bdf8",
+            "card_unbound_la": "#34d399"
         }
 
     # 4. 生成原生 HTML Table 月曆 (手機嚴格 7 欄不折疊)
@@ -563,7 +565,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
         </td>
         <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
           <div style="font-size:14px; font-weight:800; color:{pal['stat_la']}; line-height:1.1;">{len(month_acts_with_la)}</div>
-          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">🩸 已測乳酸</div>
+          <div style="font-size:10px; color:{pal['stat_lbl']}; margin-top:2px; white-space:nowrap;">💧 已測乳酸</div>
         </td>
         <td style="width:25%; background:{pal['stat_bg']}; border:{pal['stat_bd']}; border-radius:8px; text-align:center; padding:6px 2px; vertical-align:middle;">
           <div style="font-size:14px; font-weight:800; color:{pal['stat_unbound']}; line-height:1.1;">{unbound_count}</div>
@@ -577,7 +579,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
     html_parts.append(f'''
     <div style="display:flex; justify-content:center; gap:8px; font-size:11px; color:{pal['legend_col']}; margin-bottom:6px; flex-wrap:wrap;">
       <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#16a34a; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> FIT運動</span>
-      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:#dc2626; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> 乳酸數據</span>
+      <span style="display:inline-flex; align-items:center; gap:3px;"><span style="background-color:{pal['stat_la']}; width:6px; height:6px; border-radius:50%; display:inline-block;"></span> 💧 乳酸數據</span>
       <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1px solid {pal['legend_today_bd']}; background:{pal['legend_today_bg']}; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 今日</span>
       <span style="display:inline-flex; align-items:center; gap:3px;"><span style="border:1.5px solid {pal['legend_sel_bd']}; background:{pal['legend_sel_bg']}; border-radius:2px; width:7px; height:7px; display:inline-block;"></span> 選中</span>
     </div>
@@ -626,14 +628,14 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
                 box_sh = ""
                 num_col = pal['cell_num_normal']
 
-            # 徽章標示
+            # 徽章標示 (乳酸改為流汗水滴 💧)
             if day_acts and day_las:
-                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">🩸</span>'
+                badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🏃</span><span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1; margin-left:1px;">💧</span>'
             elif day_acts:
                 sp_ico, _ = get_sport_badge(day_acts[0].get("sport", ""))
                 badge_html = f'<span style="background:{pal["badge_fit_bg"]}; color:{pal["badge_fit_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">{sp_ico}</span>'
             elif day_las:
-                badge_html = f'<span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">🩸</span>'
+                badge_html = f'<span style="background:{pal["badge_la_bg"]}; color:{pal["badge_la_col"]}; border-radius:3px; padding:0 2px; font-size:9px; font-weight:700; line-height:1;">💧</span>'
             else:
                 badge_html = f'<span style="color:{pal["dot_empty"]}; font-size:10px; line-height:1;">·</span>'
 
@@ -673,7 +675,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
                 tot_m = int(sum(a.get("duration_minutes", 0) for a in d_acts))
                 info_parts.append(f"{sp_ico}{tot_m}分({len(d_acts)}場)")
             if d_las:
-                info_parts.append(f"🩸{len(d_las)}筆乳酸")
+                info_parts.append(f"💧{len(d_las)}筆乳酸")
             lbl = f"{d} | {' · '.join(info_parts)}"
             date_options.append(lbl)
             date_map[lbl] = d
@@ -722,7 +724,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
             max_h = act.get("max_hr", 0)
             has_la = act.get("has_lactate", False)
 
-            la_badge = f'<span style="color:{pal["card_bound_la"]}; font-weight:700;">🩸 已綁定乳酸數據</span>' if (has_la or len(sel_las) > 0) else f'<span style="color:{pal["card_unbound_la"]}; font-weight:700;">⚡ 待標定乳酸</span>'
+            la_badge = f'<span style="color:{pal["card_bound_la"]}; font-weight:700;">💧 已綁定乳酸數據</span>' if (has_la or len(sel_las) > 0) else f'<span style="color:{pal["card_unbound_la"]}; font-weight:700;">⚡ 待標定乳酸</span>'
 
             with st.container():
                 st.markdown(f'''
@@ -749,7 +751,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark"):
                     st.rerun()
 
         if sel_las and not sel_acts:
-            st.markdown("#### 🩸 當日乳酸紀錄（未關聯手錶 FIT 檔案）：")
+            st.markdown("#### 💧 當日乳酸紀錄（未關聯手錶 FIT 檔案）：")
             la_table = []
             for la in sel_las:
                 la_table.append({
