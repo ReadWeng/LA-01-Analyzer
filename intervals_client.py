@@ -24,22 +24,25 @@ DEFAULT_INTERVALS_CLIENT_SECRET = "ebb88ff05c8240dd98143baca7764a4f"
 def resolve_redirect_uri(configured_uri: str = "") -> str:
     """
     智慧解析 OAuth 回呼網址：
-    1. 若已設定 (secrets 或 env)，直接使用
+    1. 若已傳入或設定 (secrets 或 env)，直接使用，自動確保包含通訊協定
     2. 若處於 Streamlit 執行環境，嘗試從 st.context.headers 偵測當前 host (例如 assemzyme.com 或 streamlit.app)
     3. 否則預設使用 http://localhost:8501/
     """
     if configured_uri and str(configured_uri).strip():
         u = str(configured_uri).strip()
-        if not u.endswith("/"):
-            u += "/"
+        if not u.startswith("http://") and not u.startswith("https://"):
+            u = "https://" + u
         return u
 
     try:
         import streamlit as st
         if hasattr(st, "context") and hasattr(st.context, "headers"):
-            host = st.context.headers.get("host", "")
+            headers = st.context.headers or {}
+            host = headers.get("host", "")
             if host:
-                proto = "https" if "localhost" not in host and "127.0.0.1" not in host else "http"
+                proto = headers.get("x-forwarded-proto", "")
+                if not proto:
+                    proto = "https" if "localhost" not in host and "127.0.0.1" not in host else "http"
                 return f"{proto}://{host}/"
     except Exception:
         pass

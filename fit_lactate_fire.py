@@ -183,6 +183,17 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                         u_token,
                         display_name=data.get("displayName", getattr(st.user, "name", None))
                     )
+                    if "pending_intervals_oauth" in st.session_state:
+                        import intervals_client as ic
+                        p_data = st.session_state.pop("pending_intervals_oauth")
+                        ic.save_user_intervals_oauth(
+                            uid=u_uid,
+                            firebase_token=u_token,
+                            access_token=p_data.get("access_token", ""),
+                            athlete_id=p_data.get("athlete_id", "0"),
+                            athlete_name=p_data.get("athlete_name", ""),
+                            scope=p_data.get("scope", "")
+                        )
                     st.session_state.pop("cached_weekly_report_html", None)
                     st.session_state.pop("cached_report_key", None)
                     st.rerun()
@@ -216,11 +227,12 @@ if "code" in st.query_params and str(st.query_params.get("state", "")).startswit
     cur_token = st.session_state.get('firebase_token')
 
     effective_uid = cur_uid or target_uid
-    if effective_uid and cur_token:
+    if effective_uid:
         import intervals_client as ic
         oauth_cfg = ic.get_intervals_oauth_config()
         if oauth_cfg["client_id"] and oauth_cfg["client_secret"]:
-            redirect_target = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
+            saved_redirect = st.session_state.get("intervals_active_redirect_uri")
+            redirect_target = ic.resolve_redirect_uri(saved_redirect or oauth_cfg["redirect_uri"])
             ok, tok_data, msg = ic.exchange_intervals_oauth_code(
                 client_id=oauth_cfg["client_id"],
                 client_secret=oauth_cfg["client_secret"],
@@ -232,14 +244,23 @@ if "code" in st.query_params and str(st.query_params.get("state", "")).startswit
                 ath_id = str(ath.get("id", "0"))
                 ath_name = ath.get("name") or ath_id
                 acc_tok = tok_data.get("access_token", "")
-                ic.save_user_intervals_oauth(
-                    uid=effective_uid,
-                    firebase_token=cur_token,
-                    access_token=acc_tok,
-                    athlete_id=ath_id,
-                    athlete_name=ath_name,
-                    scope=tok_data.get("scope", "")
-                )
+                if cur_token:
+                    ic.save_user_intervals_oauth(
+                        uid=effective_uid,
+                        firebase_token=cur_token,
+                        access_token=acc_tok,
+                        athlete_id=ath_id,
+                        athlete_name=ath_name,
+                        scope=tok_data.get("scope", "")
+                    )
+                else:
+                    st.session_state["pending_intervals_oauth"] = {
+                        "uid": effective_uid,
+                        "access_token": acc_tok,
+                        "athlete_id": ath_id,
+                        "athlete_name": ath_name,
+                        "scope": tok_data.get("scope", "")
+                    }
                 st.session_state["intervals_oauth_connected"] = True
                 st.session_state["intervals_athlete_id"] = ath_id
                 st.session_state["intervals_athlete_name"] = ath_name
@@ -277,6 +298,17 @@ def login_to_firebase(email, password):
                 u_token,
                 display_name=data.get("displayName")
             )
+            if "pending_intervals_oauth" in st.session_state:
+                import intervals_client as ic
+                p_data = st.session_state.pop("pending_intervals_oauth")
+                ic.save_user_intervals_oauth(
+                    uid=u_uid,
+                    firebase_token=u_token,
+                    access_token=p_data.get("access_token", ""),
+                    athlete_id=p_data.get("athlete_id", "0"),
+                    athlete_name=p_data.get("athlete_name", ""),
+                    scope=p_data.get("scope", "")
+                )
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
             st.sidebar.success("MyLactate 雲端登入成功！")
@@ -1394,13 +1426,51 @@ if st.session_state.get('firebase_uid'):
         else:
             # 未連線狀態：優先展示 OAuth 2.0 一鍵授權
             if oauth_cfg["client_id"]:
-                redirect_target = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
+                default_redirect = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
+                current_redirect = st.session_state.get("intervals_active_redirect_uri", default_redirect)
+
+                st.markdown("##### 🔗 Intervals.icu 一鍵授權")
+
+                with st.expander("⚙️ 授權跳轉網址設定 (如遇 Invalid redirect_uri 請點此)", expanded=False):
+                    st.markdown(
+                        "**為什麼會出現 `Invalid redirect_uri`？**\n\n"
+                        "Intervals.icu 要求送出的網址必須與您在 **Intervals.icu 後台設定中填寫的清單完全一致**（包含協定與結尾斜線）。\n"
+                    )
+                    preset_options = [
+                        "自動偵測 (當前主機)",
+                        "http://localhost:8501/",
+                        "https://assemzyme.com/",
+                        "自訂輸入網址..."
+                    ]
+                    sel_idx = 0
+                    if current_redirect == "http://localhost:8501/":
+                        sel_idx = 1
+                    elif current_redirect == "https://assemzyme.com/":
+                        sel_idx = 2
+                    elif current_redirect != default_redirect:
+                        sel_idx = 3
+
+                    sel_choice = st.selectbox("常用跳轉網址切換", preset_options, index=sel_idx, key="icu_redirect_preset_sel")
+                    if sel_choice == "自動偵測 (當前主機)":
+                        chosen_uri = default_redirect
+                    elif sel_choice == "http://localhost:8501/":
+                        chosen_uri = "http://localhost:8501/"
+                    elif sel_choice == "https://assemzyme.com/":
+                        chosen_uri = "https://assemzyme.com/"
+                    else:
+                        chosen_uri = st.text_input("請輸入自訂 Redirect URI", value=current_redirect, key="icu_custom_redirect_input")
+
+                    st.session_state["intervals_active_redirect_uri"] = chosen_uri.strip()
+                    st.info(f"📍 **當前發送之回呼網址：**\n`{chosen_uri.strip()}`\n\n💡 請確保在 Intervals.icu 後台的 Redirect URLs 清單中有這筆網址。")
+
+                redirect_target = st.session_state.get("intervals_active_redirect_uri", default_redirect).strip()
                 auth_url = ic.get_intervals_oauth_authorize_url(
                     client_id=oauth_cfg["client_id"],
                     redirect_uri=redirect_target,
                     state=f"icu_{icu_uid}"
                 )
                 st.link_button("🔗 一鍵授權連結 Intervals.icu (OAuth 2.0)", auth_url, type="primary", use_container_width=True)
+                st.caption(f"回呼網址: `{redirect_target}` (若報錯請展開上方設定)")
             else:
                 st.info("💡 **OAuth 2.0 系統端已就緒**\n\n收到官方審核之 `client_id` 與 `client_secret` 填入即可啟用一鍵授權！目前可先使用下方 API Key 連結。")
 
