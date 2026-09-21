@@ -501,14 +501,87 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
     mode_param = "multi" if mode == "multi" else "single"
 
-    # 1. 抓取雲端數據 (優先載入，以提供點選及月曆運算所需之資料)
+    # 1. 抓取雲端數據 (優先載入，以提供選取及運算所需之資料)
     acts_by_date, las_by_date = fetch_user_calendar_data(uid, token)
 
+    # 多期模式：純下拉選單連續批次選取 (完全不顯示月曆，直覺迅速，先選完再統一運算)
+    if mode == "multi":
+        st.markdown("#### ☁️ 快速選取要納入多期對照的歷史期數")
+        st.caption("💡 點開下方下拉選單，即可**連續勾選多個歷史測驗**（支援打字搜尋日期或關鍵字）。選取完成後，滑至下方確認清單並點擊「🚀 開始整合並繪製多期對照圖表」即可完成運算。")
+
+        cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
+        currently_selected_dates = sorted(
+            list(set([k.split("_")[0] for k in cloud_pool.keys()])),
+            reverse=True
+        )
+
+        all_dates = sorted(list(set(list(acts_by_date.keys()) + list(las_by_date.keys()))), reverse=True)
+
+        if not all_dates:
+            st.info("💡 目前您的 MyLactate 雲端帳號中尚未有任何手錶 FIT 運動記錄或乳酸數據。")
+            return
+
+        def _format_date_label(d_val):
+            d_acts = acts_by_date.get(d_val, [])
+            d_las = las_by_date.get(d_val, [])
+            parts = []
+            if d_acts:
+                sp_ico, _ = get_sport_badge(d_acts[0].get("sport", ""))
+                tot_m = int(sum(a.get("duration_minutes", 0) for a in d_acts))
+                parts.append(f"{sp_ico}{tot_m}分({len(d_acts)}場)")
+            if d_las:
+                parts.append(f"💧{len(d_las)}筆乳酸")
+            return f"📅 {d_val} | {' · '.join(parts)}" if parts else f"📅 {d_val}"
+
+        col_b1, col_b2 = st.columns([1, 4])
+        with col_b1:
+            if st.button("🗑️ 清空所有勾選", key="btn_clear_all_multi_dates", use_container_width=True):
+                st.session_state["multi_selected_cloud_sessions"] = {}
+                st.session_state.pop('latest_output_html', None)
+                st.rerun()
+
+        picked_dates = st.multiselect(
+            "請點選或搜尋加入多期對照的日期（可連續點選加入）：",
+            options=all_dates,
+            default=[d for d in currently_selected_dates if d in all_dates],
+            format_func=_format_date_label,
+            key="multi_cloud_dates_picker",
+            placeholder="點擊此處展開下拉選單，連續加入要比較的期數..."
+        )
+
+        if set(picked_dates) != set(currently_selected_dates):
+            new_pool = {}
+            for d_str in picked_dates:
+                day_acts = acts_by_date.get(d_str, [])
+                day_las = las_by_date.get(d_str, [])
+                if day_acts:
+                    for a_i, a in enumerate(day_acts):
+                        new_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
+                elif day_las:
+                    fake_act = {
+                        "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
+                        "duration_minutes": 30.0,
+                        "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
+                        "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
+                    }
+                    new_pool[d_str] = convert_firebase_activity_to_session_dict(fake_act, day_las)
+            st.session_state["multi_selected_cloud_sessions"] = new_pool
+            st.session_state.pop('latest_output_html', None)
+            st.rerun()
+
+        if picked_dates:
+            st.success(f"📋 目前已選取 **{len(cloud_pool)}** 個歷史期數。請滑至下方「📋 待整合之多期數據清單」確認並點擊開始運算。")
+        else:
+            st.info("👆 請於上方下拉選單中連續點選要比較的歷史期數。")
+
+        return
+
+    # ==========================================
+    # 以下為單期分析模式月曆邏輯 (mode == "single")
+    # ==========================================
     # 處理來自 HTML 點擊的 Query Params 跳轉 (支援單擊選取 / 選中後單擊取消)
     if "cal_date" in st.query_params:
         clicked_date = st.query_params.get("cal_date")
-        
-        # 確保畫面聚焦於點擊日期所屬的年/月
         try:
             c_y, c_m = [int(p) for p in clicked_date.split("-")[:2]]
             st.session_state["cal_view_year"] = c_y
@@ -516,47 +589,14 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
         except Exception:
             pass
 
-        if mode == "multi":
-            cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
-            day_acts = acts_by_date.get(clicked_date, [])
-            day_las = las_by_date.get(clicked_date, [])
-
-            matching_keys = [k for k in cloud_pool.keys() if k.startswith(clicked_date)]
-            if matching_keys:
-                # 已選中 -> 單擊取消！
-                for k in matching_keys:
-                    cloud_pool.pop(k, None)
-                st.toast(f"🗑️ 已取消選取 {clicked_date}", icon="ℹ️")
-            else:
-                # 未選中 -> 單擊選取！
-                if day_acts:
-                    for a_i, a in enumerate(day_acts):
-                        k = f"{clicked_date}_{a.get('doc_id', a_i)}"
-                        cloud_pool[k] = convert_firebase_activity_to_session_dict(a, day_las)
-                    st.toast(f"✅ 已選取 {clicked_date} 加入多期對照！", icon="📊")
-                elif day_las:
-                    fake_act = {
-                        "start_time": day_las[0].get("record_time", datetime.strptime(clicked_date, "%Y-%m-%d")),
-                        "duration_minutes": 30.0,
-                        "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
-                        "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
-                    }
-                    cloud_pool[clicked_date] = convert_firebase_activity_to_session_dict(fake_act, day_las)
-                    st.toast(f"✅ 已選取 {clicked_date} 乳酸紀錄加入多期對照！", icon="💧")
-                else:
-                    st.toast(f"💡 {clicked_date} 無手錶或乳酸數據", icon="ℹ️")
-
-            st.session_state["cal_selected_date"] = clicked_date
-            st.session_state.pop("cal_quick_date_select", None)
+        # 單期模式：單擊選中，再次單擊取消
+        curr_selected = st.session_state.get("cal_selected_date")
+        if curr_selected == clicked_date:
+            st.session_state["cal_selected_date"] = None
+            st.toast(f"ℹ️ 已取消選取 {clicked_date}", icon="ℹ️")
         else:
-            # 單期模式：單擊選中，再次單擊取消
-            curr_selected = st.session_state.get("cal_selected_date")
-            if curr_selected == clicked_date:
-                st.session_state["cal_selected_date"] = None
-                st.toast(f"ℹ️ 已取消選取 {clicked_date}", icon="ℹ️")
-            else:
-                st.session_state["cal_selected_date"] = clicked_date
-            st.session_state.pop("cal_quick_date_select", None)
+            st.session_state["cal_selected_date"] = clicked_date
+        st.session_state.pop("cal_quick_date_select", None)
 
         del st.query_params["cal_date"]
         st.query_params["app_mode"] = mode_param
@@ -599,87 +639,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
     dur_m = int(tot_dur % 60)
     unbound_count = len(month_acts) - len(month_acts_with_la)
 
-    # 多期模式：頂部連續批次勾選區 (支援連續點選不跳轉，先選完再統一運算)
-    if mode == "multi":
-        st.markdown("#### 📅 連續選取要納入多期對照的歷史期數")
-        st.caption("💡 請在下方多選清單中**連續勾選要比較的日期**（或點擊快捷按鈕）。選取完畢後，月曆會同步高亮標記；最後滑至下方點擊「🚀 開始整合並繪製多期對照圖表」即可。")
 
-        cloud_pool = st.session_state.setdefault("multi_selected_cloud_sessions", {})
-        currently_selected_dates = sorted(
-            list(set([k.split("_")[0] for k in cloud_pool.keys()])),
-            reverse=True
-        )
-
-        all_dates = sorted(list(set(list(acts_by_date.keys()) + list(las_by_date.keys()))), reverse=True)
-        month_dates = [d for d in all_dates if d.startswith(month_prefix)]
-
-        def _format_date_label(d_val):
-            d_acts = acts_by_date.get(d_val, [])
-            d_las = las_by_date.get(d_val, [])
-            parts = []
-            if d_acts:
-                sp_ico, _ = get_sport_badge(d_acts[0].get("sport", ""))
-                tot_m = int(sum(a.get("duration_minutes", 0) for a in d_acts))
-                parts.append(f"{sp_ico}{tot_m}分({len(d_acts)}場)")
-            if d_las:
-                parts.append(f"💧{len(d_las)}筆乳酸")
-            return f"{d_val} | {' · '.join(parts)}" if parts else d_val
-
-        col_b1, col_b2, col_b3 = st.columns([1.5, 1.5, 3])
-        with col_b1:
-            if st.button(f"➕ 全選當月 ({len(month_dates)}天)", key=f"btn_add_month_{v_year}_{v_month}", use_container_width=True):
-                for d_str in month_dates:
-                    day_acts = acts_by_date.get(d_str, [])
-                    day_las = las_by_date.get(d_str, [])
-                    if day_acts:
-                        for a_i, a in enumerate(day_acts):
-                            cloud_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
-                    elif day_las:
-                        fake_act = {
-                            "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
-                            "duration_minutes": 30.0,
-                            "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
-                            "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
-                        }
-                        cloud_pool[d_str] = convert_firebase_activity_to_session_dict(fake_act, day_las)
-                st.session_state.pop('latest_output_html', None)
-                st.rerun()
-        with col_b2:
-            if st.button("🗑️ 清空所有勾選", key="btn_clear_all_multi_dates", use_container_width=True):
-                st.session_state["multi_selected_cloud_sessions"] = {}
-                st.session_state.pop('latest_output_html', None)
-                st.rerun()
-
-        picked_dates = st.multiselect(
-            "請連續點選要比較的日期（支援多選與搜尋）：",
-            options=all_dates,
-            default=[d for d in currently_selected_dates if d in all_dates],
-            format_func=_format_date_label,
-            key="multi_cloud_dates_picker",
-            placeholder="點擊連續加入要對照的日期..."
-        )
-
-        if set(picked_dates) != set(currently_selected_dates):
-            new_pool = {}
-            for d_str in picked_dates:
-                day_acts = acts_by_date.get(d_str, [])
-                day_las = las_by_date.get(d_str, [])
-                if day_acts:
-                    for a_i, a in enumerate(day_acts):
-                        new_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
-                elif day_las:
-                    fake_act = {
-                        "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
-                        "duration_minutes": 30.0,
-                        "avg_power": 0, "max_power": 0, "avg_hr": 0, "max_hr": 0,
-                        "activity_name": f"乳酸檢測 ({len(day_las)}筆)"
-                    }
-                    new_pool[d_str] = convert_firebase_activity_to_session_dict(fake_act, day_las)
-            st.session_state["multi_selected_cloud_sessions"] = new_pool
-            st.session_state.pop('latest_output_html', None)
-            st.rerun()
-
-        st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
 
     selected_date = st.session_state.get("cal_selected_date")
     if not selected_date or not selected_date.startswith(month_prefix):

@@ -1542,16 +1542,16 @@ st.session_state["_last_synced_app_mode"] = current_param
 
 if app_mode == "多期數據整合儀表板 (LacV5)":
     st.markdown('<div class="title-container" style="display: flex; align-items: center;"><h1 style="margin: 0; color: #00f2fe;">📊 多期數據整合儀表板 (LacV5)</h1></div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle-text">支援<b>從 Firebase 雲端月曆直接點選歷史數據</b>，同時<b>保留上傳單期 HTML 報告</b>進行多期交叉對照與動力學分析。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle-text">支援<b>從 Firebase 雲端選取歷史數據</b>，同時<b>保留上傳單期 HTML 報告</b>進行多期交叉對照與動力學分析。</div>', unsafe_allow_html=True)
 
     # 1. 來源選擇與設定
-    tab_cloud, tab_upload = st.tabs(["📅 從 Firebase 雲端月曆直接點選數據作圖", "📂 上傳單期 HTML 報告檔案 (.html)"])
+    tab_cloud, tab_upload = st.tabs(["☁️ 從 Firebase 雲端選取歷史數據", "📂 上傳單期 HTML 報告檔案 (.html)"])
 
     with tab_cloud:
         uid = st.session_state.get('firebase_uid')
         token = st.session_state.get('firebase_token', '')
         if not uid:
-            st.info("💡 **提示**：請先於左側邊欄登入 MyLactate 雲端帳號，即可從月曆瀏覽與點選已儲存的手錶 FIT 與乳酸紀錄進行多期作圖。\n\n（若無雲端帳號，亦可使用右側「📂 上傳單期 HTML 報告檔案」直接分析。）")
+            st.info("💡 **提示**：請先於左側邊欄登入 MyLactate 雲端帳號，即可從雲端下拉選單直接勾選已儲存的手錶 FIT 與乳酸紀錄進行多期作圖。\n\n（若無雲端帳號，亦可使用右側「📂 上傳單期 HTML 報告檔案」直接分析。）")
         else:
             import activity_calendar
             import importlib
@@ -1650,7 +1650,7 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
                 st.session_state.pop('latest_output_html', None)
                 st.rerun()
     else:
-        st.info("💡 目前尚未選取任何期數。請至上方「📅 從 Firebase 雲端月曆直接點選數據」點選活動加入，或於「📂 上傳單期 HTML 報告檔案」中選取檔案。")
+        st.info("💡 目前尚未選取任何期數。請至上方「☁️ 從 Firebase 雲端選取歷史數據」勾選期數，或於「📂 上傳單期 HTML 報告檔案」中選取檔案。")
 
     output_html_path = st.text_input("輸出 HTML 報告儲存路徑", value="LactateReport/LacV5.html", help="請輸入包含檔名的完整路徑")
 
