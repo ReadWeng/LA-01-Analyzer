@@ -184,6 +184,29 @@ def fetch_user_calendar_data(
                         "fit_doc_id": fit_bound_id
                     }
                     lactates_by_date.setdefault(date_str, []).append(la_item)
+
+        # 2.1 乳酸紀錄智慧去重防護網：若兩筆記錄相差 <= 120 秒 (2分鐘內)，判定為同階重複採樣，保留前一筆，刪除並清理後面的重複點
+        for d_str in lactates_by_date:
+            day_las = sorted(lactates_by_date[d_str], key=lambda x: x["record_time"])
+            dedup_las = []
+            for la in day_las:
+                if not dedup_las:
+                    dedup_las.append(la)
+                else:
+                    diff_sec = (la["record_time"] - dedup_las[-1]["record_time"]).total_seconds()
+                    if diff_sec <= 120:
+                        # 這是「後面的數據」，屬於重複上傳點。從雲端 Firestore 實體刪除後面的點
+                        dup_doc_id = la.get("doc_id")
+                        if dup_doc_id and uid and token:
+                            try:
+                                del_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{dup_doc_id}"
+                                requests.delete(del_url, headers=headers, timeout=5)
+                            except Exception:
+                                pass
+                    else:
+                        dedup_las.append(la)
+            lactates_by_date[d_str] = dedup_las
+
     except Exception as e:
         print(f"Error fetching lactate records for calendar: {e}")
 
@@ -568,6 +591,22 @@ def delete_activity_from_firestore(uid: str, token: str, doc_id: str) -> bool:
     if not uid or not token or not doc_id:
         return False
     url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = requests.delete(url, headers=headers, timeout=8)
+        st.session_state.pop(f"cal_cache_data_{uid}", None)
+        st.session_state.pop("cached_weekly_report_html", None)
+        st.session_state.pop(f"date_bounds_v4_{uid}", None)
+        return r.status_code in [200, 204]
+    except Exception:
+        return False
+
+
+def delete_lactate_from_firestore(uid: str, token: str, doc_id: str) -> bool:
+    """從 Firestore 刪除特定的 lactate_record，並清除相關快取"""
+    if not uid or not token or not doc_id:
+        return False
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{doc_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.delete(url, headers=headers, timeout=8)
@@ -1115,14 +1154,26 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                             else:
                                 st.error("刪除失敗，請檢查權限或網路連線。")
 
-        if sel_las and not sel_acts:
-            st.markdown("#### 💧 當日乳酸紀錄（未關聯手錶 FIT 檔案）：")
-            la_table = []
-            for la in sel_las:
-                la_table.append({
-                    "採樣時間": la["record_time"].strftime("%H:%M"),
-                    "乳酸值 (mmol/L)": la["lactate_mmol"],
-                    "血糖值 (mg/dL)": la.get("glucose_mgdl", "-")
-                })
-            st.table(pd.DataFrame(la_table))
-            st.info("💡 如有該次測驗的手錶 .fit 檔案，請於左側上傳，系統將自動將上述乳酸數值與運動生理軌跡對齊。")
+        if sel_las:
+            exp_title = f"💧 當日乳酸紀錄 ({len(sel_las)} 筆)" if not sel_acts else f"💧 查看 / 管理當日乳酸紀錄 ({len(sel_las)} 筆)"
+            with st.expander(exp_title, expanded=(not sel_acts)):
+                for l_idx, la in enumerate(sel_las):
+                    c_la1, c_la2, c_la3, c_la4 = st.columns([2, 2, 2, 1])
+                    with c_la1:
+                        st.markdown(f"🕒 **{la['record_time'].strftime('%H:%M')}**")
+                    with c_la2:
+                        st.markdown(f"🩸 **{la['lactate_mmol']}** mmol/L")
+                    with c_la3:
+                        glu_t = f"{la['glucose_mgdl']} mg/dL" if la.get("glucose_mgdl") is not None else "-"
+                        st.markdown(f"🍬 {glu_t}")
+                    with c_la4:
+                        la_doc_id = la.get("doc_id", "")
+                        if la_doc_id and st.button("🗑️", key=f"btn_del_la_{la_doc_id}_{l_idx}", help="從雲端刪除此筆乳酸紀錄"):
+                            if delete_lactate_from_firestore(uid, token, la_doc_id):
+                                st.toast("🗑️ 已成功刪除該筆乳酸紀錄！", icon="✅")
+                                fetch_user_calendar_data(uid, token, force_reload=True)
+                                st.rerun()
+                            else:
+                                st.error("刪除失敗，請檢查權限或網路連線。")
+                if not sel_acts:
+                    st.info("💡 如有該次測驗的手錶 .fit 檔案，請於左側上傳，系統將自動將上述乳酸數值與運動生理軌跡對齊。")

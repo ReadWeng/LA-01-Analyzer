@@ -1033,6 +1033,8 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
             records = []
             for doc in documents:
                 fields = doc.get("fields", {})
+                doc_name = doc.get("name", "")
+                doc_id = doc_name.split("/")[-1] if doc_name else ""
                 
                 # Parse absolute time
                 year = int(fields.get("year", {}).get("integerValue", 0))
@@ -1045,9 +1047,12 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
                 final_la_obj = fields.get("final_la_mmol", {})
                 final_la = float(final_la_obj.get("doubleValue", final_la_obj.get("integerValue", 0)))
                 
-                if year > 0:
+                if year > 0 and month > 0 and day > 0:
                     full_year = year + 2000 if year < 100 else year
-                    record_time = datetime(full_year, month, day, hour, minute)
+                    try:
+                        record_time = datetime(full_year, month, day, hour, minute)
+                    except Exception:
+                        continue
                     elapsed_min = 0.0
                     if start_time:
                         elapsed_min = (record_time - start_time).total_seconds() / 60.0
@@ -1055,24 +1060,39 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
                         if elapsed_min < -60 or elapsed_min > (duration_minutes + 60):
                             continue
 
-                records.append({
+                    records.append({
                         "elapsed_minutes": elapsed_min,
                         "lactate_mmol": final_la,
-                        "record_time": record_time
+                        "record_time": record_time,
+                        "doc_id": doc_id
                     })
                     
-            # 去重：同一時間點（同分鐘）只保留一筆
-            dedup_records = []
-            seen_r_times = set()
-            for r in records:
-                rk = r["record_time"].strftime("%Y%m%d_%H%M")
-                if rk not in seen_r_times:
-                    seen_r_times.add(rk)
-                    dedup_records.append(r)
-            records = dedup_records
-
-            # Sort by absolute time
+            # 排序：依時間由舊至新排序
             records = sorted(records, key=lambda x: x["record_time"])
+
+            # 智慧去重與實體清理：相差 <= 120 秒（2分鐘以內）判定為同階重複採樣，只保留第一筆，刪除並清理後面的重複點
+            dedup_records = []
+            uid = st.session_state.get('firebase_uid')
+            token = st.session_state.get('firebase_token')
+            headers_del = {"Authorization": f"Bearer {token}"} if token else None
+
+            for r in records:
+                if not dedup_records:
+                    dedup_records.append(r)
+                else:
+                    diff_sec = (r["record_time"] - dedup_records[-1]["record_time"]).total_seconds()
+                    if diff_sec <= 120:
+                        # 這是「後面的數據」，屬於重複上傳的點。從雲端 Firestore 實體刪除
+                        dup_id = r.get("doc_id")
+                        if dup_id and uid and headers_del:
+                            try:
+                                del_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{dup_id}"
+                                requests.delete(del_url, headers=headers_del, timeout=5)
+                            except Exception:
+                                pass
+                    else:
+                        dedup_records.append(r)
+            records = dedup_records
             return records
         else:
             st.error(f"Firestore API Error: {response.text}")
