@@ -185,7 +185,7 @@ def fetch_user_calendar_data(
                     }
                     lactates_by_date.setdefault(date_str, []).append(la_item)
 
-        # 2.1 乳酸紀錄智慧去重防護網：若兩筆記錄相差 <= 120 秒 (2分鐘內)，判定為同階重複採樣，保留前一筆，刪除並清理後面的重複點
+        # 2.1 乳酸紀錄智慧去重防護網：若兩筆記錄相差 <= 120 秒 (2分鐘內) 且乳酸數值完全相同，判定為重複上傳，自動刪除後面的點；若數值有差異 (可能為重測)，予以保留留給使用者自行判斷
         for d_str in lactates_by_date:
             day_las = sorted(lactates_by_date[d_str], key=lambda x: x["record_time"])
             dedup_las = []
@@ -194,8 +194,9 @@ def fetch_user_calendar_data(
                     dedup_las.append(la)
                 else:
                     diff_sec = (la["record_time"] - dedup_las[-1]["record_time"]).total_seconds()
-                    if diff_sec <= 120:
-                        # 這是「後面的數據」，屬於重複上傳點。從雲端 Firestore 實體刪除後面的點
+                    is_same_val = abs(la["lactate_mmol"] - dedup_las[-1]["lactate_mmol"]) < 0.05
+                    if diff_sec <= 120 and is_same_val:
+                        # 這是「後面的數據」，且數值相同屬於重複上傳點。從雲端 Firestore 實體刪除後面的點
                         dup_doc_id = la.get("doc_id")
                         if dup_doc_id and uid and token:
                             try:
@@ -1155,12 +1156,27 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                                 st.error("刪除失敗，請檢查權限或網路連線。")
 
         if sel_las:
+            # 檢查是否有 2 分鐘內數值有高低差異之重測點
+            has_retest = False
+            for i in range(1, len(sel_las)):
+                if abs((sel_las[i]["record_time"] - sel_las[i-1]["record_time"]).total_seconds()) <= 120:
+                    has_retest = True
+                    break
+
             exp_title = f"💧 當日乳酸紀錄 ({len(sel_las)} 筆)" if not sel_acts else f"💧 查看 / 管理當日乳酸紀錄 ({len(sel_las)} 筆)"
-            with st.expander(exp_title, expanded=(not sel_acts)):
+            if has_retest:
+                exp_title += " ⚠️ (含重測數據待確認)"
+
+            with st.expander(exp_title, expanded=(not sel_acts or has_retest)):
+                if has_retest:
+                    st.info("💡 **重測提示**：偵測到 2 分鐘內數值有高低差別之重測記錄，已完整保留供您確認。您可以比對數值後，點擊右側 🗑️ 刪除不需要的數據點。")
+
                 for l_idx, la in enumerate(sel_las):
+                    is_this_retest = (l_idx > 0 and abs((la["record_time"] - sel_las[l_idx-1]["record_time"]).total_seconds()) <= 120)
                     c_la1, c_la2, c_la3, c_la4 = st.columns([2, 2, 2, 1])
                     with c_la1:
-                        st.markdown(f"🕒 **{la['record_time'].strftime('%H:%M')}**")
+                        retest_badge = " <span style='background:#f59e0b; color:#fff; font-size:0.75rem; padding:1px 5px; border-radius:4px;'>重測</span>" if is_this_retest else ""
+                        st.markdown(f"🕒 **{la['record_time'].strftime('%H:%M')}**{retest_badge}", unsafe_allow_html=True)
                     with c_la2:
                         st.markdown(f"🩸 **{la['lactate_mmol']}** mmol/L")
                     with c_la3:

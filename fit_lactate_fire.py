@@ -1070,7 +1070,9 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
             # 排序：依時間由舊至新排序
             records = sorted(records, key=lambda x: x["record_time"])
 
-            # 智慧去重與實體清理：相差 <= 120 秒（2分鐘以內）判定為同階重複採樣，只保留第一筆，刪除並清理後面的重複點
+            # 智慧去重與實體清理：
+            # 1. 時間差 <= 120 秒（2分鐘以內）且乳酸值相同（差值 < 0.05）：判定為設備重複上傳，自動刪除後面的點並清除雲端紀錄
+            # 2. 若數值有高低差別（重測）：予以保留，留給使用者自行比對與刪除判斷
             dedup_records = []
             uid = st.session_state.get('firebase_uid')
             token = st.session_state.get('firebase_token')
@@ -1081,8 +1083,9 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
                     dedup_records.append(r)
                 else:
                     diff_sec = (r["record_time"] - dedup_records[-1]["record_time"]).total_seconds()
-                    if diff_sec <= 120:
-                        # 這是「後面的數據」，屬於重複上傳的點。從雲端 Firestore 實體刪除
+                    is_same_val = abs(r["lactate_mmol"] - dedup_records[-1]["lactate_mmol"]) < 0.05
+                    if diff_sec <= 120 and is_same_val:
+                        # 這是「後面的數據」，且數值相同屬於重複上傳的點。從雲端 Firestore 實體刪除
                         dup_id = r.get("doc_id")
                         if dup_id and uid and headers_del:
                             try:
@@ -1091,6 +1094,7 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
                             except Exception:
                                 pass
                     else:
+                        # 相差 > 120 秒，或相差 <= 120 秒但數值有高低差別（重測），保留給使用者自行判斷
                         dedup_records.append(r)
             records = dedup_records
             return records

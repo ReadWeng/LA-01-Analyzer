@@ -625,7 +625,7 @@ def fetch_firestore_dataset_with_status(
     except Exception as e:
         print(f"Error fetching lactate_records: {e}")
 
-    # 2.1 乳酸紀錄智慧去重 (相差 <= 120 秒視為同階重複上傳，保留第一筆，刪除後面的點)
+    # 2.1 乳酸紀錄智慧去重 (相差 <= 120 秒且乳酸數值相同視為重複，保留第一筆；若數值不同視為重測則保留)
     all_lactate = sorted(all_lactate, key=lambda x: x["record_time"])
     dedup_lactate = []
     for la in all_lactate:
@@ -633,7 +633,10 @@ def fetch_firestore_dataset_with_status(
             dedup_lactate.append(la)
         else:
             diff_sec = (la["record_time"] - dedup_lactate[-1]["record_time"]).total_seconds()
-            if diff_sec > 120:
+            is_same_val = abs(la["lactate_mmol"] - dedup_lactate[-1]["lactate_mmol"]) < 0.05
+            if diff_sec <= 120 and is_same_val:
+                pass
+            else:
                 dedup_lactate.append(la)
     all_lactate = dedup_lactate
 
