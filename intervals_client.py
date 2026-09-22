@@ -833,9 +833,10 @@ def sync_pre_lactate_activities_to_firebase(
         return 0, 0, "未找到有效的同步日期區間"
 
     # 2. 抓取現有的 fit_records 以便比對重疊 (嚴格區分：珍貴的乳酸測驗 vs 日常手錶訓練)
-    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
     lactate_test_times = []
-    icu_existing_docs = {}
+    icu_id_to_doc = {}        # 依照 Intervals 原生 activity_id 映射
+    icu_time_to_doc = {}      # 依照活動時間（5分鐘窗）映射
     try:
         r_fit = requests.get(fit_url, headers=headers_fb, timeout=12)
         if r_fit.status_code == 200:
@@ -846,6 +847,13 @@ def sync_pre_lactate_activities_to_firebase(
                 has_la = fields.get("has_lactate", {}).get("booleanValue", False)
                 doc_name = doc.get("name", "").split("/")[-1]
                 
+                # 提取 intervals_act_id
+                icu_id = fields.get("intervals_act_id", {}).get("stringValue", "")
+                if not icu_id and "_icu_" in doc_name:
+                    icu_id = doc_name.split("_icu_")[-1]
+                if icu_id:
+                    icu_id_to_doc[str(icu_id)] = doc_name
+
                 if st_val:
                     try:
                         clean_ts = st_val.replace("Z", "+00:00")
@@ -854,8 +862,7 @@ def sync_pre_lactate_activities_to_firebase(
                         if src != "intervals_icu" or has_la:
                             lactate_test_times.append(dt_obj)
                         else:
-                            time_k = dt_obj.strftime("%Y%m%d_%H%M")
-                            icu_existing_docs[time_k] = doc_name
+                            icu_time_to_doc[doc_name] = dt_obj
                     except Exception:
                         pass
     except Exception as e:
@@ -881,14 +888,22 @@ def sync_pre_lactate_activities_to_firebase(
     synced_count = 0
     skipped_count = 0
 
+    base_fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
+
     for act in all_activities:
         rec = convert_intervals_activity_to_firebase_fit_record(act, token_or_key=intervals_api_key, is_oauth=is_oauth)
         act_start = rec["start_time"]
+        act_id_str = str(act.get("id", ""))
+
+        # 寫入 intervals_act_id 標記以利後續 100% 精準去重
+        if act_id_str:
+            rec["payload"]["fields"]["intervals_act_id"] = {"stringValue": act_id_str}
 
         # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！
         is_lactate_conflict = False
+        act_start_naive = act_start.replace(tzinfo=None)
         for ex_dt in lactate_test_times:
-            if abs((act_start.replace(tzinfo=None) - ex_dt.replace(tzinfo=None)).total_seconds()) <= 300:
+            if abs((act_start_naive - ex_dt.replace(tzinfo=None)).total_seconds()) <= 300:
                 is_lactate_conflict = True
                 break
 
@@ -896,17 +911,25 @@ def sync_pre_lactate_activities_to_firebase(
             skipped_count += 1
             continue
 
-        # 若是日常手錶運動（包含已有紀錄需更新功率），使用 PATCH 執行冪等寫入或覆蓋更新
+        # 若是日常手錶運動，精準比對既有記錄進行 PATCH 覆蓋更新
         doc_id = rec["doc_id"]
-        time_k = act_start.strftime("%Y%m%d_%H%M")
-        if time_k in icu_existing_docs:
-            doc_id = icu_existing_docs[time_k]
+        if act_id_str and act_id_str in icu_id_to_doc:
+            doc_id = icu_id_to_doc[act_id_str]
+        else:
+            # 輔助比對：前後 3 分鐘內且同屬 intervals_icu 的紀錄
+            for exist_name, exist_time in icu_time_to_doc.items():
+                if abs((act_start_naive - exist_time.replace(tzinfo=None)).total_seconds()) <= 180:
+                    doc_id = exist_name
+                    break
 
-        post_url = f"{fit_url}/{doc_id}"
+        post_url = f"{base_fit_url}/{doc_id}"
         try:
             r_post = requests.patch(post_url, headers=headers_fb, json=rec["payload"], timeout=10)
             if r_post.status_code in [200, 201]:
                 synced_count += 1
+                if act_id_str:
+                    icu_id_to_doc[act_id_str] = doc_id
+                icu_time_to_doc[doc_id] = act_start
             else:
                 print(f"Failed to upsert Intervals activity {doc_id}: {r_post.text}")
         except Exception as e:

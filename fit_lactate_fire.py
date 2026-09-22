@@ -1022,7 +1022,7 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
 
 
 def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
-    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{st.session_state.get('firebase_uid')}/lactate_records"
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{st.session_state.get('firebase_uid')}/lactate_records?pageSize=300"
     try:
         headers = {"Authorization": f"Bearer {st.session_state.get('firebase_token')}"}
         response = requests.get(url, headers=headers, timeout=5)

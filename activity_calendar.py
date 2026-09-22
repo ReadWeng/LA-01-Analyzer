@@ -106,6 +106,43 @@ def fetch_user_calendar_data(
                     "raw_fields": f
                 }
                 activities_by_date.setdefault(date_str, []).append(act_item)
+
+        # 1.1 自動去重防護網：若同一天存在多份開始時間極近 (<= 3分鐘) 的重複訓練，進行智慧合併去重
+        for d_str in activities_by_date:
+            day_acts = activities_by_date[d_str]
+            if len(day_acts) > 1:
+                # 排序依據：優先手動上傳 / 帶有乳酸測驗的記錄
+                def _act_score(a):
+                    score = 0
+                    if a.get("has_lactate"):
+                        score += 20
+                    if a.get("source") != "intervals_icu":
+                        score += 10
+                    # 包含更多時間數列點者優先
+                    pts = len(a.get("raw_fields", {}).get("time_series", {}).get("arrayValue", {}).get("values", []))
+                    score += min(pts, 50)
+                    return score
+
+                day_acts_sorted = sorted(day_acts, key=_act_score, reverse=True)
+                deduped = []
+                for a in day_acts_sorted:
+                    is_dup = False
+                    a_st = a["start_time"]
+                    for kept in deduped:
+                        k_st = kept["start_time"]
+                        time_diff = abs((a_st - k_st).total_seconds())
+                        # 前後 180 秒內視為同一場訓練
+                        if time_diff <= 180:
+                            is_dup = True
+                            # 若被合併項有乳酸標記，保留給留存項
+                            if a.get("has_lactate"):
+                                kept["has_lactate"] = True
+                            break
+                    if not is_dup:
+                        deduped.append(a)
+                # 依開始時間重新由早到晚排序
+                activities_by_date[d_str] = sorted(deduped, key=lambda x: x["start_time"])
+
     except Exception as e:
         print(f"Error fetching fit records for calendar: {e}")
 
@@ -126,6 +163,7 @@ def fetch_user_calendar_data(
                 la_val = float(_get_fs_field(f.get("final_la_mmol"), 0.0))
                 glu_val = _get_fs_field(f.get("final_glu_mgdl"))
                 src = _get_fs_field(f.get("source"), "")
+                fit_bound_id = _get_fs_field(f.get("fit_doc_id"), "")
 
                 if year > 0 and month > 0 and day > 0:
                     full_year = year + 2000 if year < 100 else year
@@ -142,19 +180,35 @@ def fetch_user_calendar_data(
                         "record_time": rec_dt,
                         "lactate_mmol": la_val,
                         "glucose_mgdl": glu_val,
-                        "source": src
+                        "source": src,
+                        "fit_doc_id": fit_bound_id
                     }
                     lactates_by_date.setdefault(date_str, []).append(la_item)
     except Exception as e:
         print(f"Error fetching lactate records for calendar: {e}")
 
-    # 對每場活動關聯乳酸標記
+    # 對每場活動關聯乳酸標記 (精確關聯：同活動 ID 或時間窗口符合)
     for d_str, acts in activities_by_date.items():
         las = lactates_by_date.get(d_str, [])
         for act in acts:
-            if act["has_lactate"] or len(las) > 0:
+            act_id = act.get("doc_id", "")
+            act_start = act.get("start_time")
+            dur = act.get("duration_minutes", 0.0)
+            end_limit = act_start + timedelta(minutes=dur + 60.0) if act_start else None
+            start_limit = act_start - timedelta(minutes=30.0) if act_start else None
+
+            matching_la = []
+            for la in las:
+                b_id = la.get("fit_doc_id")
+                if b_id and b_id == act_id:
+                    matching_la.append(la)
+                elif not b_id and start_limit and end_limit:
+                    if start_limit <= la["record_time"] <= end_limit:
+                        matching_la.append(la)
+
+            if matching_la or act.get("has_lactate"):
                 act["has_lactate"] = True
-                act["lactate_count"] = len(las)
+                act["lactate_count"] = len(matching_la) if matching_la else act.get("lactate_count", 0)
 
     st.session_state[cache_key] = (activities_by_date, lactates_by_date)
     return activities_by_date, lactates_by_date
@@ -234,14 +288,24 @@ def build_session_from_fit_record(
     else:
         df = pd.DataFrame(columns=["elapsed_minutes", "timestamp", "heart_rate", "power", "core_temp"])
 
-    # 關聯乳酸數據
+    # 關聯乳酸數據（精確活動級別關聯）
     lactate_rows = []
+    act_doc_id = act_item.get("doc_id", "")
     if lactates_on_day:
         for la in lactates_on_day:
+            b_id = la.get("fit_doc_id")
             la_time = la.get("record_time", start_time)
             diff_min = round((la_time - start_time).total_seconds() / 60.0, 1)
-            if abs(diff_min) > duration_min * 2 and duration_min > 0:
-                diff_min = 0.0
+
+            # 若此乳酸有明確綁定活動 ID，必須相符
+            if b_id and b_id != act_doc_id:
+                continue
+
+            # 若未指定綁定 ID，採樣時間必須在合理範圍：開始前 30 分鐘 ~ 結束後 60 分鐘
+            if not b_id and duration_min > 0:
+                if diff_min < -30.0 or diff_min > (duration_min + 60.0):
+                    continue
+
             lactate_rows.append({
                 "相對時間 (分鐘)": diff_min,
                 "乳酸值 (mmol/L)": float(la.get("lactate_mmol", 0.0)),
@@ -322,12 +386,21 @@ def convert_firebase_activity_to_session_dict(
     lactate_pts = []
     glucose_pts = []
 
+    act_doc_id = act_item.get("doc_id", "")
     if lactates_on_day:
         for la in lactates_on_day:
+            b_id = la.get("fit_doc_id")
             la_time = la.get("record_time", start_time)
             diff_min = round((la_time - start_time).total_seconds() / 60.0, 1)
-            if abs(diff_min) > duration_min * 2 and duration_min > 0:
-                diff_min = 0.0
+
+            # 若此乳酸有明確綁定活動 ID，必須相符
+            if b_id and b_id != act_doc_id:
+                continue
+
+            # 若未指定綁定 ID，採樣時間必須在合理範圍：開始前 30 分鐘 ~ 結束後 60 分鐘
+            if not b_id and duration_min > 0:
+                if diff_min < -30.0 or diff_min > (duration_min + 60.0):
+                    continue
 
             pw_at_t = None
             hr_at_t = None
