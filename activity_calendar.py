@@ -563,6 +563,22 @@ def save_bound_lactate_to_firestore(
     return True, f"成功綁定並儲存 {valid_count} 筆乳酸數據至雲端！"
 
 
+def delete_activity_from_firestore(uid: str, token: str, doc_id: str) -> bool:
+    """從 Firestore 刪除特定的 fit_record，並清除相關快取"""
+    if not uid or not token or not doc_id:
+        return False
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = requests.delete(url, headers=headers, timeout=8)
+        st.session_state.pop(f"cal_cache_data_{uid}", None)
+        st.session_state.pop("cached_weekly_report_html", None)
+        st.session_state.pop(f"date_bounds_v4_{uid}", None)
+        return r.status_code in [200, 204]
+    except Exception:
+        return False
+
+
 def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: str = "single"):
     """
     手機極致響應式運動數據月曆 (支援單期/多期模式、單擊選取/單擊取消、URL模式記憶)
@@ -1080,14 +1096,24 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                             st.toast(f"✅ 已將 {curr_sel} 運動加入多期對照清單！", icon="📊")
                             st.rerun()
                 else:
-                    btn_text = "🔄 載入活動並修改乳酸數據" if (has_la or len(sel_las) > 0) else "🚀 載入此活動並標定乳酸數據"
-                    if st.button(btn_text, key=f"btn_load_act_{act['doc_id']}_{idx}", type="primary", use_container_width=True):
-                        session_obj = build_session_from_fit_record(act, sel_las)
-                        st.session_state["active_cloud_session"] = session_obj
-                        st.session_state["custom_lactate"] = session_obj["lactate_df"]
-                        st.session_state.pop("custom_lactate_editor", None)
-                        st.toast(f"✅ 成功載入 {curr_sel} 運動數據！正在開啟分析圖表與乳酸編輯器...", icon="🚀")
-                        st.rerun()
+                    col_act1, col_act2 = st.columns([3, 1])
+                    with col_act1:
+                        btn_text = "🔄 載入活動並修改乳酸數據" if (has_la or len(sel_las) > 0) else "🚀 載入此活動並標定乳酸數據"
+                        if st.button(btn_text, key=f"btn_load_act_{act['doc_id']}_{idx}", type="primary", use_container_width=True):
+                            session_obj = build_session_from_fit_record(act, sel_las)
+                            st.session_state["active_cloud_session"] = session_obj
+                            st.session_state["custom_lactate"] = session_obj["lactate_df"]
+                            st.session_state.pop("custom_lactate_editor", None)
+                            st.toast(f"✅ 成功載入 {curr_sel} 運動數據！正在開啟分析圖表與乳酸編輯器...", icon="🚀")
+                            st.rerun()
+                    with col_act2:
+                        if st.button("🗑️ 刪除", key=f"btn_del_act_{act['doc_id']}_{idx}", help="從雲端永久刪除此運動記錄", use_container_width=True):
+                            if delete_activity_from_firestore(uid, token, act['doc_id']):
+                                st.toast(f"🗑️ 已刪除記錄：{act.get('activity_name', '')}", icon="✅")
+                                fetch_user_calendar_data(uid, token, force_reload=True)
+                                st.rerun()
+                            else:
+                                st.error("刪除失敗，請檢查權限或網路連線。")
 
         if sel_las and not sel_acts:
             st.markdown("#### 💧 當日乳酸紀錄（未關聯手錶 FIT 檔案）：")
