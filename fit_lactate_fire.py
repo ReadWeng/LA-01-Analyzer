@@ -1447,57 +1447,19 @@ if st.session_state.get('firebase_uid'):
                     else:
                         st.info(s_msg)
         else:
-            # 未連線狀態：優先展示 OAuth 2.0 一鍵授權
+            # 未連線狀態：僅保留「一鍵授權」與「手動輸入 API Key」兩個選項
             if oauth_cfg["client_id"]:
-                default_redirect = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
-                current_redirect = st.session_state.get("intervals_active_redirect_uri", default_redirect)
-
-                st.markdown("##### 🔗 Intervals.icu 一鍵授權")
-
-                with st.expander("⚙️ 授權跳轉網址設定 (如遇 Invalid redirect_uri 請點此)", expanded=False):
-                    st.markdown(
-                        "**為什麼會出現 `Invalid redirect_uri`？**\n\n"
-                        "Intervals.icu 要求送出的網址必須與您在 **Intervals.icu 後台設定中填寫的清單完全一致**（包含協定與結尾斜線）。\n"
-                    )
-                    preset_options = [
-                        "自動偵測 (當前主機)",
-                        "http://localhost:8501/",
-                        "https://assemzyme.com/",
-                        "自訂輸入網址..."
-                    ]
-                    sel_idx = 0
-                    if current_redirect == "http://localhost:8501/":
-                        sel_idx = 1
-                    elif current_redirect == "https://assemzyme.com/":
-                        sel_idx = 2
-                    elif current_redirect != default_redirect:
-                        sel_idx = 3
-
-                    sel_choice = st.selectbox("常用跳轉網址切換", preset_options, index=sel_idx, key="icu_redirect_preset_sel")
-                    if sel_choice == "自動偵測 (當前主機)":
-                        chosen_uri = default_redirect
-                    elif sel_choice == "http://localhost:8501/":
-                        chosen_uri = "http://localhost:8501/"
-                    elif sel_choice == "https://assemzyme.com/":
-                        chosen_uri = "https://assemzyme.com/"
-                    else:
-                        chosen_uri = st.text_input("請輸入自訂 Redirect URI", value=current_redirect, key="icu_custom_redirect_input")
-
-                    st.session_state["intervals_active_redirect_uri"] = chosen_uri.strip()
-                    st.info(f"📍 **當前發送之回呼網址：**\n`{chosen_uri.strip()}`\n\n💡 請確保在 Intervals.icu 後台的 Redirect URLs 清單中有這筆網址。")
-
-                redirect_target = st.session_state.get("intervals_active_redirect_uri", default_redirect).strip()
+                redirect_target = ic.resolve_redirect_uri(oauth_cfg["redirect_uri"])
                 auth_url = ic.get_intervals_oauth_authorize_url(
                     client_id=oauth_cfg["client_id"],
                     redirect_uri=redirect_target,
                     state=f"icu_{icu_uid}"
                 )
                 st.link_button("🔗 一鍵授權連結 Intervals.icu (OAuth 2.0)", auth_url, type="primary", use_container_width=True)
-                st.caption(f"回呼網址: `{redirect_target}` (若報錯請展開上方設定)")
             else:
                 st.info("💡 **OAuth 2.0 系統端已就緒**\n\n收到官方審核之 `client_id` 與 `client_secret` 填入即可啟用一鍵授權！目前可先使用下方 API Key 連結。")
 
-            with st.expander("🛠️ 手動輸入 API Key 與 Athlete ID (傳統備用)", expanded=not oauth_cfg["client_id"]):
+            with st.expander("🛠️ 手動輸入 API Key 與 Athlete ID", expanded=not oauth_cfg["client_id"]):
                 ath_id_input = st.text_input("Intervals.icu Athlete ID", value="0", help="個人帳號請填 0，或填入如 i123456", key="input_ath_id")
                 api_key_input = st.text_input("Intervals.icu API Key", type="password", help="登入 intervals.icu -> Settings (設定) 頁面最下方即可複製 API Key", key="input_api_key")
 
