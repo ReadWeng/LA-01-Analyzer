@@ -153,9 +153,9 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                 payload_info = parse_jwt_payload(g_token)
                 exp = payload_info.get("exp", 0)
                 now_ts = time.time()
-                # 若憑證已過期，自動清除過期憑證，回到乾淨登入畫面
+                # 若憑證已過期，嘗試由 refresh_token 自動換新，不主動強行登出用戶
                 if exp > 0 and now_ts > exp:
-                    logout_firebase()
+                    refresh_firebase_token()
 
             post_body = f"id_token={g_token}&providerId=google.com" if is_jwt else f"access_token={g_token}&providerId=google.com"
             url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
@@ -197,12 +197,10 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                     st.session_state.pop("cached_report_key", None)
                     st.rerun()
                 else:
-                    # Token 已過期 (stale to sign-in) 或無效：自動清除過期憑證，直接恢復乾淨登入畫面，不卡死報錯
-                    logout_firebase()
+                    # Token 暫時無效：不調用 st.logout()，僅在畫面上提示，避免強行登出使用者
+                    pass
             except Exception:
-                logout_firebase()
-        else:
-            logout_firebase()
+                pass
 
 # 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:

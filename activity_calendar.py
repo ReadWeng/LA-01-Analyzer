@@ -718,13 +718,8 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
         except Exception:
             pass
 
-        # 單期模式：單擊選中，再次單擊取消
-        curr_selected = st.session_state.get("cal_selected_date")
-        if curr_selected == clicked_date:
-            st.session_state["cal_selected_date"] = None
-            st.toast(f"ℹ️ 已取消選取 {clicked_date}", icon="ℹ️")
-        else:
-            st.session_state["cal_selected_date"] = clicked_date
+        # 單期模式：選中點擊之日期
+        st.session_state["cal_selected_date"] = clicked_date
         st.session_state.pop("cal_quick_date_select", None)
 
         del st.query_params["cal_date"]
@@ -1041,7 +1036,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
     )
     month_dates_with_data = [d for d in all_dates_with_data if d.startswith(month_prefix)]
 
-    if month_dates_with_data:
+    if month_dates_with_data or selected_date:
         date_options = []
         date_map = {}
         for d in month_dates_with_data:
@@ -1058,29 +1053,38 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
             date_options.append(lbl)
             date_map[lbl] = d
 
-        cur_idx = 0
-        for i, opt in enumerate(date_options):
-            if date_map[opt] == selected_date:
-                cur_idx = i
-                st.session_state["cal_quick_date_select"] = opt
-                break
+        # 若使用者點選了當月沒有數據的日期，動態將該日期加入下拉選項，確保選單與選取狀態一致，防止無窮閃退重載
+        if selected_date and selected_date.startswith(month_prefix) and selected_date not in date_map.values():
+            no_data_lbl = f"{selected_date} | ⚪ 尚無活動紀錄 (可上傳FIT)"
+            date_options.insert(0, no_data_lbl)
+            date_map[no_data_lbl] = selected_date
 
-        col_q1, col_q2 = st.columns([3, 1])
-        with col_q1:
-            sel_opt = st.selectbox(
-                "📌 快速挑選當月有運動/乳酸的日期：",
-                date_options,
-                index=cur_idx,
-                key="cal_quick_date_select"
-            )
-            if sel_opt and date_map[sel_opt] != selected_date:
-                st.session_state["cal_selected_date"] = date_map[sel_opt]
-                st.rerun()
-        with col_q2:
-            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 重新整理", key="btn_cal_force_refresh", use_container_width=True):
-                fetch_user_calendar_data(uid, token, force_reload=True)
-                st.rerun()
+        if date_options:
+            cur_idx = 0
+            for i, opt in enumerate(date_options):
+                if date_map[opt] == selected_date:
+                    cur_idx = i
+                    break
+
+            col_q1, col_q2 = st.columns([3, 1])
+            with col_q1:
+                def _on_cal_quick_date_change():
+                    sel = st.session_state.get("cal_quick_date_select")
+                    if sel and sel in date_map:
+                        st.session_state["cal_selected_date"] = date_map[sel]
+
+                st.selectbox(
+                    "📌 快速挑選當月有運動/乳酸的日期：",
+                    date_options,
+                    index=cur_idx,
+                    key="cal_quick_date_select",
+                    on_change=_on_cal_quick_date_change
+                )
+            with col_q2:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 重新整理", key="btn_cal_force_refresh", use_container_width=True):
+                    fetch_user_calendar_data(uid, token, force_reload=True)
+                    st.rerun()
 
     # 6. 當日活動清單與一鍵綁定乳酸操作區
     st.markdown("---")
