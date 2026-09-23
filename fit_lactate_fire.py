@@ -1427,7 +1427,7 @@ if st.session_state.get('firebase_uid'):
                     st.rerun()
 
             if sync_btn:
-                with st.spinner("正在計算乳酸日期並同步前 1 週與後 1 週日常訓練數據至 Firebase..."):
+                with st.spinner("正在同步 Intervals.icu 數據至 Firebase (包含當日與近期訓練)..."):
                     s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
                         uid=icu_uid,
                         firebase_token=icu_token,
@@ -1437,12 +1437,16 @@ if st.session_state.get('firebase_uid'):
                         lookahead_days=7,
                         is_oauth=icu_creds["is_oauth"]
                     )
+                    # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
+                    st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
+                    st.session_state.pop("cached_weekly_report_html", None)
+                    st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
                     if s_count > 0:
+                        st.toast(s_msg, icon="✅")
                         st.success(s_msg)
-                        st.session_state.pop("cached_weekly_report_html", None)
-                        st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
                         st.rerun()
                     else:
+                        st.toast(s_msg, icon="ℹ️")
                         st.info(s_msg)
         else:
             # 未連線狀態：僅保留「一鍵授權」與「手動輸入 API Key」兩個選項

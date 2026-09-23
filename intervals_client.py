@@ -8,7 +8,7 @@ import os
 import re
 import base64
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Tuple, Optional
 
 
@@ -335,30 +335,39 @@ def test_intervals_connection(token_or_key: str, athlete_id: str = "0", is_oauth
 
 
 def calculate_lactate_surrounding_date_ranges(
-    lactate_dates: List[datetime],
+    lactate_dates: Optional[List[datetime]] = None,
     lookback_days: int = 7,
-    lookahead_days: int = 7
+    lookahead_days: int = 7,
+    include_recent_days: int = 30
 ) -> List[Tuple[str, str]]:
     """
     根據所有乳酸採樣日期清單，計算每一天的前 N 天 (預設前 1 週 7 天) 至後 M 天 (預設後 1 週 7 天) 的完整區間，
-    並自動合併重疊或相鄰的日期區間，產生最精簡的 (oldest, newest) 清單。
+    並預設永遠額外涵蓋「最近 include_recent_days 天 (預設 30 天) 至明天」，
+    確保使用者的日常運動與當日最新上傳的運動隨時被同步納入。
+    自動合併重疊或相鄰的日期區間，產生最精簡的 (oldest, newest) 清單。
     格式: YYYY-MM-DD
     """
-    if not lactate_dates:
-        return []
-
-    # 1. 產生所有需要覆蓋的單日 (涵蓋乳酸日前 1 週、當天、與後 1 週)
     target_days = set()
-    for dt in lactate_dates:
-        d = dt.date() if isinstance(dt, datetime) else dt
-        for i in range(-lookahead_days, lookback_days + 1):
-            target_days.add(d - timedelta(days=i))
+
+    # 1. 涵蓋乳酸採樣日前後區間
+    if lactate_dates:
+        for dt in lactate_dates:
+            d = dt.date() if isinstance(dt, datetime) else dt
+            for i in range(-lookahead_days, lookback_days + 1):
+                target_days.add(d - timedelta(days=i))
+
+    # 2. 永遠涵蓋最近 include_recent_days 天至明天 (防止當日及近期日常手錶運動漏失)
+    if include_recent_days > 0:
+        today = date.today()
+        # i = -1 對應明天 (today + 1)，0 對應今天，依此類推到 today - include_recent_days
+        for i in range(-1, include_recent_days + 1):
+            target_days.add(today - timedelta(days=i))
 
     sorted_days = sorted(target_days)
     if not sorted_days:
         return []
 
-    # 2. 合併連續日期成區間 [start_date, end_date]
+    # 3. 合併連續日期成區間 [start_date, end_date]
     ranges = []
     start_d = sorted_days[0]
     prev_d = start_d
@@ -375,8 +384,18 @@ def calculate_lactate_surrounding_date_ranges(
     return ranges
 
 
-def calculate_pre_lactate_date_ranges(lactate_dates: List[datetime], lookback_days: int = 7, lookahead_days: int = 7) -> List[Tuple[str, str]]:
-    return calculate_lactate_surrounding_date_ranges(lactate_dates, lookback_days=lookback_days, lookahead_days=lookahead_days)
+def calculate_pre_lactate_date_ranges(
+    lactate_dates: Optional[List[datetime]] = None,
+    lookback_days: int = 7,
+    lookahead_days: int = 7,
+    include_recent_days: int = 30
+) -> List[Tuple[str, str]]:
+    return calculate_lactate_surrounding_date_ranges(
+        lactate_dates,
+        lookback_days=lookback_days,
+        lookahead_days=lookahead_days,
+        include_recent_days=include_recent_days
+    )
 
 
 def fetch_intervals_activities(
@@ -388,7 +407,7 @@ def fetch_intervals_activities(
 ) -> List[Dict[str, Any]]:
     """
     從 Intervals.icu 拉取指定日期區間內的活動 (支援 OAuth 2.0 與 API Key)
-    oldest, newest 格式: 'YYYY-MM-DD'
+    oldest, newest 格式: 'YYYY-MM-DD' 或 ISO-8601
     """
     ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
     url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}/activities"
@@ -397,7 +416,11 @@ def fetch_intervals_activities(
     if oldest:
         params["oldest"] = oldest
     if newest:
-        params["newest"] = newest
+        # 若 newest 為 YYYY-MM-DD 格式 (長度 10)，加上 T23:59:59 確保當天全天運動被完整檢索
+        if len(newest) == 10:
+            params["newest"] = f"{newest}T23:59:59"
+        else:
+            params["newest"] = newest
 
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
@@ -822,12 +845,13 @@ def sync_pre_lactate_activities_to_firebase(
     except Exception as e:
         print(f"Error fetching lactate dates: {e}")
 
-    # 若無乳酸紀錄，預設抓取最近 30 天日常運動
-    if not lactate_dates:
-        now_dt = datetime.now()
-        date_ranges = [((now_dt - timedelta(days=30)).strftime("%Y-%m-%d"), now_dt.strftime("%Y-%m-%d"))]
-    else:
-        date_ranges = calculate_lactate_surrounding_date_ranges(lactate_dates, lookback_days=lookback_days, lookahead_days=lookahead_days)
+    # 2. 計算同步日期區間：涵蓋歷史乳酸檢測前後日常運動，且永遠包含「最近 30 天至明天」，確保最新運動 100% 同步
+    date_ranges = calculate_lactate_surrounding_date_ranges(
+        lactate_dates,
+        lookback_days=lookback_days,
+        lookahead_days=lookahead_days,
+        include_recent_days=30
+    )
 
     if not date_ranges:
         return 0, 0, "未找到有效的同步日期區間"
