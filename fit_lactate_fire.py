@@ -1686,35 +1686,6 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                 st.session_state["admin_selected_athlete_name"] = "教練本人"
                 st.rerun()
 
-        # 最高權限與規則說明指引
-        with st.sidebar.expander("🔑 如何解鎖所有選手資料庫權限？", expanded=(len(athletes_list) <= 1)):
-            st.markdown(f"""
-            **若下拉選單目前僅顯示您自己（共 {len(athletes_list)} 位），代表 Firebase 雲端資料庫尚未開放教練的全域讀取規則。**
-            
-            只需 10 秒鐘至 **[Firebase Console](https://console.firebase.google.com/)**：
-            1. 點選專案 **lactatecloud**
-            2. 進入 **Firestore Database** > 上方分頁 **Rules (規則)**
-            3. 將內容替換為以下設定並點擊 **Publish (發布)**：
-            ```javascript
-            rules_version = '2';
-            service cloud.firestore {{
-              match /databases/{{database}}/documents {{
-                // 👑 教練最高權限 (開放 bigporpoise@gmail.com 讀寫全體選手資料)
-                match /{{document=**}} {{
-                  allow read, write: if request.auth != null && (
-                    request.auth.token.email == "bigporpoise@gmail.com"
-                  );
-                }}
-                // 一般選手僅能讀寫個人檔案
-                match /users/{{userId}}/{{document=**}} {{
-                  allow read, write: if request.auth != null && request.auth.uid == userId;
-                }}
-              }}
-            }}
-            ```
-            發布後回到此處點擊「🔄 重新整理」，所有選手將立刻自動全部列出！
-            """)
-
         if st.sidebar.button("🚪 登出並清除所有紀錄", key="admin_logout_btn", use_container_width=True):
             logout_firebase()
     else:
