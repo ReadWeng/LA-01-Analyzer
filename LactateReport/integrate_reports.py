@@ -1210,14 +1210,8 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     drawTicks: true,
                     tickLength: 6,
                     tickWidth: 1,
-                    lineWidth: function(context) {{
-                        if (context.tick && context.tick.value === 0) return 2;
-                        return 1;
-                    }},
-                    color: function(context) {{
-                        if (context.tick && context.tick.value === 0) return 'rgba(0, 229, 255, 0.7)';
-                        return {grid_color};
-                    }}
+                    lineWidth: 1,
+                    color: {grid_color}
                 }},
                 border: {{
                     display: true,
@@ -1502,7 +1496,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             }}
         }};
 
-        // Custom Chart.js Plugin to draw vertical glowing 0-minute baseline
+        // Custom Chart.js Plugin to draw subtle vertical 0-minute baseline without text
         const zeroLinePlugin = {{
             id: 'zeroLinePlugin',
             afterDraw: function(chart) {{
@@ -1520,19 +1514,12 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     const ctx = chart.ctx;
                     ctx.save();
                     ctx.beginPath();
-                    ctx.lineWidth = 2;
-                    ctx.setLineDash([5, 4]);
-                    ctx.strokeStyle = '#00e5ff';
+                    ctx.lineWidth = 1.5;
+                    ctx.setLineDash([4, 4]);
+                    ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
                     ctx.moveTo(xPos, top);
                     ctx.lineTo(xPos, bottom);
                     ctx.stroke();
-
-                    // Text label at top of zero-line
-                    ctx.fillStyle = '#00e5ff';
-                    ctx.font = 'bold 11px Outfit, Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    const labelY = Math.max(12, top - 6);
-                    ctx.fillText('0 分基準', xPos, labelY);
                     ctx.restore();
                 }}
             }}
