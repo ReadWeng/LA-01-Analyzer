@@ -1829,7 +1829,8 @@ st.sidebar.markdown("---")
 
 # Intervals.icu / Garmin / COROS 手錶雲端綁定
 if st.session_state.get('firebase_uid'):
-    icu_uid = st.session_state.get('firebase_uid')
+    active_target_uid, active_target_email, active_target_name, is_viewing_other = get_active_athlete_context()
+    icu_uid = active_target_uid if is_viewing_other else st.session_state.get('firebase_uid')
     icu_token = st.session_state.get('firebase_token')
     import intervals_client as ic
     import importlib
@@ -1871,7 +1872,10 @@ if st.session_state.get('firebase_uid'):
         except Exception as e:
             print(f"登入自動同步發生異常: {e}")
 
-    with st.sidebar.expander("🔗 運動手錶雲端綁定 (Garmin / COROS)", expanded=False):
+    exp_title = f"🔗 運動手錶雲端綁定 ({active_target_name})" if is_viewing_other else "🔗 運動手錶雲端綁定 (Garmin / COROS)"
+    with st.sidebar.expander(exp_title, expanded=False):
+        if is_viewing_other:
+            st.markdown(f"**👤 目前管理選手**：`{active_target_name}` ({active_target_email or active_target_uid[:8]})")
         st.markdown("**支援 Garmin Connect、COROS 等設備**")
         st.caption("透過 Intervals.icu 自動同步日常訓練數據至 Firebase，補齊訓練負荷與間隔，消除數據偏差。")
 
@@ -2393,6 +2397,8 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         col_c_info, col_c_back = st.columns([4, 1])
         with col_c_info:
             st.info(f"☁️ **已載入雲端活動**：`{act_title}` (開始時間: {start_time.strftime('%Y-%m-%d %H:%M')})，您可以直接在下方標定或編輯乳酸與血糖數據。")
+            if loaded_cloud_session.get("is_summary_only"):
+                st.warning("ℹ️ **提示**：此活動目前僅包含整場平均摘要（平均功率/心率為固定基準值），無即時動態串流。若此活動來自 Intervals.icu，可於側邊欄點擊「🔄 同步」更新完整秒級動態曲線。")
         with col_c_back:
             if st.button("📅 返回活動月曆", key="btn_back_to_cal_top", use_container_width=True):
                 st.session_state.pop('active_cloud_session', None)

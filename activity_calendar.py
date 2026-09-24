@@ -331,8 +331,10 @@ def build_session_from_fit_record(
 
         rows.append(r)
 
+    is_summary_only = False
     # 若 time_series 為空，建立基礎時間軸
     if not rows and duration_min > 0:
+        is_summary_only = True
         step_min = 0.5
         total_steps = int(duration_min / step_min) + 1
         avg_p = act_item.get("avg_power", 0)
@@ -417,7 +419,8 @@ def build_session_from_fit_record(
         "activity_name": act_item.get("activity_name", ""),
         "doc_id": act_item.get("doc_id", ""),
         "lactate_df": df_la,
-        "from_cloud": True
+        "from_cloud": True,
+        "is_summary_only": is_summary_only
     }
 
 
@@ -462,11 +465,14 @@ def convert_firebase_activity_to_session_dict(
 
     if not power_30s and duration_min > 0:
         avg_p = float(act_item.get("avg_power", 0))
-        avg_h = float(act_item.get("avg_hr", 0))
-        for m in [0.0, round(duration_min / 2.0, 1), round(duration_min, 1)]:
-            if avg_p > 0:
+        if avg_p > 0:
+            for m in [0.0, round(duration_min / 2.0, 1), round(duration_min, 1)]:
                 power_30s.append({'x': m, 'y': avg_p})
-            if avg_h > 0:
+
+    if not hr_30s and duration_min > 0:
+        avg_h = float(act_item.get("avg_hr", 0))
+        if avg_h > 0:
+            for m in [0.0, round(duration_min / 2.0, 1), round(duration_min, 1)]:
                 hr_30s.append({'x': m, 'y': avg_h})
 
     lactate_pts = []

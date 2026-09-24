@@ -620,64 +620,93 @@ def extract_intervals_power(act: Dict[str, Any]) -> Tuple[float, float]:
     return avg_pwr, max_pwr
 
 
-def fetch_intervals_activity_streams(token_or_key: str, activity_id: str, is_oauth: bool = False) -> Dict[str, List[Any]]:
+def _extract_streams_dict(data: Any) -> Dict[str, List[Any]]:
+    """輔助函式：從 Intervals.icu 回傳之各類資料結構中解析出 stream 字典"""
+    stream_dict = {}
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                stype = item.get("type")
+                sdata = item.get("data")
+                if stype and isinstance(sdata, list):
+                    stream_dict[stype] = sdata
+    elif isinstance(data, dict):
+        if "streams" in data and isinstance(data["streams"], list):
+            return _extract_streams_dict(data["streams"])
+        for k, v in data.items():
+            if isinstance(v, list):
+                stream_dict[k] = v
+            elif isinstance(v, dict) and "data" in v and isinstance(v["data"], list):
+                stream_dict[k] = v["data"]
+    return stream_dict
+
+
+def fetch_intervals_activity_streams(
+    token_or_key: str,
+    activity_id: str,
+    athlete_id: str = "0",
+    is_oauth: bool = False
+) -> Dict[str, List[Any]]:
     """
     從 Intervals.icu 下載活動的詳細數據串流 (streams: time, watts, heartrate, cadence, etc.)
+    官方 API 規範：串流端點格式必須為 /api/v1/activity/{id}/streams.json (若未加 .json 會回傳 404)。
+    此處依序嘗試官方 .json 端點、去除 i 前綴之端點與運動員活動端點，並自動相容列表與字典回傳格式。
     """
     if not token_or_key or not activity_id:
         return {}
-    url = f"{INTERVALS_BASE_URL}/activity/{activity_id}/streams"
+
+    act_id_str = str(activity_id).strip()
+    clean_id = act_id_str.lstrip("i")
+    ath_id = str(athlete_id).strip() if athlete_id else "0"
+
     headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            stream_dict = {}
-            if isinstance(data, list):
-                for item in data:
-                    stype = item.get("type")
-                    sdata = item.get("data")
-                    if stype and sdata:
-                        stream_dict[stype] = sdata
-            return stream_dict
-        elif resp.status_code == 404:
-            alt_url = f"{INTERVALS_BASE_URL}/athlete/0/activities/{activity_id}/streams"
-            r_alt = requests.get(alt_url, headers=headers, timeout=10)
-            if r_alt.status_code == 200:
-                data = r_alt.json()
-                stream_dict = {}
-                if isinstance(data, list):
-                    for item in data:
-                        stype = item.get("type")
-                        sdata = item.get("data")
-                        if stype and sdata:
-                            stream_dict[stype] = sdata
-                return stream_dict
-    except Exception as e:
-        print(f"Error fetching activity {activity_id} streams: {e}")
+
+    candidate_urls = [
+        f"{INTERVALS_BASE_URL}/activity/{act_id_str}/streams.json",
+        f"{INTERVALS_BASE_URL}/activity/{clean_id}/streams.json" if clean_id != act_id_str else None,
+        f"{INTERVALS_BASE_URL}/athlete/{ath_id}/activities/{act_id_str}/streams.json",
+        f"{INTERVALS_BASE_URL}/athlete/{ath_id}/activities/{clean_id}/streams.json" if clean_id != act_id_str else None,
+        f"{INTERVALS_BASE_URL}/activity/{act_id_str}/streams",
+    ]
+    candidate_urls = [u for u in candidate_urls if u]
+
+    for url in candidate_urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                s_dict = _extract_streams_dict(resp.json())
+                if s_dict:
+                    return s_dict
+            elif resp.status_code == 404:
+                continue
+        except Exception as e:
+            print(f"Error fetching activity {activity_id} streams from {url}: {e}")
+            continue
+
     return {}
 
 
 def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple[List[Dict[str, Any]], float, float]:
     """
-    將 Intervals.icu 數據串流 (time, watts, heartrate) 降採樣為 30 秒平均 (30s bins)，
-    登錄為標準 Firestore time_series 點位 (含 power, power_30s, heart_rate)，
+    將 Intervals.icu 數據串流 (time, watts/power, heartrate/hr, cadence/cad) 降採樣為 30 秒平均 (30s bins)，
+    登錄為標準 Firestore time_series 點位 (含 power, power_30s, heart_rate, cadence)，
     並計算出整場運動的【總平均功率】與【最大功率】。
     """
     time_arr = stream_dict.get("time", [])
-    watts_arr = stream_dict.get("watts", [])
-    hr_arr = stream_dict.get("heartrate", [])
-    
+    watts_arr = stream_dict.get("watts") or stream_dict.get("power", [])
+    hr_arr = stream_dict.get("heartrate") or stream_dict.get("hr", [])
+    cad_arr = stream_dict.get("cadence") or stream_dict.get("cad", [])
+
     if not time_arr:
         return [], 0.0, 0.0
-        
+
     n = len(time_arr)
     bins = {}
     for i in range(n):
         t = float(time_arr[i])
         b_idx = int(t // 30)
         if b_idx not in bins:
-            bins[b_idx] = {'pwrs': [], 'hrs': []}
+            bins[b_idx] = {'pwrs': [], 'hrs': [], 'cads': []}
         if i < len(watts_arr) and watts_arr[i] is not None:
             try:
                 w = float(watts_arr[i])
@@ -692,11 +721,18 @@ def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple
                     bins[b_idx]['hrs'].append(h)
             except (ValueError, TypeError):
                 pass
-                
+        if i < len(cad_arr) and cad_arr[i] is not None:
+            try:
+                c = float(cad_arr[i])
+                if c > 0:
+                    bins[b_idx]['cads'].append(c)
+            except (ValueError, TypeError):
+                pass
+
     time_series_points = []
     all_30s_pwrs = []
     max_pwr = 0.0
-    
+
     for b_idx in sorted(bins.keys()):
         b_data = bins[b_idx]
         bin_min = round((b_idx * 30.0) / 60.0, 2)
@@ -713,13 +749,16 @@ def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple
         if b_data['hrs']:
             mean_hr = round(sum(b_data['hrs']) / len(b_data['hrs']), 1)
             pt_fields["heart_rate"] = {"doubleValue": mean_hr}
-            
+        if b_data['cads']:
+            mean_cad = round(sum(b_data['cads']) / len(b_data['cads']), 1)
+            pt_fields["cadence"] = {"doubleValue": mean_cad}
+
         time_series_points.append({
             "mapValue": {
                 "fields": pt_fields
             }
         })
-        
+
     total_avg_pwr = round(sum(all_30s_pwrs) / len(all_30s_pwrs), 1) if all_30s_pwrs else 0.0
     return time_series_points, total_avg_pwr, max_pwr
 
@@ -727,6 +766,7 @@ def process_intervals_streams_to_30s(stream_dict: Dict[str, List[Any]]) -> Tuple
 def convert_intervals_activity_to_firebase_fit_record(
     act: Dict[str, Any],
     token_or_key: Optional[str] = None,
+    athlete_id: str = "0",
     is_oauth: bool = False
 ) -> Dict[str, Any]:
     """
@@ -767,7 +807,7 @@ def convert_intervals_activity_to_firebase_fit_record(
     # 嘗試抓取 30 秒串流數據
     time_series_points = []
     if token_or_key and act_id:
-        streams = fetch_intervals_activity_streams(token_or_key, act_id, is_oauth=is_oauth)
+        streams = fetch_intervals_activity_streams(token_or_key, act_id, athlete_id=athlete_id, is_oauth=is_oauth)
         if streams:
             ts_pts, stream_avg_pwr, stream_max_pwr = process_intervals_streams_to_30s(streams)
             if ts_pts:
@@ -868,6 +908,7 @@ def sync_pre_lactate_activities_to_firebase(
     lactate_test_times = []
     icu_id_to_doc = {}        # 依照 Intervals 原生 activity_id 映射
     icu_time_to_doc = {}      # 依照活動時間（5分鐘窗）映射
+    docs_with_empty_ts = set() # 記錄缺少 time_series 點位需要修復串流的既有紀錄
     latest_fit_dt = None
 
     for doc in docs:
@@ -876,6 +917,11 @@ def sync_pre_lactate_activities_to_firebase(
         src = fields.get("source", {}).get("stringValue", "")
         has_la = fields.get("has_lactate", {}).get("booleanValue", False)
         doc_name = doc.get("name", "").split("/")[-1]
+
+        # 檢查 time_series 是否為空 (過去因為串流下載失敗導致直線的紀錄需要被自動修復)
+        ts_values = fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
+        if not ts_values:
+            docs_with_empty_ts.add(doc_name)
         
         # 提取 intervals_act_id (支援 stringValue 或 integerValue)
         icu_id_field = fields.get("intervals_act_id", {})
@@ -960,7 +1006,7 @@ def sync_pre_lactate_activities_to_firebase(
             return 0, 0, f"Intervals.icu API 查詢失敗: {api_errors[0]}"
         return 0, 0, f"在涵蓋的日期區間內，Intervals.icu 未查到任何運動紀錄 (已查詢: {', '.join([f'{o}~{n}' for o, n in date_ranges])})"
 
-    # 4. 轉換並寫入 Firestore (僅針對尚未收錄的新運動下載串流)
+    # 4. 轉換並寫入 Firestore (僅針對尚未收錄的新運動或串流缺漏紀錄下載串流)
     synced_count = 0
     skipped_count = 0
     write_errors = []
@@ -972,14 +1018,22 @@ def sync_pre_lactate_activities_to_firebase(
         clean_act_id = act_id_str.lstrip("i")
         is_already_synced = (act_id_str in icu_id_to_doc) or (clean_act_id in icu_id_to_doc)
 
-        # ⚡ 核心極速過濾：若該活動 ID 已在 Firebase 且非強制覆蓋，直接跳過！
+        existing_doc_id = icu_id_to_doc.get(act_id_str) or icu_id_to_doc.get(clean_act_id)
+        needs_ts_repair = existing_doc_id and (existing_doc_id in docs_with_empty_ts)
+
+        # ⚡ 核心極速過濾：若該活動 ID 已在 Firebase、且已有有效串流數據 (非空白直線)、且非強制覆蓋，直接跳過！
         # 完全不呼叫 fetch_intervals_activity_streams，也不發送 PATCH 請求，0 毫秒完成！
-        if not force_overwrite and act_id_str and is_already_synced:
+        if not force_overwrite and not needs_ts_repair and act_id_str and is_already_synced:
             skipped_count += 1
             continue
 
-        # 只有真正缺漏的新活動才執行耗時的串流下載與特徵轉換
-        rec = convert_intervals_activity_to_firebase_fit_record(act, token_or_key=intervals_api_key, is_oauth=is_oauth)
+        # 只有真正缺漏的新活動或缺少串流點位的舊紀錄才執行耗時的串流下載與特徵轉換
+        rec = convert_intervals_activity_to_firebase_fit_record(
+            act,
+            token_or_key=intervals_api_key,
+            athlete_id=athlete_id,
+            is_oauth=is_oauth
+        )
         act_start = rec["start_time"]
 
         # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！
