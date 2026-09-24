@@ -198,6 +198,7 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                         )
                     st.session_state.pop("cached_weekly_report_html", None)
                     st.session_state.pop("cached_report_key", None)
+                    st.session_state.pop(f"intervals_auto_synced_{u_uid}", None)
                     st.rerun()
                 else:
                     # Token 暫時無效：不調用 st.logout()，僅在畫面上提示，避免強行登出使用者
@@ -311,6 +312,7 @@ def login_to_firebase(email, password):
                 )
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
+            st.session_state.pop(f"intervals_auto_synced_{u_uid}", None)
             st.sidebar.success("MyLactate 雲端登入成功！")
             st.rerun()
         else:
@@ -1408,7 +1410,9 @@ if st.session_state.get('firebase_uid'):
 
     # --- 登入即自動背景同步機制 (增量極速模式：僅撈取 Firebase 尚未收錄的最新運動，毫秒級載入) ---
     auto_sync_key = f"intervals_auto_synced_{icu_uid}"
-    if icu_creds["configured"] and auto_sync_key not in st.session_state:
+    last_sync_time = st.session_state.get(auto_sync_key, 0)
+    # 冷卻時間設為 45 秒：登入時或距離上次檢查超過 45 秒時自動執行 (增量僅需 0.2 秒)
+    if icu_creds["configured"] and (time.time() - last_sync_time > 45):
         st.session_state[auto_sync_key] = time.time()
         try:
             s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
@@ -1422,12 +1426,17 @@ if st.session_state.get('firebase_uid'):
                 incremental_only=True,
                 force_overwrite=False
             )
-            # 僅在確實有同步到新數據時才彈窗提示並清除月曆快取
+            # 若有同步到新數據，清除月曆快取、將焦點移至今天並觸發 rerun 立即顯示
             if s_count > 0:
                 st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
                 st.session_state.pop("cached_weekly_report_html", None)
                 st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
+                today_str = date.today().strftime("%Y-%m-%d")
+                st.session_state["cal_selected_date"] = today_str
+                st.session_state["cal_view_year"] = date.today().year
+                st.session_state["cal_view_month"] = date.today().month
                 st.toast(f"⚡ 登入自動同步：已載入 {s_count} 筆今日最新手錶運動！", icon="🏃")
+                st.rerun()
         except Exception as e:
             print(f"登入自動同步發生異常: {e}")
 
@@ -1473,6 +1482,10 @@ if st.session_state.get('firebase_uid'):
                     st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
                     st.session_state.pop("cached_weekly_report_html", None)
                     st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
+                    today_str = date.today().strftime("%Y-%m-%d")
+                    st.session_state["cal_selected_date"] = today_str
+                    st.session_state["cal_view_year"] = date.today().year
+                    st.session_state["cal_view_month"] = date.today().month
                     if s_count > 0:
                         st.toast(s_msg, icon="✅")
                         st.success(s_msg)

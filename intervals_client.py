@@ -869,10 +869,10 @@ def sync_pre_lactate_activities_to_firebase(
         print(f"Error fetching existing fit sessions: {e}")
 
     # 2. 計算同步日期區間
-    if incremental_only and latest_fit_dt:
-        # 增量模式：Firebase 已有數據，僅查詢最新一筆運動前 2 天 (防時區差) 至明天的極窄區間
-        oldest_d = (latest_fit_dt - timedelta(days=2)).date()
-        newest_d = date.today() + timedelta(days=1)
+    if incremental_only:
+        # 增量模式：直接鎖定「過去 7 天至後天」，保證今日與近期運動 100% 納入查詢，完全不受歷史紀錄順序或異常時間戳影響
+        oldest_d = date.today() - timedelta(days=7)
+        newest_d = date.today() + timedelta(days=2)
         date_ranges = [(oldest_d.strftime("%Y-%m-%d"), newest_d.strftime("%Y-%m-%d"))]
     else:
         # 全量模式：讀取所有乳酸檢測日期，計算乳酸日前後 7 天並納入最近 30 天日常運動
