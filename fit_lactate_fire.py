@@ -1403,6 +1403,8 @@ if st.session_state.get('firebase_uid'):
     icu_uid = st.session_state.get('firebase_uid')
     icu_token = st.session_state.get('firebase_token')
     import intervals_client as ic
+    import importlib
+    importlib.reload(ic)
 
     # 讀取當前儲存的認證資訊 (支援 OAuth 2.0 與 API Key)
     icu_creds = ic.get_user_intervals_credentials(icu_uid, icu_token)
@@ -1473,34 +1475,38 @@ if st.session_state.get('firebase_uid'):
 
             if sync_btn:
                 with st.spinner("正在同步 Intervals.icu 數據至 Firebase..."):
-                    s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
-                        uid=icu_uid,
-                        firebase_token=icu_token,
-                        intervals_api_key=icu_creds["token"],
-                        athlete_id=icu_creds["athlete_id"],
-                        lookback_days=7,
-                        lookahead_days=7,
-                        is_oauth=icu_creds["is_oauth"],
-                        incremental_only=False, # 手動按鈕進行完整掃描
-                        force_overwrite=force_overwrite_sync
-                    )
-                    # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
-                    st.session_state[auto_sync_key] = time.time()
-                    st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
-                    st.session_state.pop("cached_weekly_report_html", None)
-                    st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
-                    today_str = date.today().strftime("%Y-%m-%d")
-                    st.session_state["cal_selected_date"] = today_str
-                    st.session_state["cal_view_year"] = date.today().year
-                    st.session_state["cal_view_month"] = date.today().month
-                    if s_count > 0:
-                        st.toast(s_msg, icon="✅")
-                        st.success(s_msg)
-                        st.rerun()
-                    else:
-                        st.toast(s_msg, icon="ℹ️")
-                        st.info(s_msg)
-                        st.rerun()
+                    try:
+                        s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
+                            uid=icu_uid,
+                            firebase_token=icu_token,
+                            intervals_api_key=icu_creds["token"],
+                            athlete_id=icu_creds["athlete_id"],
+                            lookback_days=7,
+                            lookahead_days=7,
+                            is_oauth=icu_creds["is_oauth"],
+                            incremental_only=False, # 手動按鈕進行完整掃描
+                            force_overwrite=force_overwrite_sync
+                        )
+                        # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
+                        st.session_state[auto_sync_key] = time.time()
+                        st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
+                        st.session_state.pop("cached_weekly_report_html", None)
+                        st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
+                        today_str = date.today().strftime("%Y-%m-%d")
+                        st.session_state["cal_selected_date"] = today_str
+                        st.session_state["cal_view_year"] = date.today().year
+                        st.session_state["cal_view_month"] = date.today().month
+                        if s_count > 0:
+                            st.toast(s_msg, icon="✅")
+                            st.success(s_msg)
+                            st.rerun()
+                        else:
+                            st.toast(s_msg, icon="ℹ️")
+                            st.info(s_msg)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 同步過程發生異常：{str(e)}")
+                        print(f"手動同步異常: {e}")
         else:
             # 未連線狀態：僅保留「一鍵授權」與「手動輸入 API Key」兩個選項
             if oauth_cfg["client_id"]:

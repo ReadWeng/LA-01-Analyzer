@@ -404,7 +404,8 @@ def fetch_intervals_activities(
     oldest: str = None,
     newest: str = None,
     is_oauth: bool = False,
-    error_collector: Optional[List[str]] = None
+    error_collector: Optional[List[str]] = None,
+    **kwargs
 ) -> List[Dict[str, Any]]:
     """
     從 Intervals.icu 拉取指定日期區間內的活動 (支援 OAuth 2.0 與 API Key)
@@ -826,7 +827,8 @@ def sync_pre_lactate_activities_to_firebase(
     lookahead_days: int = 7,
     is_oauth: bool = False,
     incremental_only: bool = False,
-    force_overwrite: bool = False
+    force_overwrite: bool = False,
+    **kwargs
 ) -> Tuple[int, int, str]:
     """
     高階整合同步主函式 (支援 OAuth 2.0 與 API Key 雙軌、增量極速模式)：
@@ -854,7 +856,7 @@ def sync_pre_lactate_activities_to_firebase(
             r_fit = requests.get(cur_url, headers=headers_fb, timeout=12)
             if r_fit.status_code == 200:
                 res_data = r_fit.json()
-                docs.extend(res_data.get("documents", []))
+                docs.extend(res_data.get("documents") or [])
                 page_token = res_data.get("nextPageToken")
                 if not page_token:
                     break
@@ -912,7 +914,7 @@ def sync_pre_lactate_activities_to_firebase(
         try:
             r_la = requests.get(la_url, headers=headers_fb, timeout=10)
             if r_la.status_code == 200:
-                la_docs = r_la.json().get("documents", [])
+                la_docs = r_la.json().get("documents") or []
                 for doc in la_docs:
                     f = doc.get("fields", {})
                     year = int(f.get("year", {}).get("integerValue", 0))

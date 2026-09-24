@@ -64,7 +64,7 @@ def fetch_user_calendar_data(
             r_fit = requests.get(cur_url, headers=headers, timeout=12)
             if r_fit.status_code == 200:
                 res_data = r_fit.json()
-                docs.extend(res_data.get("documents", []))
+                docs.extend(res_data.get("documents") or [])
                 page_token = res_data.get("nextPageToken")
                 if not page_token:
                     break
@@ -166,7 +166,7 @@ def fetch_user_calendar_data(
             r_la = requests.get(cur_url, headers=headers, timeout=12)
             if r_la.status_code == 200:
                 res_data = r_la.json()
-                la_docs.extend(res_data.get("documents", []))
+                la_docs.extend(res_data.get("documents") or [])
                 page_token = res_data.get("nextPageToken")
                 if not page_token:
                     break
