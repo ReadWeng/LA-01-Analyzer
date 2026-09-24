@@ -401,6 +401,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
     text_color = "#f8fafc" if is_dark else "#000000"
     card_bg = "rgba(30, 41, 59, 0.7)" if is_dark else "#ffffff"
     axis_color = "'rgba(255, 255, 255, 0.5)'" if is_dark else "'#000000'"
+    grid_color = "'rgba(255, 255, 255, 0.08)'" if is_dark else "'rgba(0, 0, 0, 0.06)'"
     tick_color = "'#94a3b8'" if is_dark else "'#000000'"
     title_color = "'#cbd5e1'" if is_dark else "'#000000'"
     legend_color = "'#e2e8f0'" if is_dark else "'#000000'"
@@ -819,7 +820,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         .chart-wrapper {{
             position: relative;
             width: 100%;
-            height: 720px;
+            height: 500px;
         }}
 
         footer {{
@@ -839,7 +840,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 grid-template-columns: 1fr;
             }}
             .chart-wrapper {{
-                height: 480px;
+                height: 400px;
             }}
             body {{
                 padding: 20px 10px;
@@ -902,11 +903,19 @@ def build_integrated_html(raw_data_dict, theme='dark'):
 
         <!-- Chart Section -->
         <div class="chart-card">
+            <div style="font-size: 1.05rem; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); display: flex; align-items: center; justify-content: space-between;">
+                <span>⚡ 運動生理動態 (功率 / 心率 / 核心溫度)</span>
+                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary);">上下時間軸 0 點對齊連動</span>
+            </div>
             <div class="chart-wrapper">
                 <canvas id="physioChart"></canvas>
             </div>
         </div>
         <div class="chart-card" style="margin-top: 20px;">
+            <div style="font-size: 1.05rem; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); display: flex; align-items: center; justify-content: space-between;">
+                <span>💧 代謝與乳酸動力學 (乳酸 / 血糖)</span>
+                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary);">上下時間軸 0 點對齊連動</span>
+            </div>
             <div class="chart-wrapper">
                 <canvas id="lactateChart"></canvas>
             </div>
@@ -1070,13 +1079,26 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             }}
         }});
 
-        // Setup Chart
-        const ctx = document.getElementById('lactateChart').getContext('2d');
-        
-        // Define axes scales dynamically
+        // Unify horizontal X-axis range across both charts
+        let globalMaxX = 0;
+        datasets.forEach(d => {{
+            if (d.data && d.data.length > 0) {{
+                d.data.forEach(pt => {{
+                    if (pt && typeof pt.x === 'number' && !isNaN(pt.x)) {{
+                        if (pt.x > globalMaxX) globalMaxX = pt.x;
+                    }}
+                }});
+            }}
+        }});
+        if (globalMaxX <= 0) globalMaxX = 60;
+        const sharedMaxX = Math.ceil(globalMaxX + (globalMaxX * 0.02 || 1));
+
+        // Define axes scales dynamically with fixed scale widths for exact pixel alignment
         const chartScales = {{
             x: {{
                 type: 'linear',
+                min: 0,
+                max: sharedMaxX,
                 title: {{
                     display: true,
                     text: '相對時間 (分鐘)',
@@ -1084,12 +1106,12 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     font: {{ family: 'Outfit', size: baseFontSizes.axisTitle, weight: 'bold' }}
                 }},
                 grid: {{
-                    drawOnChartArea: false,
+                    drawOnChartArea: true,
                     drawTicks: true,
                     tickLength: 6,
-                    tickWidth: 2,
-                    lineWidth: 2,
-                    color: {axis_color}
+                    tickWidth: 1,
+                    lineWidth: 1,
+                    color: {grid_color}
                 }},
                 border: {{
                     display: true,
@@ -1104,6 +1126,9 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             yPowerHr: {{
                 type: 'linear',
                 position: 'left',
+                afterFit: function(scale) {{
+                    scale.width = 80;
+                }},
                 title: {{
                     display: true,
                     text: '功率 (W) / 心率 (BPM)',
@@ -1132,7 +1157,10 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             }},
             yLactate: {{
                 type: 'linear',
-                position: 'right',
+                position: 'left',
+                afterFit: function(scale) {{
+                    scale.width = 80;
+                }},
                 title: {{
                     display: true,
                     text: '乳酸值 (mmol/L)',
@@ -1162,6 +1190,9 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             yCoreTemp: {{
                 type: 'linear',
                 position: 'right',
+                afterFit: function(scale) {{
+                    scale.width = 80;
+                }},
                 title: {{
                     display: true,
                     text: '核心溫度 (°C)',
@@ -1195,6 +1226,9 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             chartScales.yGlucose = {{
                 type: 'linear',
                 position: 'right',
+                afterFit: function(scale) {{
+                    scale.width = 80;
+                }},
                 title: {{
                     display: true,
                     text: '血糖值 (mg/dL)',
@@ -1234,90 +1268,145 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         delete lactateScales.yPowerHr;
         delete lactateScales.yCoreTemp;
 
+        // Function to synchronize X-axis across physio and lactate charts
+        let isSyncing = false;
+        function syncXAxis(sourceChart, targetChart) {{
+            if (isSyncing || !sourceChart || !targetChart) return;
+            isSyncing = true;
+            try {{
+                const xMin = sourceChart.scales.x.min;
+                const xMax = sourceChart.scales.x.max;
+                if (targetChart.options.scales && targetChart.options.scales.x) {{
+                    targetChart.options.scales.x.min = xMin;
+                    targetChart.options.scales.x.max = xMax;
+                    autoScaleYAxes(targetChart);
+                    targetChart.update('none');
+                }}
+            }} finally {{
+                isSyncing = false;
+            }}
+        }}
+
         const baseOptions = {{
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: {{
-                    mode: 'index',
-                    intersect: false
-                }},
-                plugins: {{
-                    zoom: {{
-                        pan: {{
-                            enabled: true,
-                            mode: 'x',
-                            modifierKey: 'ctrl',
-                            onPan: function({{chart}}) {{
-                                autoScaleYAxes(chart);
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {{
+                mode: 'index',
+                intersect: false
+            }},
+            plugins: {{
+                zoom: {{
+                    pan: {{
+                        enabled: true,
+                        mode: 'x',
+                        modifierKey: 'ctrl',
+                        onPan: function({{chart}}) {{
+                            autoScaleYAxes(chart);
+                            if (typeof physioChart !== 'undefined' && typeof lactateChart !== 'undefined') {{
+                                if (chart === physioChart) syncXAxis(physioChart, lactateChart);
+                                else if (chart === lactateChart) syncXAxis(lactateChart, physioChart);
                             }}
                         }},
-                        zoom: {{
-                            drag: {{
-                                enabled: true,
-                                borderColor: 'rgba(255, 255, 255, 0.25)',
-                                borderWidth: 1,
-                                backgroundColor: 'rgba(0, 229, 255, 0.08)'
-                            }},
-                            mode: 'x',
-                            onZoom: function({{chart}}) {{
-                                autoScaleYAxes(chart);
+                        onPanComplete: function({{chart}}) {{
+                            autoScaleYAxes(chart);
+                            if (typeof physioChart !== 'undefined' && typeof lactateChart !== 'undefined') {{
+                                if (chart === physioChart) syncXAxis(physioChart, lactateChart);
+                                else if (chart === lactateChart) syncXAxis(lactateChart, physioChart);
                             }}
                         }}
                     }},
-                    legend: {{
-                        display: true,
-                        position: 'top',
-                        labels: {{
-                            color: {legend_color},
-                            font: {{
-                                family: 'Outfit, sans-serif',
-                                size: baseFontSizes.legend
-                            }},
-                            boxWidth: 20,
-                            padding: 15
-                        }}
-                    }},
-                    tooltip: {{
-                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                        titleColor: '#f8fafc',
-                        titleFont: {{ family: 'Outfit', size: baseFontSizes.tooltipTitle, weight: 'bold' }},
-                        bodyColor: '#cbd5e1',
-                        bodyFont: {{ family: 'Inter', size: baseFontSizes.tooltipBody }},
-                        borderColor: 'rgba(255, 255, 255, 0.1)',
-                        borderWidth: 1,
-                        padding: 12,
-                        cornerRadius: 8,
-                        callbacks: {{
-                            title: function(context) {{
-                                return `相對時間: ${{context[0].parsed.x.toFixed(2)}} 分 (${{Math.floor(context[0].parsed.x)}}分${{Math.round((context[0].parsed.x % 1) * 60)}}秒)`;
-                            }},
-                            label: function(context) {{
-                                const raw = context.raw;
-                                let label = context.dataset.label || '';
-                                if (label) {{
-                                    label += ': ';
-                                }}
-                                if (context.parsed.y !== null) {{
-                                    label += context.parsed.y;
-                                }}
-                                if (raw.time) {{
-                                    label += ` (${{raw.time}})`;
-                                }}
-                                if (raw.source) {{
-                                    label += ` [${{raw.source}}]`;
-                                }}
-                                return label;
+                    zoom: {{
+                        drag: {{
+                            enabled: true,
+                            borderColor: 'rgba(255, 255, 255, 0.25)',
+                            borderWidth: 1,
+                            backgroundColor: 'rgba(0, 229, 255, 0.08)'
+                        }},
+                        mode: 'x',
+                        onZoom: function({{chart}}) {{
+                            autoScaleYAxes(chart);
+                            if (typeof physioChart !== 'undefined' && typeof lactateChart !== 'undefined') {{
+                                if (chart === physioChart) syncXAxis(physioChart, lactateChart);
+                                else if (chart === lactateChart) syncXAxis(lactateChart, physioChart);
+                            }}
+                        }},
+                        onZoomComplete: function({{chart}}) {{
+                            autoScaleYAxes(chart);
+                            if (typeof physioChart !== 'undefined' && typeof lactateChart !== 'undefined') {{
+                                if (chart === physioChart) syncXAxis(physioChart, lactateChart);
+                                else if (chart === lactateChart) syncXAxis(lactateChart, physioChart);
                             }}
                         }}
                     }}
                 }},
-                }};
+                legend: {{
+                    display: true,
+                    position: 'top',
+                    labels: {{
+                        color: {legend_color},
+                        font: {{
+                            family: 'Outfit, sans-serif',
+                            size: baseFontSizes.legend
+                        }},
+                        boxWidth: 20,
+                        padding: 15
+                    }}
+                }},
+                tooltip: {{
+                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                    titleColor: '#f8fafc',
+                    titleFont: {{ family: 'Outfit', size: baseFontSizes.tooltipTitle, weight: 'bold' }},
+                    bodyColor: '#cbd5e1',
+                    bodyFont: {{ family: 'Inter', size: baseFontSizes.tooltipBody }},
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    callbacks: {{
+                        title: function(context) {{
+                            return `相對時間: ${{context[0].parsed.x.toFixed(2)}} 分 (${{Math.floor(context[0].parsed.x)}}分${{Math.round((context[0].parsed.x % 1) * 60)}}秒)`;
+                        }},
+                        label: function(context) {{
+                            const raw = context.raw;
+                            let label = context.dataset.label || '';
+                            if (label) {{
+                                label += ': ';
+                            }}
+                            if (context.parsed.y !== null) {{
+                                label += context.parsed.y;
+                            }}
+                            if (raw.time) {{
+                                label += ` (${{raw.time}})`;
+                            }}
+                            if (raw.source) {{
+                                label += ` [${{raw.source}}]`;
+                            }}
+                            return label;
+                        }}
+                    }}
+                }}
+            }}
+        }};
 
         const physioOptions = Object.assign({{}}, baseOptions);
+        physioScales.x.position = 'bottom';
         physioOptions.scales = physioScales;
+        physioOptions.layout = {{
+            padding: {{
+                left: 10,
+                right: 10
+            }}
+        }};
 
         const lactateOptions = Object.assign({{}}, baseOptions);
+        lactateScales.x.position = 'bottom';
         lactateOptions.scales = lactateScales;
+        lactateOptions.layout = {{
+            padding: {{
+                left: 10,
+                right: hasGlucose ? 10 : 90
+            }}
+        }};
 
         const ctxPhysio = document.getElementById('physioChart').getContext('2d');
         const physioChart = new Chart(ctxPhysio, {{
@@ -1326,7 +1415,8 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             options: physioOptions
         }});
 
-        const lactateChart = new Chart(ctx, {{
+        const ctxLactate = document.getElementById('lactateChart').getContext('2d');
+        const lactateChart = new Chart(ctxLactate, {{
             type: 'line',
             data: {{ datasets: lactateDatasets }},
             options: lactateOptions
@@ -1335,21 +1425,19 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         // Function to update visibility of datasets
         function updateChartVisibility() {{
             physioChart.data.datasets.forEach(dataset => {{
-            const date = dataset.date;
-            const metric = dataset.metric;
-            
-            // Check if the checkboxes exist, otherwise fallback to activeDates dictionary
-            const dateCheckbox = document.getElementById('chk-date-' + date);
-            const metricCheckbox = document.getElementById('chk-metric-' + metric);
-            
-            const dateActive = dateCheckbox ? dateCheckbox.checked : activeDates[date];
-            const metricActive = metricCheckbox ? metricCheckbox.checked : activeMetrics[metric];
-            
-            dataset.hidden = !(dateActive && metricActive);
-        }});
-        physioChart.update();
+                const date = dataset.date;
+                const metric = dataset.metric;
+                
+                const dateCheckbox = document.getElementById('chk-date-' + date);
+                const metricCheckbox = document.getElementById('chk-metric-' + metric);
+                
+                const dateActive = dateCheckbox ? dateCheckbox.checked : activeDates[date];
+                const metricActive = metricCheckbox ? metricCheckbox.checked : activeMetrics[metric];
+                
+                dataset.hidden = !(dateActive && metricActive);
+            }});
 
-        lactateChart.data.datasets.forEach(dataset => {{
+            lactateChart.data.datasets.forEach(dataset => {{
                 const date = dataset.date;
                 const metric = dataset.metric;
                 
@@ -1367,8 +1455,9 @@ def build_integrated_html(raw_data_dict, theme='dark'):
 
         // Auto scale Y axes based on visible X-axis range
         function autoScaleYAxes(chart) {{
-            const xMin = chart.scales.x.min;
-            const xMax = chart.scales.x.max;
+            if (!chart || !chart.scales || !chart.scales.x) return;
+            const xMin = chart.scales.x.min !== undefined ? chart.scales.x.min : 0;
+            const xMax = chart.scales.x.max !== undefined ? chart.scales.x.max : Infinity;
 
             const axisRanges = {{
                 yPowerHr: {{ min: Infinity, max: -Infinity }},
@@ -1384,52 +1473,60 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 if (!axisRanges[axisId]) return;
 
                 const data = dataset.data;
-                data.forEach(pt => {{
-                    if (pt.x >= xMin && pt.x <= xMax && pt.y !== null && pt.y !== undefined) {{
-                        if (pt.y < axisRanges[axisId].min) axisRanges[axisId].min = pt.y;
-                        if (pt.y > axisRanges[axisId].max) axisRanges[axisId].max = pt.y;
-                    }}
-                }});
+                if (Array.isArray(data)) {{
+                    data.forEach(pt => {{
+                        if (pt && typeof pt.x === 'number' && pt.x >= xMin && pt.x <= xMax && pt.y !== null && pt.y !== undefined && !isNaN(pt.y)) {{
+                            if (pt.y < axisRanges[axisId].min) axisRanges[axisId].min = pt.y;
+                            if (pt.y > axisRanges[axisId].max) axisRanges[axisId].max = pt.y;
+                        }}
+                    }});
+                }}
             }});
 
             // yPowerHr (Power / HR)
-            if (axisRanges.yPowerHr.min !== Infinity) {{
-                const minVal = axisRanges.yPowerHr.min;
-                const maxVal = axisRanges.yPowerHr.max;
-                const pad = (maxVal - minVal) * 0.05 || 10;
-                chart.options.scales.yPowerHr.min = Math.max(0, Math.floor(minVal - pad));
-                chart.options.scales.yPowerHr.max = Math.ceil(maxVal + pad);
-            }} else {{
-                chart.options.scales.yPowerHr.min = 0;
-                chart.options.scales.yPowerHr.max = 450;
+            if (chart.options.scales && chart.options.scales.yPowerHr) {{
+                if (axisRanges.yPowerHr.min !== Infinity) {{
+                    const minVal = axisRanges.yPowerHr.min;
+                    const maxVal = axisRanges.yPowerHr.max;
+                    const pad = (maxVal - minVal) * 0.05 || 10;
+                    chart.options.scales.yPowerHr.min = Math.max(0, Math.floor(minVal - pad));
+                    chart.options.scales.yPowerHr.max = Math.ceil(maxVal + pad);
+                }} else {{
+                    chart.options.scales.yPowerHr.min = 0;
+                    chart.options.scales.yPowerHr.max = 450;
+                }}
             }}
 
             // yLactate (Lactate)
-            if (axisRanges.yLactate.min !== Infinity) {{
-                const minVal = axisRanges.yLactate.min;
-                const maxVal = axisRanges.yLactate.max;
-                const pad = (maxVal - minVal) * 0.05 || 1;
-                chart.options.scales.yLactate.min = Math.max(0, Math.floor(minVal - pad));
-                chart.options.scales.yLactate.max = Math.ceil(maxVal + pad);
-            }} else {{
-                chart.options.scales.yLactate.min = 0;
-                chart.options.scales.yLactate.max = 30;
+            if (chart.options.scales && chart.options.scales.yLactate) {{
+                if (axisRanges.yLactate.min !== Infinity) {{
+                    const minVal = axisRanges.yLactate.min;
+                    const maxVal = axisRanges.yLactate.max;
+                    const pad = (maxVal - minVal) * 0.05 || 1;
+                    chart.options.scales.yLactate.min = Math.max(0, Math.floor(minVal - pad));
+                    chart.options.scales.yLactate.max = Math.ceil(maxVal + pad);
+                }} else {{
+                    chart.options.scales.yLactate.min = 0;
+                    chart.options.scales.yLactate.max = 30;
+                }}
             }}
 
             // yCoreTemp (Core Temp)
-            if (axisRanges.yCoreTemp.min !== Infinity) {{
-                const minVal = axisRanges.yCoreTemp.min;
-                const maxVal = axisRanges.yCoreTemp.max;
-                const pad = (maxVal - minVal) * 0.05 || 0.2;
-                chart.options.scales.yCoreTemp.min = Math.max(35, Number((minVal - pad).toFixed(1)));
-                chart.options.scales.yCoreTemp.max = Math.min(43, Number((maxVal + pad).toFixed(1)));
-            }} else {{
-                chart.options.scales.yCoreTemp.min = 36;
-                chart.options.scales.yCoreTemp.max = 42;
+            if (chart.options.scales && chart.options.scales.yCoreTemp) {{
+                if (axisRanges.yCoreTemp.min !== Infinity) {{
+                    const minVal = axisRanges.yCoreTemp.min;
+                    const maxVal = axisRanges.yCoreTemp.max;
+                    const pad = (maxVal - minVal) * 0.05 || 0.2;
+                    chart.options.scales.yCoreTemp.min = Math.max(35, Number((minVal - pad).toFixed(1)));
+                    chart.options.scales.yCoreTemp.max = Math.min(43, Number((maxVal + pad).toFixed(1)));
+                }} else {{
+                    chart.options.scales.yCoreTemp.min = 36;
+                    chart.options.scales.yCoreTemp.max = 42;
+                }}
             }}
             
             // yGlucose (Glucose)
-            if (chart.options.scales.yGlucose) {{
+            if (chart.options.scales && chart.options.scales.yGlucose) {{
                 if (axisRanges.yGlucose.min !== Infinity) {{
                     const minVal = axisRanges.yGlucose.min;
                     const maxVal = axisRanges.yGlucose.max;
@@ -1445,30 +1542,49 @@ def build_integrated_html(raw_data_dict, theme='dark'):
 
         // Reset chart zoom and reset scale bounds to default
         function resetChartZoom() {{
-            lactateChart.options.scales.yPowerHr.min = 0;
-            lactateChart.options.scales.yPowerHr.suggestedMax = 450;
-            if (lactateChart.options.scales.yPowerHr.max !== undefined) {{
-                delete lactateChart.options.scales.yPowerHr.max;
+            // Reset physioChart
+            if (physioChart.options.scales && physioChart.options.scales.yPowerHr) {{
+                physioChart.options.scales.yPowerHr.min = 0;
+                physioChart.options.scales.yPowerHr.suggestedMax = 450;
+                if (physioChart.options.scales.yPowerHr.max !== undefined) {{
+                    delete physioChart.options.scales.yPowerHr.max;
+                }}
             }}
-
-            lactateChart.options.scales.yLactate.min = 0;
-            lactateChart.options.scales.yLactate.suggestedMax = 30;
-            if (lactateChart.options.scales.yLactate.max !== undefined) {{
-                delete lactateChart.options.scales.yLactate.max;
+            if (physioChart.options.scales && physioChart.options.scales.yCoreTemp) {{
+                physioChart.options.scales.yCoreTemp.min = 36;
+                physioChart.options.scales.yCoreTemp.max = 42;
             }}
+            if (physioChart.options.scales && physioChart.options.scales.x) {{
+                physioChart.options.scales.x.min = 0;
+                physioChart.options.scales.x.max = sharedMaxX;
+            }}
+            physioChart.resetZoom();
 
-            lactateChart.options.scales.yCoreTemp.min = 36;
-            lactateChart.options.scales.yCoreTemp.max = 42;
-            
-            if (lactateChart.options.scales.yGlucose) {{
+            // Reset lactateChart
+            if (lactateChart.options.scales && lactateChart.options.scales.yLactate) {{
+                lactateChart.options.scales.yLactate.min = 0;
+                lactateChart.options.scales.yLactate.suggestedMax = 30;
+                if (lactateChart.options.scales.yLactate.max !== undefined) {{
+                    delete lactateChart.options.scales.yLactate.max;
+                }}
+            }}
+            if (lactateChart.options.scales && lactateChart.options.scales.yGlucose) {{
                 lactateChart.options.scales.yGlucose.min = 50;
                 lactateChart.options.scales.yGlucose.suggestedMax = 200;
                 if (lactateChart.options.scales.yGlucose.max !== undefined) {{
                     delete lactateChart.options.scales.yGlucose.max;
                 }}
             }}
-
+            if (lactateChart.options.scales && lactateChart.options.scales.x) {{
+                lactateChart.options.scales.x.min = 0;
+                lactateChart.options.scales.x.max = sharedMaxX;
+            }}
             lactateChart.resetZoom();
+
+            autoScaleYAxes(physioChart);
+            physioChart.update();
+            autoScaleYAxes(lactateChart);
+            lactateChart.update();
         }}
 
         // Button Event Listeners
@@ -1531,27 +1647,32 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         document.getElementById('font-scale-select').addEventListener('change', function() {{
             const scale = parseFloat(this.value);
             
-            // Update Legend labels font size
-            lactateChart.options.plugins.legend.labels.font.size = baseFontSizes.legend * scale;
-            
-            // Update Tooltip font sizes
-            lactateChart.options.plugins.tooltip.titleFont.size = baseFontSizes.tooltipTitle * scale;
-            lactateChart.options.plugins.tooltip.bodyFont.size = baseFontSizes.tooltipBody * scale;
-            
-            // Update X Scale
-            lactateChart.options.scales.x.title.font.size = baseFontSizes.axisTitle * scale;
-            lactateChart.options.scales.x.ticks.font.size = baseFontSizes.axisTicks * scale;
-            
-            // Update Y Scales
-            const yScales = ['yPowerHr', 'yLactate', 'yCoreTemp', 'yGlucose'];
-            yScales.forEach(axisId => {{
-                if (lactateChart.options.scales[axisId]) {{
-                    lactateChart.options.scales[axisId].title.font.size = baseFontSizes.axisTitle * scale;
-                    lactateChart.options.scales[axisId].ticks.font.size = baseFontSizes.axisTicks * scale;
+            [physioChart, lactateChart].forEach(chart => {{
+                if (!chart) return;
+                // Update Legend labels font size
+                chart.options.plugins.legend.labels.font.size = baseFontSizes.legend * scale;
+                
+                // Update Tooltip font sizes
+                chart.options.plugins.tooltip.titleFont.size = baseFontSizes.tooltipTitle * scale;
+                chart.options.plugins.tooltip.bodyFont.size = baseFontSizes.tooltipBody * scale;
+                
+                // Update X Scale
+                if (chart.options.scales && chart.options.scales.x) {{
+                    chart.options.scales.x.title.font.size = baseFontSizes.axisTitle * scale;
+                    chart.options.scales.x.ticks.font.size = baseFontSizes.axisTicks * scale;
                 }}
+                
+                // Update Y Scales
+                const yScales = ['yPowerHr', 'yLactate', 'yCoreTemp', 'yGlucose'];
+                yScales.forEach(axisId => {{
+                    if (chart.options.scales && chart.options.scales[axisId]) {{
+                        chart.options.scales[axisId].title.font.size = baseFontSizes.axisTitle * scale;
+                        chart.options.scales[axisId].ticks.font.size = baseFontSizes.axisTicks * scale;
+                    }}
+                }});
+                
+                chart.update();
             }});
-            
-            lactateChart.update();
         }});
 
         // Reset Zoom Event Listener
