@@ -1464,8 +1464,15 @@ if st.session_state.get('firebase_uid'):
                     st.toast("已解除 Intervals.icu 連結", icon="👋")
                     st.rerun()
 
+            force_overwrite_sync = st.checkbox(
+                "強制全量重新整理 (覆蓋已存在紀錄)",
+                value=False,
+                help="預設僅同步缺漏之新運動以節省時間；若手錶近期運動有重新計算負荷、修改名稱或數值異常，勾選此項可強制從 Intervals.icu 重新抓取並覆蓋雲端資料。",
+                key="cb_force_sync_icu"
+            )
+
             if sync_btn:
-                with st.spinner("正在同步 Intervals.icu 數據至 Firebase (比對缺漏運動)..."):
+                with st.spinner("正在同步 Intervals.icu 數據至 Firebase..."):
                     s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
                         uid=icu_uid,
                         firebase_token=icu_token,
@@ -1475,7 +1482,7 @@ if st.session_state.get('firebase_uid'):
                         lookahead_days=7,
                         is_oauth=icu_creds["is_oauth"],
                         incremental_only=False, # 手動按鈕進行完整掃描
-                        force_overwrite=False   # 已存在的活動直接跳過，大幅提速
+                        force_overwrite=force_overwrite_sync
                     )
                     # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
                     st.session_state[auto_sync_key] = time.time()
@@ -1493,6 +1500,7 @@ if st.session_state.get('firebase_uid'):
                     else:
                         st.toast(s_msg, icon="ℹ️")
                         st.info(s_msg)
+                        st.rerun()
         else:
             # 未連線狀態：僅保留「一鍵授權」與「手動輸入 API Key」兩個選項
             if oauth_cfg["client_id"]:

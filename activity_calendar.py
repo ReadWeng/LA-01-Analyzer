@@ -54,13 +54,23 @@ def fetch_user_calendar_data(
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # 1. 抓取 fit_records (設定 pageSize=300 一次抓齊)
-    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    # 1. 抓取 fit_records (支援分頁讀取全部，避免 300 筆上限截斷最新運動)
+    fit_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    docs = []
+    page_token = None
     try:
-        r_fit = requests.get(fit_url, headers=headers, timeout=12)
-        if r_fit.status_code == 200:
-            docs = r_fit.json().get("documents", [])
-            for doc in docs:
+        while True:
+            cur_url = fit_base_url if not page_token else f"{fit_base_url}&pageToken={page_token}"
+            r_fit = requests.get(cur_url, headers=headers, timeout=12)
+            if r_fit.status_code == 200:
+                res_data = r_fit.json()
+                docs.extend(res_data.get("documents", []))
+                page_token = res_data.get("nextPageToken")
+                if not page_token:
+                    break
+            else:
+                break
+        for doc in docs:
                 f = doc.get("fields", {})
                 doc_id = doc.get("name", "").split("/")[-1]
                 st_val = _get_fs_field(f.get("start_time"))
@@ -146,13 +156,23 @@ def fetch_user_calendar_data(
     except Exception as e:
         print(f"Error fetching fit records for calendar: {e}")
 
-    # 2. 抓取 lactate_records (設定 pageSize=300 一次抓齊)
-    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
+    # 2. 抓取 lactate_records (支援分頁讀取全部)
+    la_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
+    la_docs = []
+    page_token = None
     try:
-        r_la = requests.get(la_url, headers=headers, timeout=12)
-        if r_la.status_code == 200:
-            la_docs = r_la.json().get("documents", [])
-            for doc in la_docs:
+        while True:
+            cur_url = la_base_url if not page_token else f"{la_base_url}&pageToken={page_token}"
+            r_la = requests.get(cur_url, headers=headers, timeout=12)
+            if r_la.status_code == 200:
+                res_data = r_la.json()
+                la_docs.extend(res_data.get("documents", []))
+                page_token = res_data.get("nextPageToken")
+                if not page_token:
+                    break
+            else:
+                break
+        for doc in la_docs:
                 f = doc.get("fields", {})
                 doc_id = doc.get("name", "").split("/")[-1]
                 year = int(_get_fs_field(f.get("year"), 0))

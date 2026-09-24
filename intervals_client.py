@@ -8,7 +8,7 @@ import os
 import re
 import base64
 import requests
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import List, Dict, Any, Tuple, Optional
 
 
@@ -356,11 +356,11 @@ def calculate_lactate_surrounding_date_ranges(
             for i in range(-lookahead_days, lookback_days + 1):
                 target_days.add(d - timedelta(days=i))
 
-    # 2. 永遠涵蓋最近 include_recent_days 天至明天 (防止當日及近期日常手錶運動漏失)
+    # 2. 永遠涵蓋最近 include_recent_days 天至後天 (防止時區偏差與當日手錶運動漏失)
     if include_recent_days > 0:
         today = date.today()
-        # i = -1 對應明天 (today + 1)，0 對應今天，依此類推到 today - include_recent_days
-        for i in range(-1, include_recent_days + 1):
+        # i = -2 對應後天 (today + 2)，-1 對應明天，0 對應今天，依此類推到 today - include_recent_days
+        for i in range(-2, include_recent_days + 1):
             target_days.add(today - timedelta(days=i))
 
     sorted_days = sorted(target_days)
@@ -403,34 +403,40 @@ def fetch_intervals_activities(
     athlete_id: str = "0",
     oldest: str = None,
     newest: str = None,
-    is_oauth: bool = False
+    is_oauth: bool = False,
+    error_collector: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """
     從 Intervals.icu 拉取指定日期區間內的活動 (支援 OAuth 2.0 與 API Key)
-    oldest, newest 格式: 'YYYY-MM-DD' 或 ISO-8601
+    oldest, newest 格式: 'YYYY-MM-DD' (Intervals 官方規範格式，自動涵蓋當天全日 00:00:00~23:59:59 本地時間)
     """
     ath_id = athlete_id.strip() if athlete_id and athlete_id.strip() else "0"
     url = f"{INTERVALS_BASE_URL}/athlete/{ath_id}/activities"
     headers = get_intervals_auth_header(token_or_key, is_oauth=is_oauth)
     params = {}
     if oldest:
-        params["oldest"] = oldest
+        params["oldest"] = str(oldest).split("T")[0].strip()
     if newest:
-        # 若 newest 為 YYYY-MM-DD 格式 (長度 10)，加上 T23:59:59 確保當天全天運動被完整檢索
-        if len(newest) == 10:
-            params["newest"] = f"{newest}T23:59:59"
-        else:
-            params["newest"] = newest
+        params["newest"] = str(newest).split("T")[0].strip()
 
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code == 200:
-            return resp.json()
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            return []
         else:
+            err_msg = f"HTTP {resp.status_code}: {resp.text[:150]}"
             print(f"Intervals.icu API Error ({resp.status_code}): {resp.text}")
+            if error_collector is not None:
+                error_collector.append(err_msg)
             return []
     except Exception as e:
+        err_msg = str(e)
         print(f"Error fetching activities from Intervals.icu: {e}")
+        if error_collector is not None:
+            error_collector.append(err_msg)
         return []
 
 
@@ -730,7 +736,9 @@ def convert_intervals_activity_to_firebase_fit_record(
     start_dt = None
     if start_str:
         try:
-            clean_ts = start_str.replace("Z", "+00:00")
+            clean_ts = str(start_str).strip()
+            if clean_ts.endswith("Z"):
+                clean_ts = clean_ts[:-1] + "+00:00"
             start_dt = datetime.fromisoformat(clean_ts)
         except Exception:
             pass
@@ -768,6 +776,12 @@ def convert_intervals_activity_to_firebase_fit_record(
             if stream_max_pwr > max_pwr:
                 max_pwr = stream_max_pwr
 
+    # 安全產生 RFC 3339 格式之 timestampValue (防止 +00:00Z 重複時區造成 Firestore 拒收)
+    if start_dt.tzinfo is not None:
+        ts_rfc3339 = start_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        ts_rfc3339 = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     clean_time = start_dt.strftime("%Y%m%d_%H%M%S")
     doc_id = f"fit_{clean_time}_icu_{act_id}"
 
@@ -775,7 +789,8 @@ def convert_intervals_activity_to_firebase_fit_record(
         "fields": {
             "file_name": {"stringValue": f"intervals_{act_id}_{icu_type}.fit"},
             "activity_name": {"stringValue": act_name},
-            "start_time": {"timestampValue": start_dt.isoformat() + "Z"},
+            "start_time": {"timestampValue": ts_rfc3339},
+            "intervals_act_id": {"stringValue": str(act_id)},
             "sport": {"stringValue": sport},
             "sub_sport": {"stringValue": sub_sport},
             "duration_minutes": {"doubleValue": duration_min},
@@ -829,54 +844,70 @@ def sync_pre_lactate_activities_to_firebase(
 
     headers_fb = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
 
-    # 1. 抓取現有的 fit_records 以便精準去重與推算最新記錄日期
-    fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    # 1. 抓取現有的 fit_records 以便精準去重與推算最新記錄日期 (分頁讀取全部避免 300 筆限制截斷最新運動)
+    fit_base = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    docs = []
+    page_token = None
+    try:
+        while True:
+            cur_url = fit_base if not page_token else f"{fit_base}&pageToken={page_token}"
+            r_fit = requests.get(cur_url, headers=headers_fb, timeout=12)
+            if r_fit.status_code == 200:
+                res_data = r_fit.json()
+                docs.extend(res_data.get("documents", []))
+                page_token = res_data.get("nextPageToken")
+                if not page_token:
+                    break
+            else:
+                break
+    except Exception as e:
+        print(f"Error fetching existing fit sessions: {e}")
+
     lactate_test_times = []
     icu_id_to_doc = {}        # 依照 Intervals 原生 activity_id 映射
     icu_time_to_doc = {}      # 依照活動時間（5分鐘窗）映射
     latest_fit_dt = None
-    try:
-        r_fit = requests.get(fit_url, headers=headers_fb, timeout=12)
-        if r_fit.status_code == 200:
-            for doc in r_fit.json().get("documents", []):
-                fields = doc.get("fields", {})
-                st_val = fields.get("start_time", {}).get("timestampValue")
-                src = fields.get("source", {}).get("stringValue", "")
-                has_la = fields.get("has_lactate", {}).get("booleanValue", False)
-                doc_name = doc.get("name", "").split("/")[-1]
-                
-                # 提取 intervals_act_id
-                icu_id = fields.get("intervals_act_id", {}).get("stringValue", "")
-                if not icu_id and "_icu_" in doc_name:
-                    icu_id = doc_name.split("_icu_")[-1]
-                if icu_id:
-                    icu_id_to_doc[str(icu_id)] = doc_name
 
-                if st_val:
-                    try:
-                        clean_ts = st_val.replace("Z", "+00:00")
-                        dt_obj = datetime.fromisoformat(clean_ts)
-                        if latest_fit_dt is None or dt_obj > latest_fit_dt:
-                            latest_fit_dt = dt_obj
-                        # 若不是 intervals_icu 或者有乳酸測試，屬於不可覆蓋的原創測驗
-                        if src != "intervals_icu" or has_la:
-                            lactate_test_times.append(dt_obj)
-                        else:
-                            icu_time_to_doc[doc_name] = dt_obj
-                    except Exception:
-                        pass
-    except Exception as e:
-        print(f"Error fetching existing fit sessions: {e}")
+    for doc in docs:
+        fields = doc.get("fields", {})
+        st_val = fields.get("start_time", {}).get("timestampValue")
+        src = fields.get("source", {}).get("stringValue", "")
+        has_la = fields.get("has_lactate", {}).get("booleanValue", False)
+        doc_name = doc.get("name", "").split("/")[-1]
+        
+        # 提取 intervals_act_id (支援 stringValue 或 integerValue)
+        icu_id_field = fields.get("intervals_act_id", {})
+        icu_id = icu_id_field.get("stringValue") or icu_id_field.get("integerValue") or ""
+        if not icu_id and "_icu_" in doc_name:
+            icu_id = doc_name.split("_icu_")[-1]
+        if icu_id:
+            icu_id_str = str(icu_id).strip()
+            icu_id_to_doc[icu_id_str] = doc_name
+            icu_id_to_doc[icu_id_str.lstrip("i")] = doc_name
+
+        if st_val:
+            try:
+                clean_ts = st_val.replace("Z", "+00:00")
+                dt_obj = datetime.fromisoformat(clean_ts)
+                if latest_fit_dt is None or dt_obj > latest_fit_dt:
+                    latest_fit_dt = dt_obj
+                # 若不是 intervals_icu 或者有乳酸測試，屬於不可覆蓋的原創測驗
+                if src != "intervals_icu" or has_la:
+                    lactate_test_times.append(dt_obj)
+                else:
+                    icu_time_to_doc[doc_name] = dt_obj
+            except Exception:
+                pass
 
     # 2. 計算同步日期區間
     if incremental_only:
-        # 增量模式：直接鎖定「過去 7 天至後天」，保證今日與近期運動 100% 納入查詢，完全不受歷史紀錄順序或異常時間戳影響
+        # 增量模式：鎖定「過去 7 天至後天」，保證今日與近期運動 100% 納入查詢，不受時區差異影響
         oldest_d = date.today() - timedelta(days=7)
         newest_d = date.today() + timedelta(days=2)
         date_ranges = [(oldest_d.strftime("%Y-%m-%d"), newest_d.strftime("%Y-%m-%d"))]
     else:
-        # 全量模式：讀取所有乳酸檢測日期，計算乳酸日前後 7 天並納入最近 30 天日常運動
-        la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
+        # 全量模式：讀取所有乳酸檢測日期，計算乳酸日前後 7 天並納入最近 30 天至後天日常運動
+        la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
         lactate_dates = []
         try:
             r_la = requests.get(la_url, headers=headers_fb, timeout=10)
@@ -906,41 +937,48 @@ def sync_pre_lactate_activities_to_firebase(
     # 3. 依區間從 Intervals.icu 抓取活動清單 (輕量級 Summary)
     all_activities = []
     seen_act_ids = set()
+    api_errors = []
     for oldest, newest in date_ranges:
         acts = fetch_intervals_activities(
-            intervals_api_key, athlete_id=athlete_id, oldest=oldest, newest=newest, is_oauth=is_oauth
+            intervals_api_key,
+            athlete_id=athlete_id,
+            oldest=oldest,
+            newest=newest,
+            is_oauth=is_oauth,
+            error_collector=api_errors
         )
         for a in acts:
-            aid = str(a.get("id"))
-            if aid not in seen_act_ids:
+            aid = str(a.get("id", "")).strip()
+            if aid and aid not in seen_act_ids:
                 seen_act_ids.add(aid)
                 all_activities.append(a)
 
     if not all_activities:
-        return 0, 0, f"在覆蓋的日期區間內，Intervals.icu 未查到任何運動紀錄"
+        if api_errors:
+            return 0, 0, f"Intervals.icu API 查詢失敗: {api_errors[0]}"
+        return 0, 0, f"在涵蓋的日期區間內，Intervals.icu 未查到任何運動紀錄 (已查詢: {', '.join([f'{o}~{n}' for o, n in date_ranges])})"
 
     # 4. 轉換並寫入 Firestore (僅針對尚未收錄的新運動下載串流)
     synced_count = 0
     skipped_count = 0
+    write_errors = []
 
     base_fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
 
     for act in all_activities:
-        act_id_str = str(act.get("id", ""))
+        act_id_str = str(act.get("id", "")).strip()
+        clean_act_id = act_id_str.lstrip("i")
+        is_already_synced = (act_id_str in icu_id_to_doc) or (clean_act_id in icu_id_to_doc)
 
         # ⚡ 核心極速過濾：若該活動 ID 已在 Firebase 且非強制覆蓋，直接跳過！
         # 完全不呼叫 fetch_intervals_activity_streams，也不發送 PATCH 請求，0 毫秒完成！
-        if not force_overwrite and act_id_str and act_id_str in icu_id_to_doc:
+        if not force_overwrite and act_id_str and is_already_synced:
             skipped_count += 1
             continue
 
         # 只有真正缺漏的新活動才執行耗時的串流下載與特徵轉換
         rec = convert_intervals_activity_to_firebase_fit_record(act, token_or_key=intervals_api_key, is_oauth=is_oauth)
         act_start = rec["start_time"]
-
-        # 寫入 intervals_act_id 標記以利後續 100% 精準去重
-        if act_id_str:
-            rec["payload"]["fields"]["intervals_act_id"] = {"stringValue": act_id_str}
 
         # 防覆蓋檢查：如果該時段 (前後 5 分鐘內) 有真正的原版乳酸測驗，跳過寫入，防覆蓋乳酸測驗！
         is_lactate_conflict = False
@@ -958,6 +996,8 @@ def sync_pre_lactate_activities_to_firebase(
         doc_id = rec["doc_id"]
         if act_id_str and act_id_str in icu_id_to_doc:
             doc_id = icu_id_to_doc[act_id_str]
+        elif clean_act_id and clean_act_id in icu_id_to_doc:
+            doc_id = icu_id_to_doc[clean_act_id]
         else:
             # 輔助比對：前後 3 分鐘內且同屬 intervals_icu 的紀錄
             for exist_name, exist_time in icu_time_to_doc.items():
@@ -972,14 +1012,24 @@ def sync_pre_lactate_activities_to_firebase(
                 synced_count += 1
                 if act_id_str:
                     icu_id_to_doc[act_id_str] = doc_id
+                    icu_id_to_doc[clean_act_id] = doc_id
                 icu_time_to_doc[doc_id] = act_start
             else:
-                print(f"Failed to upsert Intervals activity {doc_id}: {r_post.text}")
+                err_text = f"HTTP {r_post.status_code}: {r_post.text[:120]}"
+                write_errors.append(err_text)
+                print(f"Failed to upsert Intervals activity {doc_id}: {err_text}")
         except Exception as e:
+            write_errors.append(str(e))
             print(f"Error upserting activity {doc_id}: {e}")
 
     if synced_count > 0:
         msg = f"Intervals.icu 同步完成！已更新 {synced_count} 筆最新訓練數據，跳過 {skipped_count} 筆已存在或重疊紀錄。"
+    elif write_errors:
+        msg = f"Intervals.icu 查詢到 {len(all_activities)} 筆運動，但儲存至雲端資料庫失敗：{write_errors[0]}"
+    elif api_errors:
+        msg = f"Intervals.icu API 查詢異常：{api_errors[0]}"
+    elif skipped_count > 0:
+        msg = f"Intervals.icu 已檢查完成：查詢到 {len(all_activities)} 筆運動，皆已收錄於雲端（無新數據需更新）。"
     else:
-        msg = f"Intervals.icu 已檢查完成，日常運動皆已收錄於雲端（無新數據需更新）。"
+        msg = f"Intervals.icu 檢查完成：在涵蓋的日期區間內未查到手錶運動。"
     return synced_count, skipped_count, msg
