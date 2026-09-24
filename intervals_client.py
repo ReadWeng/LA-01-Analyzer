@@ -809,15 +809,17 @@ def sync_pre_lactate_activities_to_firebase(
     athlete_id: str = "0",
     lookback_days: int = 7,
     lookahead_days: int = 7,
-    is_oauth: bool = False
+    is_oauth: bool = False,
+    incremental_only: bool = False,
+    force_overwrite: bool = False
 ) -> Tuple[int, int, str]:
     """
-    高階整合同步主函式 (支援 OAuth 2.0 與 API Key 雙軌)：
-    1. 從 Firestore 讀取現有所有的乳酸採樣日期。
-    2. 自動推算所有「開始收乳酸前 lookback_days 天至後 lookahead_days 天」（預設前後各 1 週）的有效日期區間。
-    3. 呼叫 Intervals.icu 抓取日常運動數據。
-    4. 檢查 Firestore 現有 fit_records，若該時段已有原創乳酸測試 FIT 檔則跳過（防覆蓋有乳酸的珍貴測驗）。
-    5. 透過 PATCH 冪等寫入 Firestore。
+    高階整合同步主函式 (支援 OAuth 2.0 與 API Key 雙軌、增量極速模式)：
+    1. 抓取 Firestore 現有 fit_records，識別已存在的活動 ID 與最新運動時間。
+    2. 若啟用 incremental_only (增量模式)，僅查詢最新運動日期至明天的極小範圍；否則全量掃描。
+    3. 呼叫 Intervals.icu 抓取日常運動清單。
+    4. ⚡ 核心提速：若該活動 ID 已在 Firebase 且非 force_overwrite，直接跳過！不浪費頻寬下載串流與寫入。
+    5. 僅針對 Firebase 尚未收錄的新運動下載串流並寫入 Firestore。
     回傳: (同步成功筆數, 跳過重疊筆數, 訊息)
     """
     if not uid or not firebase_token:
@@ -827,40 +829,12 @@ def sync_pre_lactate_activities_to_firebase(
 
     headers_fb = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
 
-    # 1. 抓取所有現有乳酸記錄的時間點
-    la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
-    lactate_dates = []
-    try:
-        r_la = requests.get(la_url, headers=headers_fb, timeout=12)
-        if r_la.status_code == 200:
-            la_docs = r_la.json().get("documents", [])
-            for doc in la_docs:
-                f = doc.get("fields", {})
-                year = int(f.get("year", {}).get("integerValue", 0))
-                month = int(f.get("month", {}).get("integerValue", 0))
-                day = int(f.get("day", {}).get("integerValue", 0))
-                if year > 0 and month > 0 and day > 0:
-                    full_year = year + 2000 if year < 100 else year
-                    lactate_dates.append(datetime(full_year, month, day))
-    except Exception as e:
-        print(f"Error fetching lactate dates: {e}")
-
-    # 2. 計算同步日期區間：涵蓋歷史乳酸檢測前後日常運動，且永遠包含「最近 30 天至明天」，確保最新運動 100% 同步
-    date_ranges = calculate_lactate_surrounding_date_ranges(
-        lactate_dates,
-        lookback_days=lookback_days,
-        lookahead_days=lookahead_days,
-        include_recent_days=30
-    )
-
-    if not date_ranges:
-        return 0, 0, "未找到有效的同步日期區間"
-
-    # 2. 抓取現有的 fit_records 以便比對重疊 (嚴格區分：珍貴的乳酸測驗 vs 日常手錶訓練)
+    # 1. 抓取現有的 fit_records 以便精準去重與推算最新記錄日期
     fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
     lactate_test_times = []
     icu_id_to_doc = {}        # 依照 Intervals 原生 activity_id 映射
     icu_time_to_doc = {}      # 依照活動時間（5分鐘窗）映射
+    latest_fit_dt = None
     try:
         r_fit = requests.get(fit_url, headers=headers_fb, timeout=12)
         if r_fit.status_code == 200:
@@ -882,6 +856,8 @@ def sync_pre_lactate_activities_to_firebase(
                     try:
                         clean_ts = st_val.replace("Z", "+00:00")
                         dt_obj = datetime.fromisoformat(clean_ts)
+                        if latest_fit_dt is None or dt_obj > latest_fit_dt:
+                            latest_fit_dt = dt_obj
                         # 若不是 intervals_icu 或者有乳酸測試，屬於不可覆蓋的原創測驗
                         if src != "intervals_icu" or has_la:
                             lactate_test_times.append(dt_obj)
@@ -892,7 +868,42 @@ def sync_pre_lactate_activities_to_firebase(
     except Exception as e:
         print(f"Error fetching existing fit sessions: {e}")
 
-    # 3. 依區間從 Intervals.icu 抓取活動
+    # 2. 計算同步日期區間
+    if incremental_only and latest_fit_dt:
+        # 增量模式：Firebase 已有數據，僅查詢最新一筆運動前 2 天 (防時區差) 至明天的極窄區間
+        oldest_d = (latest_fit_dt - timedelta(days=2)).date()
+        newest_d = date.today() + timedelta(days=1)
+        date_ranges = [(oldest_d.strftime("%Y-%m-%d"), newest_d.strftime("%Y-%m-%d"))]
+    else:
+        # 全量模式：讀取所有乳酸檢測日期，計算乳酸日前後 7 天並納入最近 30 天日常運動
+        la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
+        lactate_dates = []
+        try:
+            r_la = requests.get(la_url, headers=headers_fb, timeout=10)
+            if r_la.status_code == 200:
+                la_docs = r_la.json().get("documents", [])
+                for doc in la_docs:
+                    f = doc.get("fields", {})
+                    year = int(f.get("year", {}).get("integerValue", 0))
+                    month = int(f.get("month", {}).get("integerValue", 0))
+                    day = int(f.get("day", {}).get("integerValue", 0))
+                    if year > 0 and month > 0 and day > 0:
+                        full_year = year + 2000 if year < 100 else year
+                        lactate_dates.append(datetime(full_year, month, day))
+        except Exception as e:
+            print(f"Error fetching lactate dates: {e}")
+
+        date_ranges = calculate_lactate_surrounding_date_ranges(
+            lactate_dates,
+            lookback_days=lookback_days,
+            lookahead_days=lookahead_days,
+            include_recent_days=30
+        )
+
+    if not date_ranges:
+        return 0, 0, "未找到有效的同步日期區間"
+
+    # 3. 依區間從 Intervals.icu 抓取活動清單 (輕量級 Summary)
     all_activities = []
     seen_act_ids = set()
     for oldest, newest in date_ranges:
@@ -906,18 +917,26 @@ def sync_pre_lactate_activities_to_firebase(
                 all_activities.append(a)
 
     if not all_activities:
-        return 0, 0, f"在覆蓋的 {len(date_ranges)} 個日期區間內，Intervals.icu 未查到任何運動紀錄"
+        return 0, 0, f"在覆蓋的日期區間內，Intervals.icu 未查到任何運動紀錄"
 
-    # 4. 轉換並寫入 Firestore
+    # 4. 轉換並寫入 Firestore (僅針對尚未收錄的新運動下載串流)
     synced_count = 0
     skipped_count = 0
 
     base_fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
 
     for act in all_activities:
+        act_id_str = str(act.get("id", ""))
+
+        # ⚡ 核心極速過濾：若該活動 ID 已在 Firebase 且非強制覆蓋，直接跳過！
+        # 完全不呼叫 fetch_intervals_activity_streams，也不發送 PATCH 請求，0 毫秒完成！
+        if not force_overwrite and act_id_str and act_id_str in icu_id_to_doc:
+            skipped_count += 1
+            continue
+
+        # 只有真正缺漏的新活動才執行耗時的串流下載與特徵轉換
         rec = convert_intervals_activity_to_firebase_fit_record(act, token_or_key=intervals_api_key, is_oauth=is_oauth)
         act_start = rec["start_time"]
-        act_id_str = str(act.get("id", ""))
 
         # 寫入 intervals_act_id 標記以利後續 100% 精準去重
         if act_id_str:
@@ -959,5 +978,8 @@ def sync_pre_lactate_activities_to_firebase(
         except Exception as e:
             print(f"Error upserting activity {doc_id}: {e}")
 
-    msg = f"Intervals.icu 同步完成！共掃描 {len(all_activities)} 場日常活動，成功同步/更新 {synced_count} 筆背景訓練功率與數據，保留 {skipped_count} 筆關鍵測驗紀錄。"
+    if synced_count > 0:
+        msg = f"Intervals.icu 同步完成！已更新 {synced_count} 筆最新訓練數據，跳過 {skipped_count} 筆已存在或重疊紀錄。"
+    else:
+        msg = f"Intervals.icu 已檢查完成，日常運動皆已收錄於雲端（無新數據需更新）。"
     return synced_count, skipped_count, msg

@@ -1406,31 +1406,30 @@ if st.session_state.get('firebase_uid'):
     icu_creds = ic.get_user_intervals_credentials(icu_uid, icu_token)
     oauth_cfg = ic.get_intervals_oauth_config()
 
-    # --- 登入即自動背景同步機制 (登入或首次進入時自動拉取今日與近期運動，使用者無需動腦手動點擊) ---
+    # --- 登入即自動背景同步機制 (增量極速模式：僅撈取 Firebase 尚未收錄的最新運動，毫秒級載入) ---
     auto_sync_key = f"intervals_auto_synced_{icu_uid}"
     if icu_creds["configured"] and auto_sync_key not in st.session_state:
         st.session_state[auto_sync_key] = time.time()
-        with st.spinner("⚡ 登入自動同步：正在為您載入今日與最新手錶訓練數據..."):
-            try:
-                s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
-                    uid=icu_uid,
-                    firebase_token=icu_token,
-                    intervals_api_key=icu_creds["token"],
-                    athlete_id=icu_creds["athlete_id"],
-                    lookback_days=7,
-                    lookahead_days=7,
-                    is_oauth=icu_creds["is_oauth"]
-                )
-                # 清除月曆快取與相關快取，確保日曆立即渲染最新資料
+        try:
+            s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
+                uid=icu_uid,
+                firebase_token=icu_token,
+                intervals_api_key=icu_creds["token"],
+                athlete_id=icu_creds["athlete_id"],
+                lookback_days=7,
+                lookahead_days=7,
+                is_oauth=icu_creds["is_oauth"],
+                incremental_only=True,
+                force_overwrite=False
+            )
+            # 僅在確實有同步到新數據時才彈窗提示並清除月曆快取
+            if s_count > 0:
                 st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
                 st.session_state.pop("cached_weekly_report_html", None)
                 st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
-                if s_count > 0:
-                    st.toast(f"⚡ 登入自動同步完成：已更新 {s_count} 筆最新訓練數據！", icon="🏃")
-                else:
-                    st.toast("⚡ 運動手錶數據已自動確認為最新狀態！", icon="✅")
-            except Exception as e:
-                print(f"登入自動同步發生異常: {e}")
+                st.toast(f"⚡ 登入自動同步：已載入 {s_count} 筆今日最新手錶運動！", icon="🏃")
+        except Exception as e:
+            print(f"登入自動同步發生異常: {e}")
 
     with st.sidebar.expander("🔗 運動手錶雲端綁定 (Garmin / COROS)", expanded=False):
         st.markdown("**支援 Garmin Connect、COROS 等設備**")
@@ -1457,7 +1456,7 @@ if st.session_state.get('firebase_uid'):
                     st.rerun()
 
             if sync_btn:
-                with st.spinner("正在同步 Intervals.icu 數據至 Firebase (包含當日與近期訓練)..."):
+                with st.spinner("正在同步 Intervals.icu 數據至 Firebase (比對缺漏運動)..."):
                     s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
                         uid=icu_uid,
                         firebase_token=icu_token,
@@ -1465,7 +1464,9 @@ if st.session_state.get('firebase_uid'):
                         athlete_id=icu_creds["athlete_id"],
                         lookback_days=7,
                         lookahead_days=7,
-                        is_oauth=icu_creds["is_oauth"]
+                        is_oauth=icu_creds["is_oauth"],
+                        incremental_only=False, # 手動按鈕進行完整掃描
+                        force_overwrite=False   # 已存在的活動直接跳過，大幅提速
                     )
                     # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
                     st.session_state[auto_sync_key] = time.time()
