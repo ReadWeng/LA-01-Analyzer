@@ -422,7 +422,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         max_glu = stats.get('max_glucose', '-')
         if max_glu != '-':
             glucose_box_html = f"""
-                    <div class="metric-box">
+                    <div class="metric-box" style="grid-column: span 2;">
                         <span class="metric-title" style="color: #d500f9;">🩸 最大血糖</span>
                         <span class="metric-value">{max_glu}</span>
                     </div>
@@ -810,17 +810,96 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             background: var(--card-bg);
             border: 1px solid var(--card-border);
             border-radius: 16px;
-            padding: 30px;
+            padding: 24px 28px;
             backdrop-filter: blur(12px);
             -webkit-backdrop-filter: blur(12px);
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
             position: relative;
         }}
 
+        .chart-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }}
+
+        .chart-title-box {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+
+        .chart-badge {{
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background: rgba(0, 229, 255, 0.12);
+            color: #00e5ff;
+            border: 1px solid rgba(0, 229, 255, 0.25);
+            text-transform: uppercase;
+        }}
+
+        .chart-title {{
+            font-size: 1.12rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: 0.2px;
+            margin: 0;
+        }}
+
+        .chart-sync-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 5px 14px;
+            border-radius: 20px;
+        }}
+
+        .sync-dot {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #00e5ff;
+            box-shadow: 0 0 8px #00e5ff;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }}
+
+        @keyframes pulse {{
+            0% {{ opacity: 0.4; transform: scale(0.9); }}
+            50% {{ opacity: 1; transform: scale(1.1); }}
+            100% {{ opacity: 0.4; transform: scale(0.9); }}
+        }}
+
+        .btn-primary {{
+            background: rgba(0, 229, 255, 0.12) !important;
+            border-color: rgba(0, 229, 255, 0.35) !important;
+            color: #00e5ff !important;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.1);
+        }}
+
+        .btn-primary:hover {{
+            background: rgba(0, 229, 255, 0.22) !important;
+            border-color: rgba(0, 229, 255, 0.6) !important;
+            color: #ffffff !important;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.25);
+            transform: translateY(-1px);
+        }}
+
         .chart-wrapper {{
             position: relative;
             width: 100%;
-            height: 500px;
+            height: 480px;
         }}
 
         footer {{
@@ -834,13 +913,16 @@ def build_integrated_html(raw_data_dict, theme='dark'):
 
         @media (max-width: 768px) {{
             h1 {{
-                font-size: 2rem;
+                font-size: 1.8rem;
             }}
             .kpi-grid {{
                 grid-template-columns: 1fr;
             }}
+            .chart-card {{
+                padding: 16px 12px;
+            }}
             .chart-wrapper {{
-                height: 400px;
+                height: 380px;
             }}
             body {{
                 padding: 20px 10px;
@@ -867,7 +949,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         <!-- Controls Section -->
         <div class="controls-section">
             <div>
-                <div class="control-group-title">訓練日期選擇 (Date Toggles)</div>
+                <div class="control-group-title">📅 訓練期數選擇 (Session Filter)</div>
                 <div class="button-group" id="date-buttons">
                     {date_toggles_html}
                     <button class="btn btn-utility" id="select-all-dates">全選</button>
@@ -875,7 +957,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 </div>
             </div>
             <div>
-                <div class="control-group-title">生理指標選擇 (Metric Toggles)</div>
+                <div class="control-group-title">📊 生理指標開關 (Metric Toggles)</div>
                 <div class="button-group" id="metric-buttons">
                     <button class="btn active" data-metric="power">⚡ 功率 (30s平均)</button>
                     <button class="btn active" data-metric="hr">❤️ 心率 (30s平均)</button>
@@ -887,34 +969,49 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 </div>
             </div>
             <div>
-                <div class="control-group-title">圖表文字與縮放工具 (Chart Font & Zoom Tools)</div>
-                <div class="button-group">
-                    <select id="font-scale-select" class="btn">
-                        <option value="1" style="background: var(--bg-color); color: var(--text-primary);">1x (標準)</option>
-                        <option value="1.25" style="background: var(--bg-color); color: var(--text-primary);">1.25x</option>
-                        <option value="1.5" style="background: var(--bg-color); color: var(--text-primary);">1.5x</option>
-                        <option value="1.75" style="background: var(--bg-color); color: var(--text-primary);">1.75x</option>
-                        <option value="2" style="background: var(--bg-color); color: var(--text-primary);">2x</option>
-                    </select>
-                    <button class="btn" id="reset-zoom-btn">🔍 重設圖表縮放 (Reset Zoom)</button>
+                <div class="control-group-title">⚙️ 圖表視覺與縮放 (Display & Zoom Tools)</div>
+                <div class="button-group" style="align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary); font-weight: 500;">字級大小:</span>
+                        <select id="font-scale-select" class="btn" style="padding-top: 8px; padding-bottom: 8px;">
+                            <option value="1" style="background: var(--bg-color); color: var(--text-primary);">1x (標準)</option>
+                            <option value="1.25" style="background: var(--bg-color); color: var(--text-primary);">1.25x</option>
+                            <option value="1.5" style="background: var(--bg-color); color: var(--text-primary);">1.5x</option>
+                            <option value="1.75" style="background: var(--bg-color); color: var(--text-primary);">1.75x</option>
+                            <option value="2" style="background: var(--bg-color); color: var(--text-primary);">2x</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" id="reset-zoom-btn">🔍 重設圖表縮放 (Reset Zoom)</button>
                 </div>
             </div>
         </div>
 
         <!-- Chart Section -->
         <div class="chart-card">
-            <div style="font-size: 1.05rem; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); display: flex; align-items: center; justify-content: space-between;">
-                <span>⚡ 運動生理動態 (功率 / 心率 / 核心溫度)</span>
-                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary);">上下時間軸 0 點對齊連動</span>
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <span class="chart-badge">PHYSIOLOGY</span>
+                    <h3 class="chart-title">⚡ 運動生理動態 (功率 / 心率 / 核心溫度)</h3>
+                </div>
+                <div class="chart-sync-badge">
+                    <span class="sync-dot"></span>
+                    <span>時間軸 0 點對齊連動 | 支援負時間 (測試前)</span>
+                </div>
             </div>
             <div class="chart-wrapper">
                 <canvas id="physioChart"></canvas>
             </div>
         </div>
-        <div class="chart-card" style="margin-top: 20px;">
-            <div style="font-size: 1.05rem; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); display: flex; align-items: center; justify-content: space-between;">
-                <span>💧 代謝與乳酸動力學 (乳酸 / 血糖)</span>
-                <span style="font-size: 0.8rem; font-weight: 400; color: var(--text-secondary);">上下時間軸 0 點對齊連動</span>
+        <div class="chart-card" style="margin-top: 24px;">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <span class="chart-badge" style="background: rgba(0, 230, 118, 0.12); color: #00e676; border-color: rgba(0, 230, 118, 0.25);">METABOLISM</span>
+                    <h3 class="chart-title">💧 代謝與乳酸動力學 (乳酸 / 血糖)</h3>
+                </div>
+                <div class="chart-sync-badge">
+                    <span class="sync-dot"></span>
+                    <span>時間軸 0 點對齊連動 | 支援負時間 (測試前)</span>
+                </div>
             </div>
             <div class="chart-wrapper">
                 <canvas id="lactateChart"></canvas>
@@ -1079,25 +1176,28 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             }}
         }});
 
-        // Unify horizontal X-axis range across both charts
+        // Unify horizontal X-axis range across both charts (supports negative pre-test times)
+        let globalMinX = 0;
         let globalMaxX = 0;
         datasets.forEach(d => {{
             if (d.data && d.data.length > 0) {{
                 d.data.forEach(pt => {{
                     if (pt && typeof pt.x === 'number' && !isNaN(pt.x)) {{
+                        if (pt.x < globalMinX) globalMinX = pt.x;
                         if (pt.x > globalMaxX) globalMaxX = pt.x;
                     }}
                 }});
             }}
         }});
         if (globalMaxX <= 0) globalMaxX = 60;
+        const sharedMinX = globalMinX < 0 ? Math.floor(globalMinX - (Math.abs(globalMinX) * 0.05 || 1)) : 0;
         const sharedMaxX = Math.ceil(globalMaxX + (globalMaxX * 0.02 || 1));
 
         // Define axes scales dynamically with fixed scale widths for exact pixel alignment
         const chartScales = {{
             x: {{
                 type: 'linear',
-                min: 0,
+                min: sharedMinX,
                 max: sharedMaxX,
                 title: {{
                     display: true,
@@ -1110,8 +1210,14 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     drawTicks: true,
                     tickLength: 6,
                     tickWidth: 1,
-                    lineWidth: 1,
-                    color: {grid_color}
+                    lineWidth: function(context) {{
+                        if (context.tick && context.tick.value === 0) return 2;
+                        return 1;
+                    }},
+                    color: function(context) {{
+                        if (context.tick && context.tick.value === 0) return 'rgba(0, 229, 255, 0.7)';
+                        return {grid_color};
+                    }}
                 }},
                 border: {{
                     display: true,
@@ -1353,18 +1459,26 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     }}
                 }},
                 tooltip: {{
-                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                    backgroundColor: 'rgba(15, 23, 42, 0.92)',
                     titleColor: '#f8fafc',
                     titleFont: {{ family: 'Outfit', size: baseFontSizes.tooltipTitle, weight: 'bold' }},
                     bodyColor: '#cbd5e1',
                     bodyFont: {{ family: 'Inter', size: baseFontSizes.tooltipBody }},
-                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderColor: 'rgba(255, 255, 255, 0.12)',
                     borderWidth: 1,
                     padding: 12,
-                    cornerRadius: 8,
+                    cornerRadius: 10,
                     callbacks: {{
                         title: function(context) {{
-                            return `相對時間: ${{context[0].parsed.x.toFixed(2)}} 分 (${{Math.floor(context[0].parsed.x)}}分${{Math.round((context[0].parsed.x % 1) * 60)}}秒)`;
+                            const val = context[0].parsed.x;
+                            if (val < 0) {{
+                                const abs = Math.abs(val);
+                                return `相對時間: ${{val.toFixed(2)}} 分 (測試前 ${{Math.floor(abs)}}分${{Math.round((abs % 1) * 60)}}秒)`;
+                            }} else if (val === 0) {{
+                                return `相對時間: 0.00 分 (測試基準點 0分0秒)`;
+                            }} else {{
+                                return `相對時間: ${{val.toFixed(2)}} 分 (${{Math.floor(val)}}分${{Math.round((val % 1) * 60)}}秒)`;
+                            }}
                         }},
                         label: function(context) {{
                             const raw = context.raw;
@@ -1384,6 +1498,42 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                             return label;
                         }}
                     }}
+                }}
+            }}
+        }};
+
+        // Custom Chart.js Plugin to draw vertical glowing 0-minute baseline
+        const zeroLinePlugin = {{
+            id: 'zeroLinePlugin',
+            afterDraw: function(chart) {{
+                const xScale = chart.scales.x;
+                if (!xScale) return;
+                if (xScale.min <= 0 && xScale.max >= 0) {{
+                    const xPos = xScale.getPixelForValue(0);
+                    const ca = chart.chartArea;
+                    const top = ca.top;
+                    const bottom = ca.bottom;
+                    const left = ca.left;
+                    const right = ca.right;
+                    if (xPos < left || xPos > right) return;
+                    
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 4]);
+                    ctx.strokeStyle = '#00e5ff';
+                    ctx.moveTo(xPos, top);
+                    ctx.lineTo(xPos, bottom);
+                    ctx.stroke();
+
+                    // Text label at top of zero-line
+                    ctx.fillStyle = '#00e5ff';
+                    ctx.font = 'bold 11px Outfit, Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    const labelY = Math.max(12, top - 6);
+                    ctx.fillText('0 分基準', xPos, labelY);
+                    ctx.restore();
                 }}
             }}
         }};
@@ -1412,14 +1562,16 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         const physioChart = new Chart(ctxPhysio, {{
             type: 'line',
             data: {{ datasets: physioDatasets }},
-            options: physioOptions
+            options: physioOptions,
+            plugins: [zeroLinePlugin]
         }});
 
         const ctxLactate = document.getElementById('lactateChart').getContext('2d');
         const lactateChart = new Chart(ctxLactate, {{
             type: 'line',
             data: {{ datasets: lactateDatasets }},
-            options: lactateOptions
+            options: lactateOptions,
+            plugins: [zeroLinePlugin]
         }});
 
         // Function to update visibility of datasets
@@ -1456,7 +1608,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
         // Auto scale Y axes based on visible X-axis range
         function autoScaleYAxes(chart) {{
             if (!chart || !chart.scales || !chart.scales.x) return;
-            const xMin = chart.scales.x.min !== undefined ? chart.scales.x.min : 0;
+            const xMin = chart.scales.x.min !== undefined ? chart.scales.x.min : sharedMinX;
             const xMax = chart.scales.x.max !== undefined ? chart.scales.x.max : Infinity;
 
             const axisRanges = {{
@@ -1555,7 +1707,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 physioChart.options.scales.yCoreTemp.max = 42;
             }}
             if (physioChart.options.scales && physioChart.options.scales.x) {{
-                physioChart.options.scales.x.min = 0;
+                physioChart.options.scales.x.min = sharedMinX;
                 physioChart.options.scales.x.max = sharedMaxX;
             }}
             physioChart.resetZoom();
@@ -1576,7 +1728,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 }}
             }}
             if (lactateChart.options.scales && lactateChart.options.scales.x) {{
-                lactateChart.options.scales.x.min = 0;
+                lactateChart.options.scales.x.min = sharedMinX;
                 lactateChart.options.scales.x.max = sharedMaxX;
             }}
             lactateChart.resetZoom();
