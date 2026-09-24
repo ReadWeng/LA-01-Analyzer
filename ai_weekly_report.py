@@ -87,6 +87,7 @@ def render_modern_html_report(report_data):
 
     rx = ai.get("next_workout_prescription", {})
     hero_insights = ai.get("hero_insights", [])
+    long_term_ada = metrics.get("long_term_adaptation", {})
 
     source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫（包含關鍵乳酸測驗與日常背景運動）。</span></div>"""
 
@@ -741,7 +742,13 @@ def render_modern_html_report(report_data):
             <div class="section-header">
                 <span class="section-icon">🔬</span>
                 <span class="section-title">一、汗乳酸動力學與輸出負荷對照評析</span>
+                {f'<span style="background: rgba(0, 242, 254, 0.15); border: 1px solid rgba(0, 242, 254, 0.4); color: #00f2fe; padding: 2px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; margin-left: 8px;">全歷史長期代謝適應：{long_term_ada.get("adaptation_direction", "穩健")}</span>' if (long_term_ada and long_term_ada.get("has_long_term_history")) else ''}
             </div>
+            {f'''<div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(0, 242, 254, 0.2); border-left: 4px solid #00f2fe; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.88rem; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
+                <div>📅 <strong>全歷史跨度：</strong>{long_term_ada.get("history_start_date")} ~ {long_term_ada.get("history_end_date")}（共 {long_term_ada.get("total_historical_tests")} 場汗乳酸測驗，跨越 {long_term_ada.get("history_span_days")} 天）</div>
+                <div>⚡ <strong>長期代謝經濟性變動：</strong><span style="color: {'#00e676' if (long_term_ada.get('efficiency_change_pct', 0) or 0) >= 0 else '#ff5252'}; font-weight: 700;">{'+' if (long_term_ada.get('efficiency_change_pct', 0) or 0) > 0 else ''}{long_term_ada.get('efficiency_change_pct', 0)}% ({long_term_ada.get('efficiency_unit', 'W/mmol')})</span></div>
+                <div>💧 <strong>歷史乳酸水平演變：</strong>早期均值 {long_term_ada.get('early_avg_lactate')} mmol/L ➔ 近期均值 {long_term_ada.get('recent_avg_lactate')} mmol/L</div>
+            </div>''' if (long_term_ada and long_term_ada.get("has_long_term_history")) else ''}
             <div class="prose">
                 {ai.get('lactate_kinetics_analysis', '')}
             </div>

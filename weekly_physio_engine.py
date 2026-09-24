@@ -765,6 +765,10 @@ def fetch_firestore_dataset_with_status(
         except Exception as e:
             print(f"Failed to fetch Intervals wellness data: {e}")
 
+    # 將全歷史乳酸測驗紀錄（未切片）掛在 final_sessions 的屬性或回傳，供長期代謝適應分析
+    if final_sessions:
+        final_sessions[0]["_all_historical_lactate_sessions"] = lactate_sessions
+
     return final_sessions, active_token, None
 
 
@@ -778,9 +782,109 @@ def fetch_firestore_dataset(uid, token, session_limit=5, sport_filter="all", ref
     return sessions
 
 
-def calculate_comprehensive_load(sessions):
+def calculate_long_term_adaptation(all_lactate_sessions, current_sessions=None):
     """
-    計算運動生理學綜合負荷、汗乳酸動力學、真實間隔天數與代謝經濟性指標
+    計算運動員全歷史乳酸測試場次的長期代謝適應與演變趨勢。
+    分析維度：
+    1. 歷史跨度：最早測驗日至最新測驗日、總測驗場次。
+    2. 長期代謝經濟性演變：早期（前1/3場次）vs 近期（後1/3場次）在相同/相近輸出下的乳酸濃度與效率比。
+    3. 基線與峰值乳酸演變趨勢：評估是乳酸門檻推移、糖解抑制、粒線體氧化能力適應或過勞解離。
+    """
+    if not all_lactate_sessions or len(all_lactate_sessions) < 2:
+        return {
+            "has_long_term_history": False,
+            "total_historical_tests": len(all_lactate_sessions) if all_lactate_sessions else 0,
+            "summary_text": "歷史乳酸測驗場次尚不足 2 場，暫以當前週期數據為評估基準。"
+        }
+
+    # 依時間由遠及近排序
+    sorted_la = sorted(all_lactate_sessions, key=lambda x: x["start_time"])
+    n = len(sorted_la)
+    
+    first_test = sorted_la[0]
+    latest_test = sorted_la[-1]
+    history_span_days = max(1, (latest_test["start_time"] - first_test["start_time"]).days)
+    history_span_months = round(history_span_days / 30.4, 1)
+
+    # 提取每場測試之平均/峰值乳酸、功率、心率與代謝效率
+    valid_pwr_tests = [s for s in sorted_la if s.get("avg_power", 0) > 0 and s.get("avg_lactate", 0) > 0]
+    valid_hr_tests = [s for s in sorted_la if s.get("avg_hr", 0) > 0 and s.get("avg_lactate", 0) > 0]
+
+    # 分割早期群組 (Early Phase: 前 33% 場次，至少 1 場) 與 近期群組 (Recent Phase: 後 33% 場次，至少 1 場)
+    split_size = max(1, n // 3)
+    early_group = sorted_la[:split_size]
+    recent_group = sorted_la[-split_size:]
+
+    early_avg_la = round(float(np.mean([s.get("avg_lactate", 0) for s in early_group if s.get("avg_lactate", 0) > 0])), 2)
+    recent_avg_la = round(float(np.mean([s.get("avg_lactate", 0) for s in recent_group if s.get("avg_lactate", 0) > 0])), 2)
+
+    early_peak_la = round(float(np.mean([s.get("max_lactate", 0) for s in early_group if s.get("max_lactate", 0) > 0])), 2)
+    recent_peak_la = round(float(np.mean([s.get("max_lactate", 0) for s in recent_group if s.get("max_lactate", 0) > 0])), 2)
+
+    # 代謝效率趨勢 (Power 或 HR)
+    adaptation_direction = "平穩"
+    eff_unit = "W/mmol" if len(valid_pwr_tests) >= 2 else "bpm/mmol"
+    eff_change_pct = 0.0
+
+    if len(valid_pwr_tests) >= 2:
+        early_pwr_effs = [s["avg_power"] / s["avg_lactate"] for s in early_group if s.get("avg_power", 0) > 0 and s.get("avg_lactate", 0) > 0]
+        recent_pwr_effs = [s["avg_power"] / s["avg_lactate"] for s in recent_group if s.get("avg_power", 0) > 0 and s.get("avg_lactate", 0) > 0]
+        if early_pwr_effs and recent_pwr_effs:
+            mean_early_eff = float(np.mean(early_pwr_effs))
+            mean_recent_eff = float(np.mean(recent_pwr_effs))
+            if mean_early_eff > 0:
+                eff_change_pct = round(((mean_recent_eff - mean_early_eff) / mean_early_eff) * 100.0, 1)
+    elif len(valid_hr_tests) >= 2:
+        early_hr_effs = [s["avg_hr"] / s["avg_lactate"] for s in early_group if s.get("avg_hr", 0) > 0 and s.get("avg_lactate", 0) > 0]
+        recent_hr_effs = [s["avg_hr"] / s["avg_lactate"] for s in recent_group if s.get("avg_hr", 0) > 0 and s.get("avg_lactate", 0) > 0]
+        if early_hr_effs and recent_hr_effs:
+            mean_early_eff = float(np.mean(early_hr_effs))
+            mean_recent_eff = float(np.mean(recent_hr_effs))
+            if mean_early_eff > 0:
+                eff_change_pct = round(((mean_recent_eff - mean_early_eff) / mean_early_eff) * 100.0, 1)
+
+    # 綜合評定長期代謝適應生理機制
+    if eff_change_pct >= 12.0:
+        adaptation_direction = "顯著有氧代謝適應 (經濟性顯著躍升)"
+        adaptation_mechanism = (
+            f"長期歷史跨越 {history_span_days} 天（共 {n} 場汗乳酸測試），代謝經濟性整體提升達 {eff_change_pct:+0.1f}%。呈現典型的【有氧氧化適應（Aerobic Adaptation）】特徵："
+            f"骨骼肌粒線體密度與微血管網構建成熟，在同等或更高輸出負荷下，脂肪氧化佔比增加、糖解產酸被顯著抑制，乳酸生成速率收斂且清除率提升，展現良好的糖原節省效應。"
+        )
+    elif eff_change_pct <= -12.0:
+        adaptation_direction = "代謝解離或急性過勞刺激"
+        adaptation_mechanism = (
+            f"長期歷史跨越 {history_span_days} 天（共 {n} 場汗乳酸測試），近期代謝效率相較早期下滑 {eff_change_pct:+0.1f}%。反映在相同或偏低輸出下汗乳酸濃度偏高，可能由【累積性代謝疲勞、汗腺代謝排酸堆積或自主神經尚未充分超補償】所致，提示需強化基礎有氧打底與間隔休整。"
+        )
+    else:
+        adaptation_direction = "穩定維持期 (代謝持平)"
+        adaptation_mechanism = (
+            f"長期歷史跨越 {history_span_days} 天（共 {n} 場汗乳酸測試），代謝經濟性變動率在 {eff_change_pct:+0.1f}% 穩定區間。受測者維持了規律的乳酸動力學穩態，機體產酸與排酸能力達到動態平衡。"
+        )
+
+    return {
+        "has_long_term_history": True,
+        "total_historical_tests": n,
+        "history_span_days": history_span_days,
+        "history_span_months": history_span_months,
+        "history_start_date": first_test.get("full_date", first_test.get("date")),
+        "history_end_date": latest_test.get("full_date", latest_test.get("date")),
+        "early_group_size": len(early_group),
+        "recent_group_size": len(recent_group),
+        "early_avg_lactate": early_avg_la,
+        "recent_avg_lactate": recent_avg_la,
+        "early_peak_lactate": early_peak_la,
+        "recent_peak_lactate": recent_peak_la,
+        "efficiency_unit": eff_unit,
+        "efficiency_change_pct": eff_change_pct,
+        "adaptation_direction": adaptation_direction,
+        "adaptation_mechanism": adaptation_mechanism
+    }
+
+
+def calculate_comprehensive_load(sessions, all_historical_lactate=None):
+    """
+    計算運動生理學綜合負荷、汗乳酸動力學、真實間隔天數與代謝經濟性指標，
+    並融合全歷史汗乳酸測驗之長期代謝適應趨勢。
     """
     if not sessions:
         return {}
@@ -979,6 +1083,17 @@ def calculate_comprehensive_load(sessions):
     if latest_hrv and hrv_baseline and hrv_baseline > 0:
         hrv_delta_pct = round(((latest_hrv - hrv_baseline) / hrv_baseline) * 100.0, 1)
 
+    # 8. 長期汗乳酸趨勢與代謝適應分析 (Long-Term Lactate Adaptation)
+    # 優先從傳入的 all_historical_lactate 或 sessions[0] 攜帶的 _all_historical_lactate_sessions 提取
+    hist_la_sessions = all_historical_lactate
+    if not hist_la_sessions and sessions:
+        hist_la_sessions = sessions[0].get("_all_historical_lactate_sessions")
+    if not hist_la_sessions:
+        # Fallback: 若無外部全歷史，以當前 session 中含乳酸的場次計算
+        hist_la_sessions = [s for s in sessions if len(s.get("lactate_readings", [])) > 0 or s.get("avg_lactate", 0) > 0]
+
+    long_term_adaptation = calculate_long_term_adaptation(hist_la_sessions, current_sessions=sessions)
+
     return {
         "period_start": sessions[0]["full_date"],
         "period_end": sessions[-1]["full_date"],
@@ -1014,6 +1129,7 @@ def calculate_comprehensive_load(sessions):
         "is_pure_cycling": is_pure_cycling,
         "is_pure_running": is_pure_running,
         "is_mixed_sports": is_mixed_sports,
+        "long_term_adaptation": long_term_adaptation,
         "sessions": sessions
     }
 
