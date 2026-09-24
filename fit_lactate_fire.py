@@ -49,6 +49,48 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
+ADMIN_EMAILS = ["bigporpoise@gmail.com"]
+
+def get_all_firestore_athletes(token):
+    """
+    教練/管理員專用：讀取 Firestore users/ 集合下所有運動員清單 (UID, email, display_name, last_login)
+    """
+    if not token:
+        return []
+    url = "https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users?pageSize=300"
+    headers = {"Authorization": f"Bearer {token}"}
+    athletes = []
+    try:
+        r = requests.get(url, headers=headers, timeout=6)
+        if r.status_code == 200:
+            docs = r.json().get("documents", [])
+            for d in docs:
+                doc_name = d.get("name", "")
+                uid = doc_name.split("/")[-1] if doc_name else ""
+                fields = d.get("fields", {})
+                email = fields.get("email", {}).get("stringValue", "")
+                disp_name = fields.get("display_name", {}).get("stringValue", "")
+                last_login = fields.get("last_login", {}).get("timestampValue", "")
+                if uid:
+                    display_label = email or disp_name or f"用戶 {uid[:8]}..."
+                    if disp_name and email and disp_name != email:
+                        display_label = f"{disp_name} ({email})"
+                    athletes.append({
+                        "uid": uid,
+                        "email": email,
+                        "display_name": disp_name,
+                        "label": display_label,
+                        "last_login": last_login
+                    })
+        else:
+            print(f"Fetch users failed: {r.status_code} - {r.text[:100]}")
+    except Exception as e:
+        print(f"Error fetching athletes list: {e}")
+    
+    # 依 label 排序
+    athletes = sorted(athletes, key=lambda x: x["label"].lower())
+    return athletes
+
 def parse_jwt_payload(token):
     """解析 JWT Payload 以取得 iat (簽發時間) 與 exp (過期時間)"""
     try:
@@ -1024,8 +1066,9 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
 
 
 
-def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
-    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{st.session_state.get('firebase_uid')}/lactate_records?pageSize=300"
+def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0, target_uid=None):
+    eff_uid = target_uid or (st.session_state.get('admin_selected_athlete_uid') if st.session_state.get('firebase_email', '').lower() in [e.lower() for e in ADMIN_EMAILS] else None) or st.session_state.get('firebase_uid')
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{eff_uid}/lactate_records?pageSize=300"
     try:
         headers = {"Authorization": f"Bearer {st.session_state.get('firebase_token')}"}
         response = requests.get(url, headers=headers, timeout=5)
@@ -1077,7 +1120,7 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0):
             # 1. 時間差 <= 120 秒（2分鐘以內）且乳酸值相同（差值 < 0.05）：判定為設備重複上傳，自動刪除後面的點並清除雲端紀錄
             # 2. 若數值有高低差別（重測）：予以保留，留給使用者自行比對與刪除判斷
             dedup_records = []
-            uid = st.session_state.get('firebase_uid')
+            uid = eff_uid
             token = st.session_state.get('firebase_token')
             headers_del = {"Authorization": f"Bearer {token}"} if token else None
 
@@ -1309,10 +1352,83 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
             st.session_state.get("firebase_email", ""),
             st.session_state.get("firebase_token", "")
         )
-    logged_email = st.session_state.get('firebase_email') or "已認證用戶"
-    st.sidebar.success(f"已登入: {logged_email}")
-    if st.sidebar.button("🚪 登出並清除所有紀錄", use_container_width=True):
-        logout_firebase()
+    logged_email = str(st.session_state.get('firebase_email', '')).strip().lower()
+    is_admin = logged_email in [e.lower() for e in ADMIN_EMAILS]
+
+    if is_admin:
+        st.sidebar.markdown("""
+        <div style="background: linear-gradient(135deg, rgba(255, 171, 0, 0.2), rgba(255, 82, 82, 0.2)); border: 1px solid #ffab00; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;">
+            <div style="color: #ffab00; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
+                <span>👑</span> <span>教練/管理員模式</span>
+            </div>
+            <div style="color: #cbd5e1; font-size: 0.75rem; margin-top: 2px;">登入身分：{logged_email}</div>
+        </div>
+        """.format(logged_email=logged_email), unsafe_allow_html=True)
+
+        # 撈取 Firestore 全體選手名冊
+        athletes_list = get_all_firestore_athletes(st.session_state.get("firebase_token", ""))
+        
+        # 確保教練自己也在名單中
+        admin_uid = st.session_state.get("firebase_uid")
+        has_self = any(a["uid"] == admin_uid for a in athletes_list)
+        if not has_self:
+            athletes_list.insert(0, {
+                "uid": admin_uid,
+                "email": logged_email,
+                "display_name": "教練本人",
+                "label": f"👑 教練本人 ({logged_email})"
+            })
+
+        # 建立選項映射
+        uid_options = [a["uid"] for a in athletes_list]
+        labels_map = {a["uid"]: a["label"] for a in athletes_list}
+        emails_map = {a["uid"]: a.get("email", "") for a in athletes_list}
+
+        current_target_uid = st.session_state.get("admin_selected_athlete_uid", admin_uid)
+        if current_target_uid not in uid_options:
+            current_target_uid = admin_uid
+            st.session_state["admin_selected_athlete_uid"] = admin_uid
+
+        sel_idx = uid_options.index(current_target_uid) if current_target_uid in uid_options else 0
+
+        def _on_athlete_change():
+            new_uid = st.session_state.get("coach_athlete_selector")
+            st.session_state["admin_selected_athlete_uid"] = new_uid
+            st.session_state["admin_selected_athlete_email"] = emails_map.get(new_uid, "")
+            # 清除該運動員舊快取，以即時載入該運動員之活動日曆與分析報告
+            st.session_state.pop("cached_weekly_report_html", None)
+            st.session_state.pop("cached_report_key", None)
+            st.session_state.pop("active_cloud_session", None)
+            st.session_state.pop("multi_selected_cloud_sessions", None)
+            # 清除所有舊日期範圍快取
+            for k in list(st.session_state.keys()):
+                if str(k).startswith("date_bounds_"):
+                    st.session_state.pop(k, None)
+
+        st.sidebar.markdown("#### 🏃 選手名冊管理")
+        st.sidebar.selectbox(
+            "切換當前分析選手",
+            options=uid_options,
+            index=sel_idx,
+            format_func=lambda u: labels_map.get(u, u),
+            key="coach_athlete_selector",
+            on_change=_on_athlete_change,
+            help="選擇要調閱與分析的選手資料。系統將無縫切換至該選手的乳酸記錄、FIT 檔及 AI 運動週報！"
+        )
+        
+        # 標定當前正在分析之運動員
+        sel_ath_uid = st.session_state.get("admin_selected_athlete_uid", admin_uid)
+        sel_ath_label = labels_map.get(sel_ath_uid, sel_ath_uid)
+        st.sidebar.caption(f"🎯 當前鎖定目標：**{sel_ath_label}**")
+        if sel_ath_uid != admin_uid:
+            st.sidebar.info("💡 提示：所有運動日曆、FIT 檔案與 AI 週報已切換為此選手之個人雲端數據！")
+
+        if st.sidebar.button("🚪 登出並清除所有紀錄", key="admin_logout_btn", use_container_width=True):
+            logout_firebase()
+    else:
+        st.sidebar.success(f"已登入: {logged_email}")
+        if st.sidebar.button("🚪 登出並清除所有紀錄", use_container_width=True):
+            logout_firebase()
 elif hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
     st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但尚未連結 MyLactate 雲端金鑰。")
     if st.sidebar.button("🧹 清除舊紀錄並重新登入", use_container_width=True):
@@ -1395,6 +1511,26 @@ else:
     st.sidebar.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
     if st.sidebar.button("🧹 重設登入畫面 / 清除快取", key="reset_login_view_btn", use_container_width=True):
         logout_firebase()
+
+def get_active_athlete_context():
+    """
+    動態取得當前分析目標之 (active_uid, active_email, active_name, is_coach_view)
+    若登入者為管理員且已切換選取特定選手，則回傳該選手之 UID 與身分資訊；
+    否則回傳一般登入者本人的 UID 與資訊。
+    """
+    base_uid = st.session_state.get('firebase_uid')
+    base_email = str(st.session_state.get('firebase_email', '')).strip()
+    is_admin = base_email.lower() in [e.lower() for e in ADMIN_EMAILS]
+
+    if is_admin and st.session_state.get("admin_selected_athlete_uid"):
+        sel_uid = st.session_state.get("admin_selected_athlete_uid")
+        sel_email = st.session_state.get("admin_selected_athlete_email") or ""
+        sel_name = sel_email.split('@')[0] if sel_email else "選手"
+        is_viewing_other = (sel_uid != base_uid)
+        return sel_uid, sel_email, sel_name, is_viewing_other
+    
+    ath_name = base_email.split('@')[0] if base_email else "運動員"
+    return base_uid, base_email, ath_name, False
 
 st.sidebar.markdown("---")
 
@@ -1595,16 +1731,18 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
     tab_cloud, tab_upload = st.tabs(["☁️ 從 Firebase 雲端選取歷史數據", "📂 上傳單期 HTML 報告檔案 (.html)"])
 
     with tab_cloud:
-        uid = st.session_state.get('firebase_uid')
+        active_uid, active_email, active_name, is_coach_view = get_active_athlete_context()
         token = st.session_state.get('firebase_token', '')
-        if not uid:
+        if not active_uid:
             st.info("💡 **提示**：請先於左側邊欄登入 MyLactate 雲端帳號，即可從雲端下拉選單直接勾選已儲存的手錶 FIT 與乳酸紀錄進行多期作圖。\n\n（若無雲端帳號，亦可使用右側「📂 上傳單期 HTML 報告檔案」直接分析。）")
         else:
+            if is_coach_view:
+                st.caption(f"👑 **教練視角**：正調閱選手 **{active_name}** ({active_email}) 之雲端活動記錄")
             import activity_calendar
             import importlib
             importlib.reload(activity_calendar)
             activity_calendar.render_activity_calendar(
-                uid=uid,
+                uid=active_uid,
                 token=token,
                 theme=theme_str,
                 mode="multi"
@@ -1744,7 +1882,8 @@ if app_mode == "AI 運動生理週報與下一次處方":
     st.markdown('<div class="title-container" style="display: flex; align-items: center;"><h1 style="margin: 0; color: #00f2fe;">💧 AI 運動生理週期分析與處方（汗乳酸動態）</h1></div>', unsafe_allow_html=True)
     st.caption("以穿戴式汗乳酸動力學、真實訓練間隔天數與代謝輸出比為核心之運動科學診斷")
 
-    uid = st.session_state.get('firebase_uid')
+    active_uid, active_email, athlete_name, is_coach_view = get_active_athlete_context()
+    uid = active_uid
     token = st.session_state.get('firebase_token')
     ref_token = st.session_state.get('firebase_refresh_token')
 
@@ -1753,8 +1892,10 @@ if app_mode == "AI 運動生理週報與下一次處方":
         st.info("系統將讀取您個人的真實汗乳酸測試紀錄與手錶日常運動進行運動生理週期分析。請於左側側邊欄輸入帳號密碼登入。")
         st.stop()
 
-    athlete_name = st.session_state.get('firebase_email', '').split('@')[0] or "運動員"
-    st.success(f"👤 已連結個人雲端帳號：**{st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
+    if is_coach_view:
+        st.success(f"👑 **教練模式鎖定中**：已連結選手 **{athlete_name}**（{active_email}）之個人雲端數據庫（UID: `{uid[:8]}...`）")
+    else:
+        st.success(f"👤 已連結個人雲端帳號：**{active_email or st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
 
     import importlib
     import weekly_physio_engine as wpe
@@ -2412,12 +2553,15 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             )
 else:
     # 歡迎畫面與雲端運動活動月曆 (高對比自適應版)
-    if st.session_state.get('firebase_uid'):
+    active_uid, active_email, athlete_name, is_coach_view = get_active_athlete_context()
+    if active_uid:
+        if is_coach_view:
+            st.info(f"👑 **教練視角**：正瀏覽選手 **{athlete_name}** ({active_email}) 之活動月曆與歷史乳酸紀錄")
         import activity_calendar
         import importlib
         importlib.reload(activity_calendar)
         activity_calendar.render_activity_calendar(
-            uid=st.session_state['firebase_uid'],
+            uid=active_uid,
             token=st.session_state.get('firebase_token', ''),
             theme=theme_str,
             mode="single"
@@ -2425,9 +2569,9 @@ else:
     else:
         st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是登入 MyLactate 雲端帳號以啟用活動月曆瀏覽手錶擷取之運動紀錄。")
     
-    if st.session_state.get('firebase_uid'):
+    if active_uid:
         with st.spinner('正在載入歷史乳酸紀錄...'):
-            all_records = fetch_firebase_lactate_records()
+            all_records = fetch_firebase_lactate_records(target_uid=active_uid)
             if all_records:
                 import plotly.express as px
                 df_hist = pd.DataFrame(all_records)
