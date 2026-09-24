@@ -51,19 +51,119 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
 
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
-def get_all_firestore_athletes(token):
+def load_coach_roster(admin_uid, token):
+    """從 Firestore 教練個人設定讀取常設自訂選手名冊"""
+    if not admin_uid or not token:
+        return []
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{admin_uid}/settings/coach_roster"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            fields = r.json().get("fields", {})
+            roster_str = fields.get("roster_json", {}).get("stringValue", "[]")
+            return json.loads(roster_str)
+    except Exception:
+        pass
+    return []
+
+def save_coach_roster(admin_uid, token, roster_list):
+    """將常設自訂選手名冊儲存至 Firestore 教練個人設定"""
+    if not admin_uid or not token:
+        return
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{admin_uid}/settings/coach_roster"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "fields": {
+            "roster_json": {"stringValue": json.dumps(roster_list, ensure_ascii=False)},
+            "updated_at": {"timestampValue": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
+        }
+    }
+    try:
+        requests.patch(url, headers=headers, json=payload, timeout=5)
+    except Exception:
+        pass
+
+def lookup_firestore_user_by_email(email_query, token):
+    """透過 Firestore runQuery 尋找指定 email 的使用者文件 UID"""
+    if not email_query or not token:
+        return None
+    url = "https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents:runQuery"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    query = {
+        "structuredQuery": {
+            "from": [{"collectionId": "users"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "email"},
+                    "op": "EQUAL",
+                    "value": {"stringValue": email_query.strip().lower()}
+                }
+            },
+            "limit": 1
+        }
+    }
+    try:
+        r = requests.post(url, headers=headers, json=query, timeout=5)
+        if r.status_code == 200:
+            for item in r.json():
+                doc = item.get("document", {})
+                d_name = doc.get("name", "")
+                if "/users/" in d_name:
+                    uid = d_name.split("/users/")[1].split("/")[0]
+                    fields = doc.get("fields", {})
+                    disp_name = fields.get("display_name", {}).get("stringValue", "")
+                    return {
+                        "uid": uid,
+                        "email": email_query.strip().lower(),
+                        "display_name": disp_name
+                    }
+    except Exception:
+        pass
+    return None
+
+def lookup_firestore_user_by_uid(uid_query, token):
+    """直接嘗試讀取指定 UID 的使用者檔案"""
+    if not uid_query or not token:
+        return None
+    clean_uid = uid_query.strip()
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{clean_uid}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=4)
+        if r.status_code == 200:
+            fields = r.json().get("fields", {})
+            return {
+                "uid": clean_uid,
+                "email": fields.get("email", {}).get("stringValue", ""),
+                "display_name": fields.get("display_name", {}).get("stringValue", "")
+            }
+    except Exception:
+        pass
+    return None
+
+def get_all_firestore_athletes(token, admin_uid=None):
     """
-    教練/管理員專用：讀取 Firestore users/ 集合下所有運動員清單 (UID, email, display_name, last_login)
+    教練/管理員專用：讀取 Firestore 所有運動員清單。
+    策略 1: 直接讀取 users 集合下的文件。
+    策略 2: 若 users 根文件未被讀取或權限受限，透過 collectionGroup 跨用戶掃描 fit_records 與 lactate_records 發現所有運動員 UID。
+    策略 3: 自動載入教練儲存的常設自訂選手名冊。
+    回傳: (athletes: list, debug_msg: str)
     """
     if not token:
-        return []
-    url = "https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users?pageSize=300"
+        return [], "未提供認證 Token"
+    
     headers = {"Authorization": f"Bearer {token}"}
-    athletes = []
+    athletes_dict = {}
+    debug_notes = []
+
+    # 1. 嘗試直接列舉 users 根集合
+    url_users = "https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users?pageSize=300"
     try:
-        r = requests.get(url, headers=headers, timeout=6)
-        if r.status_code == 200:
-            docs = r.json().get("documents", [])
+        r_u = requests.get(url_users, headers=headers, timeout=6)
+        if r_u.status_code == 200:
+            docs = r_u.json().get("documents", [])
+            debug_notes.append(f"users根集合回傳 {len(docs)} 筆文件")
             for d in docs:
                 doc_name = d.get("name", "")
                 uid = doc_name.split("/")[-1] if doc_name else ""
@@ -72,24 +172,80 @@ def get_all_firestore_athletes(token):
                 disp_name = fields.get("display_name", {}).get("stringValue", "")
                 last_login = fields.get("last_login", {}).get("timestampValue", "")
                 if uid:
-                    display_label = email or disp_name or f"用戶 {uid[:8]}..."
+                    display_label = email or disp_name or f"選手 ({uid[:8]}...)"
                     if disp_name and email and disp_name != email:
                         display_label = f"{disp_name} ({email})"
-                    athletes.append({
+                    athletes_dict[uid] = {
                         "uid": uid,
                         "email": email,
                         "display_name": disp_name,
                         "label": display_label,
                         "last_login": last_login
-                    })
+                    }
         else:
-            print(f"Fetch users failed: {r.status_code} - {r.text[:100]}")
+            debug_notes.append(f"users集合讀取受限 (HTTP {r_u.status_code})")
     except Exception as e:
-        print(f"Error fetching athletes list: {e}")
-    
-    # 依 label 排序
+        debug_notes.append(f"連線users異常: {e}")
+
+    # 2. 補充策略：若只找到 1 筆或權限無法 list users，透過 collectionGroup 深度發現所有活躍選手
+    if len(athletes_dict) <= 1:
+        cg_url = "https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents:runQuery"
+        found_uids = set()
+        for col_name in ["fit_records", "lactate_records"]:
+            cg_query = {
+                "structuredQuery": {
+                    "from": [{"collectionId": col_name, "allDescendants": True}],
+                    "limit": 100
+                }
+            }
+            try:
+                r_cg = requests.post(cg_url, headers=headers, json=cg_query, timeout=5)
+                if r_cg.status_code == 200:
+                    for item in r_cg.json():
+                        d_name = item.get("document", {}).get("name", "")
+                        if "/users/" in d_name:
+                            parts = d_name.split("/users/")[1].split("/")
+                            if parts and parts[0] and parts[0] not in athletes_dict:
+                                found_uids.add(parts[0])
+            except Exception:
+                pass
+        
+        if found_uids:
+            debug_notes.append(f"跨集合探索發現 {len(found_uids)} 位活躍用戶")
+            for u in found_uids:
+                u_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{u}"
+                u_email = ""
+                u_disp = ""
+                try:
+                    r_single = requests.get(u_url, headers=headers, timeout=3)
+                    if r_single.status_code == 200:
+                        f_single = r_single.json().get("fields", {})
+                        u_email = f_single.get("email", {}).get("stringValue", "")
+                        u_disp = f_single.get("display_name", {}).get("stringValue", "")
+                except Exception:
+                    pass
+                lbl = f"{u_disp} ({u_email})" if (u_disp and u_email) else (u_email or (f"{u_disp} ({u[:8]}...)" if u_disp else f"選手 ({u[:8]}...)"))
+                athletes_dict[u] = {
+                    "uid": u,
+                    "email": u_email,
+                    "display_name": u_disp,
+                    "label": lbl,
+                    "last_login": ""
+                }
+
+    # 3. 補充策略：載入教練儲存的常設自訂選手名冊
+    if admin_uid:
+        persisted_roster = load_coach_roster(admin_uid, token)
+        if persisted_roster:
+            debug_notes.append(f"載入 {len(persisted_roster)} 位常設名冊選手")
+            for p in persisted_roster:
+                p_uid = p.get("uid")
+                if p_uid and p_uid not in athletes_dict:
+                    athletes_dict[p_uid] = p
+
+    athletes = list(athletes_dict.values())
     athletes = sorted(athletes, key=lambda x: x["label"].lower())
-    return athletes
+    return athletes, "；".join(debug_notes)
 
 def parse_jwt_payload(token):
     """解析 JWT Payload 以取得 iat (簽發時間) 與 exp (過期時間)"""
@@ -1366,10 +1522,17 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         """.format(logged_email=logged_email), unsafe_allow_html=True)
 
         # 撈取 Firestore 全體選手名冊
-        athletes_list = get_all_firestore_athletes(st.session_state.get("firebase_token", ""))
-        
-        # 確保教練自己也在名單中
         admin_uid = st.session_state.get("firebase_uid")
+        admin_token = st.session_state.get("firebase_token", "")
+        athletes_list, debug_msg = get_all_firestore_athletes(admin_token, admin_uid=admin_uid)
+
+        # 檢查 session_state 自訂名冊
+        if "coach_custom_athletes" in st.session_state:
+            for c_ath in st.session_state["coach_custom_athletes"]:
+                if not any(a["uid"] == c_ath["uid"] for a in athletes_list):
+                    athletes_list.append(c_ath)
+
+        # 確保教練自己也在名單中
         has_self = any(a["uid"] == admin_uid for a in athletes_list)
         if not has_self:
             athletes_list.insert(0, {
@@ -1383,11 +1546,14 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         uid_options = [a["uid"] for a in athletes_list]
         labels_map = {a["uid"]: a["label"] for a in athletes_list}
         emails_map = {a["uid"]: a.get("email", "") for a in athletes_list}
+        names_map = {a["uid"]: (a.get("display_name") or (a.get("email", "").split("@")[0] if a.get("email") else "選手")) for a in athletes_list}
 
         current_target_uid = st.session_state.get("admin_selected_athlete_uid", admin_uid)
         if current_target_uid not in uid_options:
             current_target_uid = admin_uid
             st.session_state["admin_selected_athlete_uid"] = admin_uid
+            st.session_state["admin_selected_athlete_email"] = logged_email
+            st.session_state["admin_selected_athlete_name"] = "教練本人"
 
         sel_idx = uid_options.index(current_target_uid) if current_target_uid in uid_options else 0
 
@@ -1395,6 +1561,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
             new_uid = st.session_state.get("coach_athlete_selector")
             st.session_state["admin_selected_athlete_uid"] = new_uid
             st.session_state["admin_selected_athlete_email"] = emails_map.get(new_uid, "")
+            st.session_state["admin_selected_athlete_name"] = names_map.get(new_uid, "")
             # 清除該運動員舊快取，以即時載入該運動員之活動日曆與分析報告
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
@@ -1422,6 +1589,107 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         st.sidebar.caption(f"🎯 當前鎖定目標：**{sel_ath_label}**")
         if sel_ath_uid != admin_uid:
             st.sidebar.info("💡 提示：所有運動日曆、FIT 檔案與 AI 週報已切換為此選手之個人雲端數據！")
+
+        # 選手手動新增 / 快速綁定
+        with st.sidebar.expander("➕ 手動指定 / 快速綁定選手 (Email 或 UID)", expanded=False):
+            st.markdown("<div style='font-size: 0.8rem; color: #cbd5e1;'>若選手尚未自動出現於上方名單，輸入選手的 Email 或 UID 即可立即調閱：</div>", unsafe_allow_html=True)
+            m_input = st.text_input("選手 Email 或 UID", key="manual_ath_in", placeholder="例如: mindy@gmail.com 或 8rKj...")
+            m_name = st.text_input("選手姓名/備註 (選填)", key="manual_ath_name_in", placeholder="例如: 選手 Mindy")
+            col_m_add, col_m_ref = st.columns([1.2, 1])
+            with col_m_add:
+                if st.button("➕ 加入名冊並切換", use_container_width=True, key="btn_add_manual_ath"):
+                    raw_val = m_input.strip()
+                    if raw_val:
+                        resolved_uid = raw_val
+                        resolved_email = raw_val if "@" in raw_val else ""
+                        resolved_name = m_name.strip()
+                        # 嘗試聯網解析
+                        if "@" in raw_val:
+                            found = lookup_firestore_user_by_email(raw_val, admin_token)
+                            if found:
+                                resolved_uid = found["uid"]
+                                resolved_email = found["email"]
+                                if not resolved_name and found.get("display_name"):
+                                    resolved_name = found["display_name"]
+                        else:
+                            found = lookup_firestore_user_by_uid(raw_val, admin_token)
+                            if found:
+                                resolved_email = found.get("email", "")
+                                if not resolved_name and found.get("display_name"):
+                                    resolved_name = found["display_name"]
+                        
+                        final_label = f"📌 {resolved_name} ({resolved_email or resolved_uid[:8]})" if resolved_name else (f"📌 {resolved_email}" if resolved_email else f"📌 選手 ({resolved_uid[:8]}...)")
+                        new_entry = {
+                            "uid": resolved_uid,
+                            "email": resolved_email,
+                            "display_name": resolved_name,
+                            "label": final_label,
+                            "custom_added": True
+                        }
+                        if "coach_custom_athletes" not in st.session_state:
+                            st.session_state["coach_custom_athletes"] = []
+                        st.session_state["coach_custom_athletes"] = [a for a in st.session_state["coach_custom_athletes"] if a.get("uid") != resolved_uid]
+                        st.session_state["coach_custom_athletes"].append(new_entry)
+                        
+                        persisted = load_coach_roster(admin_uid, admin_token)
+                        persisted = [p for p in persisted if p.get("uid") != resolved_uid]
+                        persisted.append(new_entry)
+                        save_coach_roster(admin_uid, admin_token, persisted)
+                        
+                        st.session_state["admin_selected_athlete_uid"] = resolved_uid
+                        st.session_state["admin_selected_athlete_email"] = resolved_email
+                        st.session_state["admin_selected_athlete_name"] = resolved_name
+                        st.session_state.pop("cached_weekly_report_html", None)
+                        st.session_state.pop("cached_report_key", None)
+                        st.session_state.pop("active_cloud_session", None)
+                        st.session_state.pop("multi_selected_cloud_sessions", None)
+                        st.rerun()
+            with col_m_ref:
+                if st.button("🔄 重新整理", use_container_width=True, key="btn_refresh_ath_list"):
+                    st.rerun()
+
+        # 若當前選手為手動自訂選手，提供移除按鈕
+        curr_is_custom = any(a.get("uid") == sel_ath_uid and a.get("custom_added") for a in athletes_list)
+        if curr_is_custom:
+            if st.sidebar.button("🗑️ 從常設名冊移除此選手", use_container_width=True, key="btn_remove_custom_ath"):
+                if "coach_custom_athletes" in st.session_state:
+                    st.session_state["coach_custom_athletes"] = [a for a in st.session_state["coach_custom_athletes"] if a.get("uid") != sel_ath_uid]
+                persisted = load_coach_roster(admin_uid, admin_token)
+                persisted = [p for p in persisted if p.get("uid") != sel_ath_uid]
+                save_coach_roster(admin_uid, admin_token, persisted)
+                st.session_state["admin_selected_athlete_uid"] = admin_uid
+                st.session_state["admin_selected_athlete_email"] = logged_email
+                st.session_state["admin_selected_athlete_name"] = "教練本人"
+                st.rerun()
+
+        # 最高權限與規則說明指引
+        with st.sidebar.expander("🔑 如何解鎖所有選手資料庫權限？", expanded=(len(athletes_list) <= 1)):
+            st.markdown(f"""
+            **若下拉選單目前僅顯示您自己（共 {len(athletes_list)} 位），代表 Firebase 雲端資料庫尚未開放教練的全域讀取規則。**
+            
+            只需 10 秒鐘至 **[Firebase Console](https://console.firebase.google.com/)**：
+            1. 點選專案 **lactatecloud**
+            2. 進入 **Firestore Database** > 上方分頁 **Rules (規則)**
+            3. 將內容替換為以下設定並點擊 **Publish (發布)**：
+            ```javascript
+            rules_version = '2';
+            service cloud.firestore {{
+              match /databases/{{database}}/documents {{
+                // 👑 教練最高權限 (開放 bigporpoise@gmail.com 讀寫全體選手資料)
+                match /{{document=**}} {{
+                  allow read, write: if request.auth != null && (
+                    request.auth.token.email == "bigporpoise@gmail.com"
+                  );
+                }}
+                // 一般選手僅能讀寫個人檔案
+                match /users/{{userId}}/{{document=**}} {{
+                  allow read, write: if request.auth != null && request.auth.uid == userId;
+                }}
+              }}
+            }}
+            ```
+            發布後回到此處點擊「🔄 重新整理」，所有選手將立刻自動全部列出！
+            """)
 
         if st.sidebar.button("🚪 登出並清除所有紀錄", key="admin_logout_btn", use_container_width=True):
             logout_firebase()
@@ -1525,7 +1793,8 @@ def get_active_athlete_context():
     if is_admin and st.session_state.get("admin_selected_athlete_uid"):
         sel_uid = st.session_state.get("admin_selected_athlete_uid")
         sel_email = st.session_state.get("admin_selected_athlete_email") or ""
-        sel_name = sel_email.split('@')[0] if sel_email else "選手"
+        custom_name = st.session_state.get("admin_selected_athlete_name")
+        sel_name = custom_name or (sel_email.split('@')[0] if sel_email else "選手")
         is_viewing_other = (sel_uid != base_uid)
         return sel_uid, sel_email, sel_name, is_viewing_other
     
