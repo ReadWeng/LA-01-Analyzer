@@ -1548,6 +1548,14 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         emails_map = {a["uid"]: a.get("email", "") for a in athletes_list}
         names_map = {a["uid"]: (a.get("display_name") or (a.get("email", "").split("@")[0] if a.get("email") else "選手")) for a in athletes_list}
 
+        # 若 URL query params 含有 ath_uid，優先採用以支援月曆點擊與重新整理不遺失選手狀態
+        if "ath_uid" in st.query_params:
+            url_ath_uid = st.query_params.get("ath_uid")
+            if url_ath_uid and url_ath_uid in uid_options:
+                st.session_state["admin_selected_athlete_uid"] = url_ath_uid
+                st.session_state["admin_selected_athlete_email"] = emails_map.get(url_ath_uid, "")
+                st.session_state["admin_selected_athlete_name"] = names_map.get(url_ath_uid, "")
+
         current_target_uid = st.session_state.get("admin_selected_athlete_uid", admin_uid)
         if current_target_uid not in uid_options:
             current_target_uid = admin_uid
@@ -1557,20 +1565,36 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
 
         sel_idx = uid_options.index(current_target_uid) if current_target_uid in uid_options else 0
 
+        # 保障 URL query_params 與當前選手一致
+        if current_target_uid and current_target_uid != admin_uid:
+            st.query_params["ath_uid"] = current_target_uid
+        elif "ath_uid" in st.query_params:
+            del st.query_params["ath_uid"]
+
         def _on_athlete_change():
             new_uid = st.session_state.get("coach_athlete_selector")
             st.session_state["admin_selected_athlete_uid"] = new_uid
             st.session_state["admin_selected_athlete_email"] = emails_map.get(new_uid, "")
             st.session_state["admin_selected_athlete_name"] = names_map.get(new_uid, "")
+            if new_uid and new_uid != admin_uid:
+                st.query_params["ath_uid"] = new_uid
+            elif "ath_uid" in st.query_params:
+                del st.query_params["ath_uid"]
             # 清除該運動員舊快取，以即時載入該運動員之活動日曆與分析報告
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop("cached_report_key", None)
             st.session_state.pop("active_cloud_session", None)
             st.session_state.pop("multi_selected_cloud_sessions", None)
+            st.session_state.pop("cal_quick_date_select", None)
+            st.session_state.pop("cal_selected_date", None)
             # 清除所有舊日期範圍快取
             for k in list(st.session_state.keys()):
-                if str(k).startswith("date_bounds_"):
+                if str(k).startswith("date_bounds_") or str(k).startswith("cal_cache_data_"):
                     st.session_state.pop(k, None)
+
+        # 避免 session_state 舊值不存在於 uid_options 導致 selectbox 崩潰
+        if "coach_athlete_selector" in st.session_state and st.session_state["coach_athlete_selector"] not in uid_options:
+            st.session_state.pop("coach_athlete_selector", None)
 
         st.sidebar.markdown("#### 🏃 選手名冊管理")
         st.sidebar.selectbox(
@@ -2476,9 +2500,11 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     import activity_calendar
                     act_obj = st.session_state.get('active_cloud_session', {})
                     fit_doc_id = act_obj.get('doc_id') or f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
+                    target_save_uid, _, _, _ = get_active_athlete_context()
+                    target_save_uid = target_save_uid or st.session_state['firebase_uid']
                     with st.spinner("正在儲存並綁定乳酸數據至雲端..."):
                         ok, msg = activity_calendar.save_bound_lactate_to_firestore(
-                            uid=st.session_state['firebase_uid'],
+                            uid=target_save_uid,
                             token=st.session_state.get('firebase_token', ''),
                             fit_doc_id=fit_doc_id,
                             start_time=start_time,

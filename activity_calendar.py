@@ -61,14 +61,27 @@ def fetch_user_calendar_data(
     try:
         while True:
             cur_url = fit_base_url if not page_token else f"{fit_base_url}&pageToken={page_token}"
-            r_fit = requests.get(cur_url, headers=headers, timeout=12)
-            if r_fit.status_code == 200:
-                res_data = r_fit.json()
-                docs.extend(res_data.get("documents") or [])
-                page_token = res_data.get("nextPageToken")
-                if not page_token:
+            try:
+                r_fit = requests.get(cur_url, headers=headers, timeout=10)
+                if r_fit.status_code == 200:
+                    res_data = r_fit.json()
+                    docs.extend(res_data.get("documents") or [])
+                    page_token = res_data.get("nextPageToken")
+                    if not page_token:
+                        break
+                elif r_fit.status_code == 401:
+                    try:
+                        from fit_lactate_fire import refresh_firebase_token
+                        if refresh_firebase_token():
+                            token = st.session_state.get("firebase_token", token)
+                            headers["Authorization"] = f"Bearer {token}"
+                            continue
+                    except Exception:
+                        pass
                     break
-            else:
+                else:
+                    break
+            except Exception:
                 break
         for doc in docs:
                 f = doc.get("fields", {})
@@ -163,14 +176,27 @@ def fetch_user_calendar_data(
     try:
         while True:
             cur_url = la_base_url if not page_token else f"{la_base_url}&pageToken={page_token}"
-            r_la = requests.get(cur_url, headers=headers, timeout=12)
-            if r_la.status_code == 200:
-                res_data = r_la.json()
-                la_docs.extend(res_data.get("documents") or [])
-                page_token = res_data.get("nextPageToken")
-                if not page_token:
+            try:
+                r_la = requests.get(cur_url, headers=headers, timeout=10)
+                if r_la.status_code == 200:
+                    res_data = r_la.json()
+                    la_docs.extend(res_data.get("documents") or [])
+                    page_token = res_data.get("nextPageToken")
+                    if not page_token:
+                        break
+                elif r_la.status_code == 401:
+                    try:
+                        from fit_lactate_fire import refresh_firebase_token
+                        if refresh_firebase_token():
+                            token = st.session_state.get("firebase_token", token)
+                            headers["Authorization"] = f"Bearer {token}"
+                            continue
+                    except Exception:
+                        pass
                     break
-            else:
+                else:
+                    break
+            except Exception:
                 break
         for doc in la_docs:
                 f = doc.get("fields", {})
@@ -350,10 +376,26 @@ def build_session_from_fit_record(
                 if diff_min < -30.0 or diff_min > (duration_min + 60.0):
                     continue
 
+            l_val = la.get("lactate_mmol")
+            l_flt = 0.0
+            if l_val is not None and str(l_val).strip() not in ["", "-", "None", "nan"]:
+                try:
+                    l_flt = float(l_val)
+                except (ValueError, TypeError):
+                    l_flt = 0.0
+
+            g_val = la.get("glucose_mgdl")
+            g_flt = np.nan
+            if g_val is not None and str(g_val).strip() not in ["", "-", "None", "nan"]:
+                try:
+                    g_flt = float(g_val)
+                except (ValueError, TypeError):
+                    g_flt = np.nan
+
             lactate_rows.append({
                 "相對時間 (分鐘)": diff_min,
-                "乳酸值 (mmol/L)": float(la.get("lactate_mmol", 0.0)),
-                "血糖值 (mg/dL)": float(la["glucose_mgdl"]) if la.get("glucose_mgdl") is not None else np.nan
+                "乳酸值 (mmol/L)": l_flt,
+                "血糖值 (mg/dL)": g_flt
             })
 
     if lactate_rows:
@@ -648,6 +690,12 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
         st.session_state["cal_view_year"] = today.year
         st.session_state["cal_view_month"] = today.month
 
+    # 偵測運動員切換，若運動員變更則清空該月份舊選取與下拉選單狀態，避免選單值衝突
+    if st.session_state.get("_cal_current_uid") != uid:
+        st.session_state["_cal_current_uid"] = uid
+        st.session_state.pop("cal_quick_date_select", None)
+        st.session_state.pop("cal_selected_date", None)
+
     mode_param = "multi" if mode == "multi" else "single"
 
     # 1. 抓取雲端數據 (優先載入，以提供選取及運算所需之資料)
@@ -728,7 +776,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
     # ==========================================
     # 以下為單期分析模式月曆邏輯 (mode == "single")
     # ==========================================
-    # 處理來自 HTML 點擊的 Query Params 跳轉 (支援單擊選取 / 選中後單擊取消)
+    # 處理來自 HTML 點擊的 Query Params 跳轉 (支援單擊選取)
     if "cal_date" in st.query_params:
         clicked_date = st.query_params.get("cal_date")
         try:
@@ -744,7 +792,9 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
         del st.query_params["cal_date"]
         st.query_params["app_mode"] = mode_param
-        st.rerun()
+        if uid:
+            st.query_params["ath_uid"] = uid
+        # 移除 st.rerun()，允許腳本順序直接執行渲染該日期，避免二次重載造成閃退與中斷
 
     if "cal_m" in st.query_params:
         m_act = st.query_params.get("cal_m")
@@ -1024,9 +1074,10 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
             badge_html = "".join(badges)
 
+            ath_param = f"&ath_uid={uid}" if uid else ""
             cell_html = (
                 f'<td style="width:14.28%; height:44px; padding:1px; vertical-align:middle; text-align:center; background:{bg}; border:{bd}; border-radius:6px; {box_sh}">'
-                f'<a href="?cal_date={d_str}&app_mode={mode_param}" target="_self" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; text-decoration:none;" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">'
+                f'<a href="?cal_date={d_str}&app_mode={mode_param}{ath_param}" target="_self" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; text-decoration:none;" title="{d_str}: {len(day_acts)}場活動, {len(day_las)}筆乳酸">'
                 f'<span style="font-size:13px; font-weight:700; line-height:1.1; color:{num_col};">{day_num}</span>'
                 f'<div style="margin-top:2px; height:12px; display:flex; align-items:center; justify-content:center;">{badge_html}</div>'
                 f'</a>'
@@ -1085,6 +1136,10 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                 if date_map[opt] == selected_date:
                     cur_idx = i
                     break
+
+            # 確保 session_state 中的值合法，避免跨選手或跨月切換時觸發 StreamlitValueSessionStateError 閃退
+            if "cal_quick_date_select" in st.session_state and st.session_state["cal_quick_date_select"] not in date_options:
+                st.session_state.pop("cal_quick_date_select", None)
 
             col_q1, col_q2 = st.columns([3, 1])
             with col_q1:
