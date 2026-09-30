@@ -1262,11 +1262,13 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0, target
                         if elapsed_min < -60 or elapsed_min > (duration_minutes + 60):
                             continue
 
+                    feeling_str = fields.get("feeling", {}).get("stringValue", fields.get("notes", {}).get("stringValue", ""))
                     records.append({
                         "elapsed_minutes": elapsed_min,
                         "lactate_mmol": final_la,
                         "record_time": record_time,
-                        "doc_id": doc_id
+                        "doc_id": doc_id,
+                        "feeling": feeling_str
                     })
                     
             # 排序：依時間由舊至新排序
