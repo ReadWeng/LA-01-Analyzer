@@ -210,6 +210,14 @@ def fetch_user_calendar_data(
                 glu_val = _get_fs_field(f.get("final_glu_mgdl"))
                 src = _get_fs_field(f.get("source"), "")
                 fit_bound_id = _get_fs_field(f.get("fit_doc_id"), "")
+                feeling_val = _get_fs_field(f.get("feeling"))
+                if feeling_val is None:
+                    feeling_val = _get_fs_field(f.get("rpe"))
+                if feeling_val is None:
+                    feeling_val = _get_fs_field(f.get("notes"))
+                if feeling_val is None:
+                    feeling_val = _get_fs_field(f.get("note"))
+                feeling_str = str(feeling_val).strip() if feeling_val is not None else ""
 
                 if year > 0 and month > 0 and day > 0:
                     full_year = year + 2000 if year < 100 else year
@@ -227,7 +235,8 @@ def fetch_user_calendar_data(
                         "lactate_mmol": la_val,
                         "glucose_mgdl": glu_val,
                         "source": src,
-                        "fit_doc_id": fit_bound_id
+                        "fit_doc_id": fit_bound_id,
+                        "feeling": feeling_str
                     }
                     lactates_by_date.setdefault(date_str, []).append(la_item)
 
@@ -397,7 +406,8 @@ def build_session_from_fit_record(
             lactate_rows.append({
                 "相對時間 (分鐘)": diff_min,
                 "乳酸值 (mmol/L)": l_flt,
-                "血糖值 (mg/dL)": g_flt
+                "血糖值 (mg/dL)": g_flt,
+                "體感": la.get("feeling", "")
             })
 
     if lactate_rows:
@@ -406,7 +416,8 @@ def build_session_from_fit_record(
         df_la = pd.DataFrame({
             "相對時間 (分鐘)": pd.Series(dtype="float"),
             "乳酸值 (mmol/L)": pd.Series(dtype="float"),
-            "血糖值 (mg/dL)": pd.Series(dtype="float")
+            "血糖值 (mg/dL)": pd.Series(dtype="float"),
+            "體感": pd.Series(dtype="object")
         })
 
     return {
@@ -510,7 +521,8 @@ def convert_firebase_activity_to_session_dict(
                 item = {
                     'x': diff_min,
                     'y': float(la_val),
-                    'source': la.get("source", "採樣點")
+                    'source': la.get("source", "採樣點"),
+                    'feeling': la.get("feeling", "")
                 }
                 if pw_at_t is not None:
                     item['power'] = pw_at_t
@@ -625,6 +637,9 @@ def save_bound_lactate_to_firestore(
             la_payload["fields"]["fit_doc_id"] = {"stringValue": str(fit_doc_id)}
         if pd.notna(glu):
             la_payload["fields"]["final_glu_mgdl"] = {"doubleValue": float(glu)}
+        feel = row.get("體感") if "體感" in row else (row.get("feeling") if "feeling" in row else None)
+        if pd.notna(feel) and str(feel).strip():
+            la_payload["fields"]["feeling"] = {"stringValue": str(feel).strip()}
 
         la_doc_id = f"la_{rec_dt.strftime('%Y%m%d_%H%M%S')}"
         la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{la_doc_id}"
@@ -685,6 +700,44 @@ def delete_lactate_from_firestore(uid: str, token: str, doc_id: str) -> bool:
         return r.status_code in [200, 204]
     except Exception:
         return False
+
+
+def update_lactate_feeling_in_firestore(uid: str, token: str, doc_id: str, feeling_text: str) -> bool:
+    """更新特定 lactate_record 的體感 (feeling) 欄位，並清除相關快取"""
+    if not uid or not token or not doc_id:
+        return False
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records/{doc_id}?updateMask.fieldPaths=feeling"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    clean_val = str(feeling_text or "").strip()
+    payload = {
+        "fields": {
+            "feeling": {"stringValue": clean_val}
+        }
+    }
+    try:
+        r = requests.patch(url, headers=headers, json=payload, timeout=8)
+        if r.status_code in [200, 201]:
+            st.session_state.pop(f"cal_cache_data_{uid}", None)
+            st.session_state.pop("cached_weekly_report_html", None)
+            st.session_state.pop(f"date_bounds_v4_{uid}", None)
+            return True
+        elif r.status_code == 401:
+            try:
+                from fit_lactate_fire import refresh_firebase_token
+                if refresh_firebase_token():
+                    token = st.session_state.get("firebase_token", token)
+                    headers["Authorization"] = f"Bearer {token}"
+                    r_retry = requests.patch(url, headers=headers, json=payload, timeout=8)
+                    if r_retry.status_code in [200, 201]:
+                        st.session_state.pop(f"cal_cache_data_{uid}", None)
+                        st.session_state.pop("cached_weekly_report_html", None)
+                        st.session_state.pop(f"date_bounds_v4_{uid}", None)
+                        return True
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Error updating lactate feeling: {e}")
+    return False
 
 
 def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: str = "single"):
@@ -1258,7 +1311,10 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
                 for l_idx, la in enumerate(sel_las):
                     is_this_retest = (l_idx > 0 and abs((la["record_time"] - sel_las[l_idx-1]["record_time"]).total_seconds()) <= 120)
-                    c_la1, c_la2, c_la3, c_la4 = st.columns([2, 2, 2, 1])
+                    la_doc_id = la.get("doc_id", "")
+                    feel_text = la.get("feeling", "")
+
+                    c_la1, c_la2, c_la3, c_la4, c_la5, c_la6 = st.columns([1.8, 1.8, 1.3, 2.2, 0.7, 0.7])
                     with c_la1:
                         retest_badge = " <span style='background:#f59e0b; color:#fff; font-size:0.75rem; padding:1px 5px; border-radius:4px;'>重測</span>" if is_this_retest else ""
                         st.markdown(f"🕒 **{la['record_time'].strftime('%H:%M')}**{retest_badge}", unsafe_allow_html=True)
@@ -1268,7 +1324,38 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                         glu_t = f"{la['glucose_mgdl']} mg/dL" if la.get("glucose_mgdl") is not None else "-"
                         st.markdown(f"🍬 {glu_t}")
                     with c_la4:
-                        la_doc_id = la.get("doc_id", "")
+                        if feel_text:
+                            st.markdown(f"💪 **{feel_text}**")
+                        else:
+                            st.markdown("<span style='color:#8b949e;'>💪 <em>-</em></span>", unsafe_allow_html=True)
+                    with c_la5:
+                        if la_doc_id:
+                            with st.popover("✏️", help="輸入或編輯此筆乳酸體感 (RPE)"):
+                                st.markdown(f"**📝 體感與備註** ({la['record_time'].strftime('%H:%M')})")
+                                with st.form(key=f"form_feel_{la_doc_id}_{l_idx}"):
+                                    inp_feel = st.text_input(
+                                        "體感 / RPE / 狀態描述",
+                                        value=feel_text,
+                                        placeholder="例如: 輕鬆、適中、吃力、力竭、RPE 7..."
+                                    )
+                                    sub_feel = st.form_submit_button("💾 儲存體感", type="primary", use_container_width=True)
+                                    if sub_feel:
+                                        if update_lactate_feeling_in_firestore(uid, token, la_doc_id, inp_feel):
+                                            st.toast("✅ 體感紀錄已更新！", icon="💪")
+                                            fetch_user_calendar_data(uid, token, force_reload=True)
+                                            st.rerun()
+                                        else:
+                                            st.error("儲存失敗，請檢查權限或網路連線。")
+                                st.caption("⚡ 快速選填：")
+                                q1, q2, q3, q4 = st.columns(4)
+                                quick_tags = ["輕鬆", "適中", "吃力", "力竭"]
+                                for q_col, tag in zip([q1, q2, q3, q4], quick_tags):
+                                    if q_col.button(tag, key=f"q_{tag}_{la_doc_id}_{l_idx}", use_container_width=True):
+                                        if update_lactate_feeling_in_firestore(uid, token, la_doc_id, tag):
+                                            st.toast(f"✅ 體感已記錄為【{tag}】！", icon="💪")
+                                            fetch_user_calendar_data(uid, token, force_reload=True)
+                                            st.rerun()
+                    with c_la6:
                         if la_doc_id and st.button("🗑️", key=f"btn_del_la_{la_doc_id}_{l_idx}", help="從雲端刪除此筆乳酸紀錄"):
                             if delete_lactate_from_firestore(uid, token, la_doc_id):
                                 st.toast("🗑️ 已成功刪除該筆乳酸紀錄！", icon="✅")

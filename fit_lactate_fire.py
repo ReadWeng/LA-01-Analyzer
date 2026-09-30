@@ -2281,7 +2281,8 @@ if 'custom_lactate' not in st.session_state:
     st.session_state['custom_lactate'] = pd.DataFrame({
         '相對時間 (分鐘)': pd.Series(dtype='float'),
         '乳酸值 (mmol/L)': pd.Series(dtype='float'),
-        '血糖值 (mg/dL)': pd.Series(dtype='float')
+        '血糖值 (mg/dL)': pd.Series(dtype='float'),
+        '體感': pd.Series(dtype='object')
     })
 
 # 側邊欄：檔案上傳與設定
@@ -2336,7 +2337,8 @@ if file_name and file_name != st.session_state['last_file']:
     st.session_state['custom_lactate'] = pd.DataFrame({
         '相對時間 (分鐘)': pd.Series(dtype='float'),
         '乳酸值 (mmol/L)': pd.Series(dtype='float'),
-        '血糖值 (mg/dL)': pd.Series(dtype='float')
+        '血糖值 (mg/dL)': pd.Series(dtype='float'),
+        '體感': pd.Series(dtype='object')
     })
     # 清除編輯器狀態，強迫重新載入預設數據
     if 'custom_lactate_editor' in st.session_state:
@@ -2453,7 +2455,8 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                                 new_rows.append({
                                     '相對時間 (分鐘)': round(r['elapsed_minutes'], 1),
                                     '乳酸值 (mmol/L)': round(r['lactate_mmol'], 2),
-                                    '血糖值 (mg/dL)': np.nan
+                                    '血糖值 (mg/dL)': np.nan,
+                                    '體感': r.get('feeling', '')
                                 })
                             if new_rows:
                                 st.session_state['custom_lactate'] = pd.DataFrame(new_rows)
@@ -2463,7 +2466,8 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             column_config={
                 '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
                 '乳酸值 (mmol/L)': st.column_config.NumberColumn("乳酸值 (mmol/L)", min_value=0.0, step=0.1, format="%.2f"),
-                '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d")
+                '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
+                '體感': st.column_config.TextColumn("體感 / RPE", help="例如: 輕鬆、適中、吃力、力竭、RPE 7")
             },
             num_rows="dynamic",
             use_container_width=True,
