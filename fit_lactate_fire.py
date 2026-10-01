@@ -2934,53 +2934,51 @@ else:
                     st.plotly_chart(fig, use_container_width=True)
                     
                     # -------------------------------------------------------------
-                    # 智能計算判定：最新一期 vs 前四期差異與訓練建議
+                    # 智能計算判定：近五期乳酸疲勞動力學分析 (lactate-fatigue-analyzer)
                     # -------------------------------------------------------------
                     st.markdown("#### 🧠 近五期乳酸智能評估與訓練建議")
                     
-                    prev_dates = dates_chrono[:-1]
-                    latest_vals = df_top5[df_top5['date_str'] == latest_date]['lactate_mmol'].dropna().tolist()
-                    latest_mean = float(np.mean(latest_vals)) if latest_vals else 0.0
+                    import lactate_fatigue_analyzer
+                    import importlib
+                    importlib.reload(lactate_fatigue_analyzer)
                     
-                    if prev_dates:
-                        prev_vals = df_top5[df_top5['date_str'].isin(prev_dates)]['lactate_mmol'].dropna().tolist()
-                        prev_mean = float(np.mean(prev_vals)) if prev_vals else 0.0
-                        diff = latest_mean - prev_mean
-                        diff_pct = (diff / prev_mean * 100.0) if prev_mean > 0 else 0.0
-                        
-                        col_m1, col_m2, col_m3 = st.columns(3)
+                    analysis_res = lactate_fatigue_analyzer.analyze_lactate_fatigue(df_top5, dates_chrono)
+                    
+                    if len(dates_chrono) > 1:
+                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                         with col_m1:
                             st.metric(
-                                label=f"最新期 ({latest_date}) 平均乳酸",
-                                value=f"{latest_mean:.2f} mmol/L"
+                                label=f"最新期 ({analysis_res['latest_date']}) 平均乳酸",
+                                value=f"{analysis_res['latest_mean']:.2f} mmol/L"
                             )
                         with col_m2:
                             st.metric(
-                                label=f"前 {len(prev_dates)} 期歷史基準平均",
-                                value=f"{prev_mean:.2f} mmol/L"
+                                label=f"前 {len(dates_chrono)-1} 期歷史基準平均",
+                                value=f"{analysis_res['prev_mean']:.2f} mmol/L"
                             )
                         with col_m3:
                             st.metric(
-                                label="最新期 vs 前期差異",
-                                value=f"{diff:+.2f} mmol/L",
-                                delta=f"{diff_pct:+.1f}%",
+                                label="最新期 vs 歷史基準差異",
+                                value=f"{analysis_res['diff']:+.2f} mmol/L",
+                                delta=f"{analysis_res['diff_pct']:+.1f}%",
                                 delta_color="inverse"
                             )
+                        with col_m4:
+                            st.metric(
+                                label="最小可偵測變化量 (MDC₉₅)",
+                                value=f"±{analysis_res['mdc_threshold']:.2f} mmol/L",
+                                help="依據 Takemoto et al. (2026) 統計模型，唯有超過此個體量測雜訊邊界，才判定為真實生理動態位移。"
+                            )
                         
-                        if diff > 0.1:
-                            st.warning(
-                                f"⚠️ **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）高出 **+{diff:.2f} mmol/L (+{diff_pct:.1f}%)**，顯示疲勞累積或恢復未完全，建議安排充分休息或降低近期訓練強度。"
-                            )
-                        elif diff < -0.1:
-                            st.success(
-                                f"💪 **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，較前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）低了 **{abs(diff):.2f} mmol/L ({diff_pct:.1f}%)**，生理與有氧代謝狀態良好，建議可維持或適度增加訓練強度。"
-                            )
+                        box_type = analysis_res.get('ui_box_type', 'info')
+                        if box_type == 'warning':
+                            st.warning(analysis_res['full_advice_markdown'])
+                        elif box_type == 'success':
+                            st.success(analysis_res['full_advice_markdown'])
                         else:
-                            st.info(
-                                f"⚖️ **系統建議：** 最新一期平均乳酸為 **{latest_mean:.2f} mmol/L**，與前 {len(prev_dates)} 期平均（**{prev_mean:.2f} mmol/L**）差異極微（**{diff:+.2f} mmol/L**），生理狀態維持平穩，建議按原定課表規律訓練。"
-                            )
+                            st.info(analysis_res['full_advice_markdown'])
                     else:
-                        st.info(f"ℹ️ 目前僅有 1 期歷史紀錄（{latest_date}），平均乳酸為 **{latest_mean:.2f} mmol/L**。待累積第 2 期以上紀錄後，系統將自動啟動近五期乳酸對比與訓練調整建議。")
+                        st.info(analysis_res['full_advice_markdown'])
 
     st.markdown("""
     ### 💡 本工具特色：
