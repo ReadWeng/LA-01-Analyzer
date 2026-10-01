@@ -86,8 +86,93 @@ def render_modern_html_report(report_data):
     sessions = report_data.get("sessions", [])
 
     rx = ai.get("next_workout_prescription", {})
-    hero_insights = ai.get("hero_insights", [])
+    hero_insights = list(ai.get("hero_insights", []))
     long_term_ada = metrics.get("long_term_adaptation", {})
+    fatigue_kinetics = metrics.get("lactate_fatigue_analysis", {})
+
+    fatigue_kinetics_card_html = ""
+    if fatigue_kinetics and fatigue_kinetics.get("status") not in [None, "", "NO_DATA"]:
+        f_status = fatigue_kinetics.get("status")
+        f_badge = fatigue_kinetics.get("badge", "乳酸疲勞動力學評估")
+        f_latest_mean = fatigue_kinetics.get("latest_mean", 0.0)
+        f_prev_mean = fatigue_kinetics.get("prev_mean", 0.0)
+        f_diff = fatigue_kinetics.get("diff", 0.0)
+        f_diff_pct = fatigue_kinetics.get("diff_pct", 0.0)
+        f_mdc = fatigue_kinetics.get("mdc_threshold", 0.25)
+        f_latest_date = fatigue_kinetics.get("latest_date", "最新期")
+
+        if f_status == "FATIGUE_LEFTWARD_SHIFT":
+            c_color = "#ff5252"
+            c_border = "rgba(255, 82, 82, 0.35)"
+            c_bg = "linear-gradient(135deg, rgba(255, 82, 82, 0.09) 0%, rgba(22, 27, 34, 0.85) 100%)"
+            badge_bg = "rgba(255, 82, 82, 0.18)"
+        elif f_status == "ADAPTATION_RIGHTWARD_SHIFT":
+            c_color = "#00e676"
+            c_border = "rgba(0, 230, 118, 0.35)"
+            c_bg = "linear-gradient(135deg, rgba(0, 230, 118, 0.09) 0%, rgba(22, 27, 34, 0.85) 100%)"
+            badge_bg = "rgba(0, 230, 118, 0.18)"
+        elif f_status == "METABOLIC_STABLE":
+            c_color = "#ffab00"
+            c_border = "rgba(255, 171, 0, 0.35)"
+            c_bg = "linear-gradient(135deg, rgba(255, 171, 0, 0.09) 0%, rgba(22, 27, 34, 0.85) 100%)"
+            badge_bg = "rgba(255, 171, 0, 0.18)"
+        else:
+            c_color = "#00f2fe"
+            c_border = "rgba(0, 242, 254, 0.35)"
+            c_bg = "linear-gradient(135deg, rgba(0, 242, 254, 0.09) 0%, rgba(22, 27, 34, 0.85) 100%)"
+            badge_bg = "rgba(0, 242, 254, 0.18)"
+
+        f_mech = str(fatigue_kinetics.get("physio_mechanism", "")).replace("\n", "<br>")
+        f_rx = str(fatigue_kinetics.get("training_prescription", "")).replace("\n", "<br>")
+
+        fatigue_kinetics_card_html = f"""
+        <div class="section-box" style="border: 1px solid {c_border}; background: {c_bg}; margin-bottom: 28px;">
+            <div class="section-header" style="justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="section-icon">🧠</span>
+                    <span class="section-title">近五期乳酸疲勞動力學評估與處方依據 (lactate-fatigue-analyzer)</span>
+                </div>
+                <span style="background: {badge_bg}; border: 1px solid {c_color}; color: {c_color}; padding: 4px 14px; border-radius: 999px; font-size: 0.85rem; font-weight: 700;">
+                    {f_badge}
+                </span>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 20px;">
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最新期 ({f_latest_date}) 平均乳酸</div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #ffffff; margin-top: 4px;">{f_latest_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">前期歷史基準平均</div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #94a3b8; margin-top: 4px;">{f_prev_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最新期 vs 基準差異 (Δ)</div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: {c_color}; margin-top: 4px;">
+                        {f_diff:+.2f} <span style="font-size: 0.85rem;">mmol/L ({f_diff_pct:+.1f}%)</span>
+                    </div>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最小可偵測變化量 (MDC₉₅)</div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #00f2fe; margin-top: 4px;">±{f_mdc:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                </div>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.75); border-left: 4px solid {c_color}; border-radius: 8px; padding: 14px 18px; margin-bottom: 14px; font-size: 0.92rem; line-height: 1.7; color: #e2e8f0;">
+                <div style="font-weight: 700; color: #ffffff; margin-bottom: 6px;">🔬 生理動力學機制解析（Okawara 2022 & Takemoto 2026 模型）：</div>
+                {f_mech}
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.75); border-left: 4px solid #00e676; border-radius: 8px; padding: 14px 18px; margin-bottom: 14px; font-size: 0.92rem; line-height: 1.7; color: #e2e8f0;">
+                <div style="font-weight: 700; color: #ffffff; margin-bottom: 6px;">📋 訓練調控處方建議（運動生理學系統評語）：</div>
+                {f_rx}
+            </div>
+
+            <div style="font-size: 0.8rem; color: #94a3b8; font-style: italic;">
+                📌 <strong>科學判定規範：</strong>依據 Okawara et al. (2022) 與 Takemoto et al. (2026) 研究，疲勞的核心特徵為動力學曲線「左移／提前上升」而非單一絕對濃度；唯有變動幅度超越個體量測誤差界線（MDC₉₅）才判定為真實生理動態位移。
+            </div>
+        </div>
+        """
 
     source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫（包含關鍵乳酸測驗與日常背景運動）。</span></div>"""
 
@@ -235,6 +320,15 @@ def render_modern_html_report(report_data):
         """
 
     # Hero Insight 卡片 HTML
+    if fatigue_kinetics and fatigue_kinetics.get("status") not in [None, "", "NO_DATA"]:
+        has_fatigue_insight = any("疲勞" in h.get("metric", "") for h in hero_insights)
+        if not has_fatigue_insight:
+            hero_insights.insert(0, {
+                "metric": "疲勞動力學 (Okawara/Takemoto)",
+                "value": fatigue_kinetics.get("badge", "穩態基準"),
+                "desc": f"位移 {fatigue_kinetics.get('diff', 0):+.2f} mmol/L (MDC95: ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f})"
+            })
+
     hero_cards_html = ""
     for h in hero_insights:
         hero_cards_html += f"""
@@ -736,6 +830,8 @@ def render_modern_html_report(report_data):
                 <strong>🧬 運動生理學處方依據：</strong>{rx.get('physiological_rationale', '')}
             </div>
         </div>
+        
+        {fatigue_kinetics_card_html}
 
         <!-- Deep Physiological Insights -->
         <div class="section-box">

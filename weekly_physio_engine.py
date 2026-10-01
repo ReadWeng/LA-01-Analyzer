@@ -1094,6 +1094,69 @@ def calculate_comprehensive_load(sessions, all_historical_lactate=None):
 
     long_term_adaptation = calculate_long_term_adaptation(hist_la_sessions, current_sessions=sessions)
 
+    # 8.1 呼叫 lactate-fatigue-analyzer 技能：近五期乳酸疲勞動力學分析 (Okawara 2022 & Takemoto 2026 模型)
+    import lactate_fatigue_analyzer
+    
+    # 提取具備汗乳酸採樣的測試場次（依時間由舊至新）
+    all_la_tests = sorted(
+        [s for s in (hist_la_sessions or []) if (s.get('avg_lactate', 0) > 0 or len(s.get('lactate_readings', [])) > 0)],
+        key=lambda x: x["start_time"]
+    )
+    if not all_la_tests:
+        all_la_tests = sorted(
+            [s for s in sessions if (s.get('avg_lactate', 0) > 0 or len(s.get('lactate_readings', [])) > 0)],
+            key=lambda x: x["start_time"]
+        )
+
+    # 取最近至多 5 場含乳酸之測試場次
+    top5_la_tests = all_la_tests[-5:] if len(all_la_tests) > 5 else all_la_tests
+    
+    la_df_rows = []
+    dates_chrono = []
+    for s in top5_la_tests:
+        d_str = s.get("full_date") or (s["start_time"].strftime("%Y-%m-%d") if s.get("start_time") else s.get("date"))
+        if d_str not in dates_chrono:
+            dates_chrono.append(d_str)
+        readings = s.get("lactate_readings", [])
+        raw_vals = s.get("lactate_values", [])
+        if readings:
+            for idx, r in enumerate(readings):
+                val = r.get("lactate") if isinstance(r, dict) else float(r)
+                la_df_rows.append({
+                    "date_str": d_str,
+                    "lactate_mmol": float(val),
+                    "測試點順序": idx + 1
+                })
+        elif raw_vals:
+            for idx, val in enumerate(raw_vals):
+                la_df_rows.append({
+                    "date_str": d_str,
+                    "lactate_mmol": float(val),
+                    "測試點順序": idx + 1
+                })
+        elif s.get("avg_lactate", 0) > 0:
+            la_df_rows.append({
+                "date_str": d_str,
+                "lactate_mmol": float(s["avg_lactate"]),
+                "測試點順序": 1
+            })
+
+    if la_df_rows and dates_chrono:
+        df_top5 = pd.DataFrame(la_df_rows)
+        lactate_fatigue_analysis = lactate_fatigue_analyzer.analyze_lactate_fatigue(df_top5, dates_chrono)
+    else:
+        lactate_fatigue_analysis = lactate_fatigue_analyzer.analyze_lactate_fatigue(pd.DataFrame(), [])
+
+    # 若疲勞動力學分析判定為顯著左移（急性代謝疲勞），校準整體恢復狀態
+    if lactate_fatigue_analysis.get("status") == "FATIGUE_LEFTWARD_SHIFT":
+        recovery_state = "急性代謝疲勞累積 (曲線左移／反應提前)"
+        state_color = "#ff5252"
+        recommended_action = "近五期乳酸動力學呈現顯著左移（反應提前），代謝疲勞堆積，建議暫緩 Zone 4+ 高強度課表，安排 45-60 分鐘 Zone 1-2 主動排酸或充分休息。"
+    elif lactate_fatigue_analysis.get("status") == "ADAPTATION_RIGHTWARD_SHIFT":
+        recovery_state = "代謝適應優異 (曲線右移／有氧清除增強)"
+        state_color = "#00e676"
+        recommended_action = "近五期乳酸動力學呈現良好右移（延遲堆積），有氧氧化與清除效率提升，可維持現行進度或適度挑戰專項強度。"
+
     return {
         "period_start": sessions[0]["full_date"],
         "period_end": sessions[-1]["full_date"],
@@ -1130,6 +1193,7 @@ def calculate_comprehensive_load(sessions, all_historical_lactate=None):
         "is_pure_running": is_pure_running,
         "is_mixed_sports": is_mixed_sports,
         "long_term_adaptation": long_term_adaptation,
+        "lactate_fatigue_analysis": lactate_fatigue_analysis,
         "sessions": sessions
     }
 
