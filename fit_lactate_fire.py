@@ -798,6 +798,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 注入前端防休眠與連線活性維持組件 (Web Worker 心跳 + 核心健康端點探測 + 螢幕防休眠)
+try:
+    import streamlit_keep_alive
+    streamlit_keep_alive.init_keep_alive(interval_seconds=25, enable_wake_lock=True, show_badge=False)
+except Exception:
+    pass
+
 # 注入高級感 CSS 樣式
 st.markdown("""
 <style>
