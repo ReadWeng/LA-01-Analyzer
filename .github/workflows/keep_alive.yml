@@ -1,10 +1,12 @@
 name: Streamlit 24/7 Keep-Alive & Auto-Wake Daemon
 
 on:
+  push:
+    branches: [ main ]
   schedule:
-    # 每 2 小時自動執行一次 (UTC 時間)，防止 Streamlit Community Cloud 休眠並自動喚醒
+    # 每 2 小時在雲端自動執行一次 (UTC 時間)，防止 Streamlit Community Cloud 休眠並自動喚醒
     - cron: '0 */2 * * *'
-  workflow_dispatch: # 支援在 GitHub 網頁 Actions 頁籤上手動點擊執行
+  workflow_dispatch: # 支援在 GitHub 網頁 Actions 頁籤上手動點擊立即執行
 
 jobs:
   keep-alive:
@@ -23,14 +25,16 @@ jobs:
       - name: 安裝 Playwright 及無頭 Chromium 瀏覽器
         run: |
           python -m pip install --upgrade pip
-          pip install playwright
+          pip install playwright requests
           python -m playwright install chromium --with-deps
 
       - name: 執行雲端智能防休眠與自動按鈕喚醒
         env:
-          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL || 'https://la-01-analyzer-cryqmdtchjcarczhgz3bef.streamlit.app' }}
+          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
         run: |
-          python streamlit_pinger.py --once --screenshot
+          TARGET_URL="${STREAMLIT_APP_URL:-https://la-01-analyzer-cryqmdtchjcarczhgz3bef.streamlit.app}"
+          echo "Target Streamlit URL: $TARGET_URL"
+          python streamlit_pinger.py --urls "$TARGET_URL" --once --screenshot
 
       - name: 上傳探測截圖 (除錯紀錄)
         if: always()
