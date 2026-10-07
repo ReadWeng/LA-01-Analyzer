@@ -1,15 +1,15 @@
-name: Streamlit 24/7 Keep-Alive Daemon
+name: Streamlit 24/7 Keep-Alive & Auto-Wake Daemon
 
 on:
   schedule:
-    # 每 10 分鐘自動觸發一次 (UTC 時間)，防止 Streamlit Community Cloud 休眠
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # 支援在 GitHub 網頁上手動點擊立即執行
+    # 每 2 小時自動執行一次 (UTC 時間)，防止 Streamlit Community Cloud 休眠並自動喚醒
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # 支援在 GitHub 網頁 Actions 頁籤上手動點擊執行
 
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: 檢出專案代碼
@@ -20,14 +20,22 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 執行防休眠保活與自動喚醒檢測
-        env:
-          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
+      - name: 安裝 Playwright 及無頭 Chromium 瀏覽器
         run: |
-          # 若有設定 GitHub Secret "STREAMLIT_APP_URL" 則使用 Secret，否則可手動傳入參數
-          if [ -n "$STREAMLIT_APP_URL" ]; then
-            python streamlit_pinger.py --urls "$STREAMLIT_APP_URL" --once
-          else
-            echo "ℹ️ 請於 GitHub Repo -> Settings -> Secrets and variables -> Actions 中新增 STREAMLIT_APP_URL"
-            echo "   或直接在指令中指定您的 Streamlit 網址。"
-          fi
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install chromium --with-deps
+
+      - name: 執行雲端智能防休眠與自動按鈕喚醒
+        env:
+          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL || 'https://la-01-analyzer-cryqmdtchjcarczhgz3bef.streamlit.app' }}
+        run: |
+          python streamlit_pinger.py --once --screenshot
+
+      - name: 上傳探測截圖 (除錯紀錄)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamlit-keepalive-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
