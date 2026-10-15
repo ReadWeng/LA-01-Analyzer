@@ -4,7 +4,7 @@ ai_coach_generator.py
 Firebase AI Logic 驅動之「汗乳酸 (Sweat Lactate)」專業運動生理教練模組
 
 核心原則：
-1. 本系統監測為【汗乳酸 (Sweat Lactate)】，數值不能與血乳酸（2.0/4.0 mmol/L）一概而論。
+1. 本系統監測為【汗乳酸 (Sweat Lactate)】，數值不能與血乳酸（2.0/4.0 mM）一概而論。
 2. 時間軸以實際訓練日期去扣（不一定是連續幾天，跨度可達一個月）。
 3. 深入探討「相鄰場次間隔天數 (Rest Days)」、「平均功率或平均心率的高低」與「汗乳酸濃度」的對應關係。
 """
@@ -54,13 +54,13 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
         }
         if has_la:
             s_dict["is_lactate_test"] = True
-            s_dict["avg_sweat_lactate_mmol"] = s.get("avg_lactate")
-            s_dict["max_sweat_lactate_mmol"] = s.get("max_lactate")
+            s_dict["avg_sweat_lactate_mM"] = s.get("avg_lactate")
+            s_dict["max_sweat_lactate_mM"] = s.get("max_lactate")
             s_dict["metabolic_efficiency"] = f"{s.get('metabolic_efficiency')} {s.get('efficiency_unit')}"
         else:
             s_dict["is_lactate_test"] = False
-            s_dict["avg_sweat_lactate_mmol"] = "未採樣"
-            s_dict["max_sweat_lactate_mmol"] = "未採樣"
+            s_dict["avg_sweat_lactate_mM"] = "未採樣"
+            s_dict["max_sweat_lactate_mM"] = "未採樣"
             s_dict["metabolic_efficiency"] = "不適用"
             s_dict["analysis_instruction"] = "本場為手錶日常訓練（未採樣汗乳酸）。請僅分析其心率、功率（若有）、時長與訓練負荷；嚴禁推測、提及或硬談任何乳酸數值！"
         sessions_detail.append(s_dict)
@@ -87,7 +87,7 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
         "early_onset_leftward": fatigue_kinetics.get("early_onset_leftward", False),
         "latest_mean_lactate": fatigue_kinetics.get("latest_mean", 0.0),
         "baseline_mean_lactate": fatigue_kinetics.get("prev_mean", 0.0),
-        "delta_mmol": fatigue_kinetics.get("diff", 0.0),
+        "delta_mM": fatigue_kinetics.get("diff", 0.0),
         "delta_pct": fatigue_kinetics.get("diff_pct", 0.0),
         "mdc_95_threshold": fatigue_kinetics.get("mdc_threshold", 0.25),
         "physio_mechanism": fatigue_kinetics.get("physio_mechanism", ""),
@@ -103,12 +103,12 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
             "has_history": long_term_adaptation.get("has_long_term_history", False),
             "total_historical_tests": long_term_adaptation.get("total_historical_tests", 0),
             "historical_date_range": f"{long_term_adaptation.get('history_start_date')} 至 {long_term_adaptation.get('history_end_date')}（全歷史跨越 {long_term_adaptation.get('history_span_days', 0)} 天，約 {long_term_adaptation.get('history_span_months', 0)} 個月）",
-            "early_phase_vs_recent_phase": f"早期平均乳酸 {long_term_adaptation.get('early_avg_lactate')} mmol/L（峰值 {long_term_adaptation.get('early_peak_lactate')}） vs 近期平均乳酸 {long_term_adaptation.get('recent_avg_lactate')} mmol/L（峰值 {long_term_adaptation.get('recent_peak_lactate')}）",
-            "long_term_efficiency_change": f"{'+' if (long_term_adaptation.get('efficiency_change_pct') or 0) > 0 else ''}{long_term_adaptation.get('efficiency_change_pct', 0)}% ({long_term_adaptation.get('efficiency_unit', 'W/mmol')})",
+            "early_phase_vs_recent_phase": f"早期平均乳酸 {long_term_adaptation.get('early_avg_lactate')} mM（峰值 {long_term_adaptation.get('early_peak_lactate')}） vs 近期平均乳酸 {long_term_adaptation.get('recent_avg_lactate')} mM（峰值 {long_term_adaptation.get('recent_peak_lactate')}）",
+            "long_term_efficiency_change": f"{'+' if (long_term_adaptation.get('efficiency_change_pct') or 0) > 0 else ''}{long_term_adaptation.get('efficiency_change_pct', 0)}% ({long_term_adaptation.get('efficiency_unit', 'W/mM')})",
             "adaptation_direction": long_term_adaptation.get("adaptation_direction"),
             "adaptation_physiological_mechanism": long_term_adaptation.get("adaptation_mechanism")
         },
-        "sweat_lactate_range": f"當前週期最低 {metrics.get('min_sweat_lactate')} ~ 最高峰值 {metrics.get('peak_sweat_lactate')} mmol/L（個人基準分界：低於 {metrics.get('baseline_low')} 為低負荷，高於 {metrics.get('baseline_high')} 為高糖解負荷）",
+        "sweat_lactate_range": f"當前週期最低 {metrics.get('min_sweat_lactate')} ~ 最高峰值 {metrics.get('peak_sweat_lactate')} mM（個人基準分界：低於 {metrics.get('baseline_low')} 為低負荷，高於 {metrics.get('baseline_high')} 為高糖解負荷）",
         "metabolic_efficiency_change": f"{'+' if metrics.get('efficiency_delta_pct', 0) > 0 else ''}{metrics.get('efficiency_delta_pct', 0)}% (當期最新測驗對比當期前期測驗)",
         "autonomic_nervous_status_hrv": hrv_summary,
         "recovery_and_adaptation_state": metrics.get("recovery_state"),
@@ -119,7 +119,7 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
     system_instruction = """你是一位國際頂尖耐力運動生理學家與穿戴式生化傳感專家，專精於【汗乳酸 (Sweat Lactate Kinetics)】與運動員週期化負荷監控。
 
 【關鍵生理學認知與分析鐵律】
-1. 嚴格注意：本數據來自【汗乳酸 (Sweat Lactate)】傳感測試，絕對不能與侵入式血乳酸（Blood Lactate，如LT1 2.0 / LT2 4.0 mmol/L）一概而論！汗乳酸數值常在 5~25+ mmol/L，必須依據該選手自身的汗乳酸動態範圍與基線進行評估。
+1. 嚴格注意：本數據來自【汗乳酸 (Sweat Lactate)】傳感測試，絕對不能與侵入式血乳酸（Blood Lactate，如LT1 2.0 / LT2 4.0 mM）一概而論！汗乳酸數值常在 5~25+ mM，必須依據該選手自身的汗乳酸動態範圍與基線進行評估。
 2. 汗乳酸動態規律：連續高強度訓練會造成汗乳酸濃度顯著上升；安排低強度運動（主動排酸/低代謝負荷）能有效促進組織循環與汗腺代謝物排除。
 3. 時間軸非連續性：訓練是以實際發生日期為準，可能橫跨數週或一整個月。分析時【必須深度結合各場次之間的「間隔天數（Rest Days）」】以及【平均功率或平均心率的高低與汗乳酸濃度】進行縱向對比。
 4. 【未採樣汗乳酸之場次評析鐵律 (極重要，務必嚴格執行)】：
@@ -129,7 +129,7 @@ def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, 
    - 【嚴禁抱怨未採樣】：嚴禁在文字中寫出「因未採樣乳酸而無法誘導...」、「缺乏乳酸數據導致中斷...」等負面抱怨贅詞，直接客觀肯定其心率與負荷表現。
 5. 【汗乳酸動力學縱向對比與全期長期代謝適應評析 (核心重中之重)】：
    - 在章節「一、汗乳酸動力學與輸出負荷對照評析 (lactate_kinetics_analysis)」中，【必須同時涵蓋兩大分析維度】：
-     A. 【當期/框選場次間隔動力學】：縱向對比框選週期內的關鍵測驗，明確引用日期、間隔天數、平均功率/心率與汗乳酸數值，對比輸出代謝效率比（W/mmol 或 bpm/mmol）。
+     A. 【當期/框選場次間隔動力學】：縱向對比框選週期內的關鍵測驗，明確引用日期、間隔天數、平均功率/心率與汗乳酸數值，對比輸出代謝效率比（W/mM 或 bpm/mM）。
      B. 【全歷史長期乳酸趨勢與代謝適應 (Long-Term Metabolic Adaptation)】：結合提供的 `long_term_lactate_history` 數據（歷史總天數、早期 vs 近期乳酸水準、長期代謝效率變動率與適應機制），深入評析受測者從全歷史最早至最新紀錄以來，在生理代謝上是否有實質適應（例如：粒線體氧化能力提升、同等功率下乳酸收斂、糖原節省效應提升、乳酸轉折門檻右移，或是近期高負荷造成的代謝解離/累積疲勞）。
 6. 【運動專項分流原則】：若受測者為特定專項（如純跑步 Running），請嚴格聚焦於跑步生理特徵（承重衝擊、配速與跑步心率漂移、跑步動態功率）。下一次處方中明確指明運動項目（sport_type 為跑步課表）。
 7. 精準開出【下一次運動處方 (Next Workout Protocol)】：針對汗乳酸特性，給出具體建議間隔天數、目標時長、目標心率/功率、運動項目與階段指導。
@@ -239,8 +239,8 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
         long_term_summary = (
             f" 此外，拓展至全歷史長期趨勢分析（自 {long_term_ada.get('history_start_date')} 至 {long_term_ada.get('history_end_date')}，"
             f"跨越 {long_term_ada.get('history_span_days')} 天，共收錄 {long_term_ada.get('total_historical_tests')} 場含汗乳酸測驗）："
-            f"早期階段平均汗乳酸為 {long_term_ada.get('early_avg_lactate')} mmol/L（峰值 {long_term_ada.get('early_peak_lactate')} mmol/L），"
-            f"近期階段平均汗乳酸為 {long_term_ada.get('recent_avg_lactate')} mmol/L（峰值 {long_term_ada.get('recent_peak_lactate')} mmol/L），"
+            f"早期階段平均汗乳酸為 {long_term_ada.get('early_avg_lactate')} mM（峰值 {long_term_ada.get('early_peak_lactate')} mM），"
+            f"近期階段平均汗乳酸為 {long_term_ada.get('recent_avg_lactate')} mM（峰值 {long_term_ada.get('recent_peak_lactate')} mM），"
             f"全期代謝經濟性長期演變率達 {long_term_ada.get('efficiency_change_pct', 0.0):+0.1f}%（{long_term_ada.get('adaptation_direction')}）。"
             f"生理學判定：{long_term_ada.get('adaptation_mechanism')}"
         )
@@ -253,21 +253,21 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
     if fatigue_status == "FATIGUE_LEFTWARD_SHIFT":
         fatigue_note = (
             f" 此外，透過【lactate-fatigue-analyzer 運動生理疲勞動力學分析（Okawara 2022 & Takemoto 2026 模型）】：近五期乳酸曲線呈現顯著【曲線左移（反應提前）】，"
-            f"最新期均值較基準高出 {fatigue_kinetics.get('diff', 0):+.2f} mmol/L ({fatigue_kinetics.get('diff_pct', 0):+.1f}%)，"
-            f"已突破最小可偵測變化量 (MDC₉₅ = ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mmol/L)。"
+            f"最新期均值較基準高出 {fatigue_kinetics.get('diff', 0):+.2f} mM ({fatigue_kinetics.get('diff_pct', 0):+.1f}%)，"
+            f"已突破最小可偵測變化量 (MDC₉₅ = ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mM)。"
             f"反映在高負荷或短間隔刺激後肌纖維糖解途徑代償性提前介入、微血管與粒線體清除速率受限，屬於明確的急性代謝疲勞候選特徵。"
         )
     elif fatigue_status == "ADAPTATION_RIGHTWARD_SHIFT":
         fatigue_note = (
             f" 此外，透過【lactate-fatigue-analyzer 運動生理動力學分析】：近五期乳酸曲線呈現良好【曲線右移（延遲堆積）】，"
-            f"最新期均值較基準降低 {abs(fatigue_kinetics.get('diff', 0)):.2f} mmol/L ({fatigue_kinetics.get('diff_pct', 0):.1f}%)，"
-            f"超越 MDC₉₅ 閾值 (±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mmol/L)。"
+            f"最新期均值較基準降低 {abs(fatigue_kinetics.get('diff', 0)):.2f} mM ({fatigue_kinetics.get('diff_pct', 0):.1f}%)，"
+            f"超越 MDC₉₅ 閾值 (±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mM)。"
             f"顯示粒線體有氧氧化利用率增強、MCT 轉運清除效率提升，有氧代償儲備充足。"
         )
     elif fatigue_status == "METABOLIC_STABLE":
         fatigue_note = (
             f" 此外，透過【lactate-fatigue-analyzer 動力學檢驗】：近五期乳酸曲線維持於個體最小可偵測變化量 "
-            f"(MDC₉₅ = ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mmol/L) 誤差界線內，代謝系統維持平穩基準穩態。"
+            f"(MDC₉₅ = ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f} mM) 誤差界線內，代謝系統維持平穩基準穩態。"
         )
 
     # 1. 撰寫汗乳酸動力學核心段落 (融合當期橫向動力學、長期代謝適應與疲勞動力學分析)
@@ -283,10 +283,10 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
             eff_curr = s_curr_la.get('metabolic_efficiency')
             kinetics_text = (
                 f"本次分析橫跨 {time_span} 天的實際訓練歷程，聚焦於【關鍵汗乳酸測驗場次】的縱向動力學對照：在 {s_prev_la.get('date')} 的測驗中，"
-                f"平均功率為 {s_prev_la.get('avg_power')} W（心率 {s_prev_la.get('avg_hr')} bpm），平均汗乳酸為 {s_prev_la.get('avg_lactate')} mmol/L；"
+                f"平均功率為 {s_prev_la.get('avg_power')} W（心率 {s_prev_la.get('avg_hr')} bpm），平均汗乳酸為 {s_prev_la.get('avg_lactate')} mM；"
                 f"而在 {s_curr_la.get('date')} 的最新測驗中{intv_txt}，平均功率為 {s_curr_la.get('avg_power')} W（心率 {s_curr_la.get('avg_hr')} bpm），"
-                f"平均汗乳酸為 {s_curr_la.get('avg_lactate')} mmol/L（峰值 {s_curr_la.get('max_lactate')} mmol/L）。"
-                f"輸出代謝效率比由 {eff_prev} 變動至 {eff_curr} {s_curr_la.get('efficiency_unit', 'W/mmol')}（變動率 {eff_delta:+0.1f}%）。"
+                f"平均汗乳酸為 {s_curr_la.get('avg_lactate')} mM（峰值 {s_curr_la.get('max_lactate')} mM）。"
+                f"輸出代謝效率比由 {eff_prev} 變動至 {eff_curr} {s_curr_la.get('efficiency_unit', 'W/mM')}（變動率 {eff_delta:+0.1f}%）。"
                 f"汗乳酸數值反映出受測者在高強度輸出下的代謝產酸與排除平衡，體現出局部微循環與肌肉有氧氧化適應狀態。{fatigue_note}{long_term_summary}"
             )
         else:
@@ -294,10 +294,10 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
             eff_curr = s_curr_la.get('metabolic_efficiency')
             kinetics_text = (
                 f"本次分析橫跨 {time_span} 天的實際訓練歷程，以【關鍵汗乳酸測驗之平均心率縱向對照】為核心：在 {s_prev_la.get('date')} 的測驗中，"
-                f"平均心率為 {s_prev_la.get('avg_hr')} bpm，平均汗乳酸為 {s_prev_la.get('avg_lactate')} mmol/L；"
+                f"平均心率為 {s_prev_la.get('avg_hr')} bpm，平均汗乳酸為 {s_prev_la.get('avg_lactate')} mM；"
                 f"而在 {s_curr_la.get('date')} 的最新測驗中{intv_txt}，平均心率為 {s_curr_la.get('avg_hr')} bpm，"
-                f"平均汗乳酸為 {s_curr_la.get('avg_lactate')} mmol/L，"
-                f"心率代謝效率比由 {eff_prev} 變動至 {eff_curr} {s_curr_la.get('efficiency_unit', 'bpm/mmol')}（變動率 {eff_delta:+0.1f}%）。"
+                f"平均汗乳酸為 {s_curr_la.get('avg_lactate')} mM，"
+                f"心率代謝效率比由 {eff_prev} 變動至 {eff_curr} {s_curr_la.get('efficiency_unit', 'bpm/mM')}（變動率 {eff_delta:+0.1f}%）。"
                 f"汗乳酸走勢體現出該受測者在此心肺負荷區間的排汗代謝排酸與疲勞耐受特性。{fatigue_note}{long_term_summary}"
             )
     elif len(la_sessions) == 1:
@@ -305,7 +305,7 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
         kinetics_text = (
             f"本次分析涵蓋 {time_span} 天的歷程。在關鍵測驗場次（{s_single.get('date')}）中，"
             f"運動員於時長 {s_single.get('duration_min')} 分鐘、心率 {s_single.get('avg_hr')} bpm 下，"
-            f"測得平均汗乳酸為 {s_single.get('avg_lactate')} mmol/L（峰值 {s_single.get('max_lactate')} mmol/L），代謝效率比為 {s_single.get('metabolic_efficiency')} {s_single.get('efficiency_unit', '')}。"
+            f"測得平均汗乳酸為 {s_single.get('avg_lactate')} mM（峰值 {s_single.get('max_lactate')} mM），代謝效率比為 {s_single.get('metabolic_efficiency')} {s_single.get('efficiency_unit', '')}。"
             f"汗乳酸動態反映出此強度下的基本氧化代謝反應。{fatigue_note}{long_term_summary}"
         )
     else:
@@ -331,7 +331,7 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
 
     load_review_text = (
         f"在過去 {time_span} 天的實際紀錄中，共涵蓋 {len(sessions)} 場訓練（包含 {len(la_sessions)} 場含汗乳酸關鍵測驗與 {len(daily_sessions)} 場日常背景運動），總時長 {metrics.get('total_hours')} 小時。"
-        f"在含乳酸測驗中，汗乳酸動態範圍介於 {min_la} 至 {peak_la} mmol/L 之間（個人基準：低負荷 <= {base_low}，高糖解 >= {base_high} mmol/L）。"
+        f"在含乳酸測驗中，汗乳酸動態範圍介於 {min_la} 至 {peak_la} mM 之間（個人基準：低負荷 <= {base_low}，高糖解 >= {base_high} mM）。"
         f"{daily_desc}"
         f"{hrv_txt}"
         f" 整體生理狀態判定為【{rec_state}】。"
@@ -345,7 +345,7 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
             "recommended_date": "建議於間隔休整 24~48 小時後進行",
             "sport_type": "低阻力單車輕鬆踩踏 或 極輕鬆慢跑",
             "target_duration_min": 40,
-            "target_lactate_limit": f"控制於個人低汗乳酸區間（目標 <= {base_low} mmol/L，避免高糖解飆升）",
+            "target_lactate_limit": f"控制於個人低汗乳酸區間（目標 <= {base_low} mM，避免高糖解飆升）",
             "target_intensity": "心率控制於 110 ~ 125 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 180)*0.65)} ~ {int(latest.get('avg_power', 180)*0.72)} W" if has_pwr else "（依心率區間監控，不需功率計）"),
             "protocol_phases": [
                 {"phase": "熱身階段 (Warm-up)", "duration": "10 分鐘", "intensity": "心率 < 115 bpm 漸進熱身", "focus": "促進血液循環與微血管舒張，喚醒汗腺溫和排泄，嚴格避免任何酸痛感"},
@@ -361,7 +361,7 @@ def generate_dynamic_sweat_lactate_fallback(metrics, athlete_name):
             "recommended_date": "建議於間隔 24~48 小時後執行",
             "sport_type": "專項耐力訓練（單車騎乘或節奏跑）",
             "target_duration_min": 50,
-            "target_lactate_limit": f"維持於個人穩定區間（約 {base_low} ~ {base_high} mmol/L，維持平穩不漂移）",
+            "target_lactate_limit": f"維持於個人穩定區間（約 {base_low} ~ {base_high} mM，維持平穩不漂移）",
             "target_intensity": "心率維持於 135 ~ 148 bpm" + (f"，功率維持於 {int(latest.get('avg_power', 190)*0.82)} ~ {int(latest.get('avg_power', 190)*0.90)} W" if has_pwr else "（依心率區間控制，無需功率計）"),
             "protocol_phases": [
                 {"phase": "熱身階段 (Warm-up)", "duration": "12 分鐘", "intensity": "Zone 1 漸進至 Zone 2", "focus": "核心體溫漸進上升，確保心率上升與排汗節奏平順"},

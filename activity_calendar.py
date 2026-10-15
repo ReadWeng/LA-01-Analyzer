@@ -405,7 +405,7 @@ def build_session_from_fit_record(
 
             lactate_rows.append({
                 "相對時間 (分鐘)": diff_min,
-                "乳酸值 (mmol/L)": l_flt,
+                "乳酸值 (mM)": l_flt,
                 "血糖值 (mg/dL)": g_flt,
                 "體感": la.get("feeling", "")
             })
@@ -415,7 +415,7 @@ def build_session_from_fit_record(
     else:
         df_la = pd.DataFrame({
             "相對時間 (分鐘)": pd.Series(dtype="float"),
-            "乳酸值 (mmol/L)": pd.Series(dtype="float"),
+            "乳酸值 (mM)": pd.Series(dtype="float"),
             "血糖值 (mg/dL)": pd.Series(dtype="float"),
             "體感": pd.Series(dtype="object")
         })
@@ -559,7 +559,7 @@ def convert_firebase_activity_to_session_dict(
     }
     if lactate_pts:
         max_lac = max(pt['y'] for pt in lactate_pts if pt.get('y') is not None)
-        stats['max_lactate'] = f"{max_lac:.1f} mmol/L"
+        stats['max_lactate'] = f"{max_lac:.1f} mM"
     if glucose_pts:
         max_glu = max(pt['y'] for pt in glucose_pts if pt.get('y') is not None)
         stats['max_glucose'] = f"{int(max_glu)} mg/dL"
@@ -615,7 +615,7 @@ def save_bound_lactate_to_firestore(
 
     for _, row in lactate_df.iterrows():
         t = row.get("相對時間 (分鐘)")
-        la = row.get("乳酸值 (mmol/L)")
+        la = row.get("乳酸值 (mM)") if row.get("乳酸值 (mM)") is not None else row.get("乳酸值 (mmol/L)")
         glu = row.get("血糖值 (mg/dL)")
 
         if pd.isna(t) or pd.isna(la):
@@ -811,8 +811,21 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                 day_acts = acts_by_date.get(d_str, [])
                 day_las = las_by_date.get(d_str, [])
                 if day_acts:
+                    # 先將當日所有活動轉為 session dict
+                    converted = []
                     for a_i, a in enumerate(day_acts):
-                        new_pool[f"{d_str}_{a.get('doc_id', a_i)}"] = convert_firebase_activity_to_session_dict(a, day_las)
+                        s_dict = convert_firebase_activity_to_session_dict(a, day_las)
+                        act_key = f"{d_str}_{a.get('doc_id', a_i)}"
+                        converted.append((act_key, s_dict))
+
+                    # 若同日有多次紀錄，且有包含乳酸紀錄者，僅保留有乳酸者
+                    has_la_sessions = [item for item in converted if len(item[1].get('lactate', [])) > 0]
+                    if len(converted) > 1 and has_la_sessions:
+                        for act_key, s_dict in has_la_sessions:
+                            new_pool[act_key] = s_dict
+                    else:
+                        for act_key, s_dict in converted:
+                            new_pool[act_key] = s_dict
                 elif day_las:
                     fake_act = {
                         "start_time": day_las[0].get("record_time", datetime.strptime(d_str, "%Y-%m-%d")),
@@ -1319,7 +1332,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                         retest_badge = " <span style='background:#f59e0b; color:#fff; font-size:0.75rem; padding:1px 5px; border-radius:4px;'>重測</span>" if is_this_retest else ""
                         st.markdown(f"🕒 **{la['record_time'].strftime('%H:%M')}**{retest_badge}", unsafe_allow_html=True)
                     with c_la2:
-                        st.markdown(f"🩸 **{la['lactate_mmol']}** mmol/L")
+                        st.markdown(f"🩸 **{la['lactate_mmol']}** mM")
                     with c_la3:
                         glu_t = f"{la['glucose_mgdl']} mg/dL" if la.get("glucose_mgdl") is not None else "-"
                         st.markdown(f"🍬 {glu_t}")

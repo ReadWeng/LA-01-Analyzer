@@ -29,7 +29,7 @@ def analyze_lactate_fatigue(
     :param df_top5: 包含最近五期資料之 DataFrame (欄位需包含 'date_str', 'lactate_mmol', 可含 '測試點順序')
     :param dates_chrono: 按時間先後排序的日期列表 (最早在前，最新在後)
     :param user_mdc_pct: 最小可偵測變化百分比閾值 (預設 12.0%)
-    :param min_mdc_abs: 最小可偵測絕對濃度差 (預設 0.25 mmol/L)
+    :param min_mdc_abs: 最小可偵測絕對濃度差 (預設 0.25 mM)
     :return: 結構化分析結果字典
     """
     if not dates_chrono or df_top5.empty:
@@ -67,7 +67,7 @@ def analyze_lactate_fatigue(
             "diff_pct": 0.0,
             "mdc_threshold": min_mdc_abs,
             "physio_mechanism": (
-                f"目前僅累積 1 期歷史紀錄（{latest_date}），平均乳酸為 {latest_mean:.2f} mmol/L。"
+                f"目前僅累積 1 期歷史紀錄（{latest_date}），平均乳酸為 {latest_mean:.2f} mM。"
                 "依據運動生理學疲勞監測規範（Takemoto et al. 2026），乳酸動態位移需具備至少 2 期以上"
                 "之同人歷史基準，方能計算個體最小可偵測變化量（MDC₉₅）與動力學位移。"
             ),
@@ -76,7 +76,7 @@ def analyze_lactate_fatigue(
                 "系統將自動啟用「動態左移／右移疲勞動力學監測」，提供專屬運動處方與恢復建議。"
             ),
             "full_advice_markdown": (
-                f"ℹ️ **個人基準建立中：** 目前僅有 1 期歷史紀錄（{latest_date}，平均 **{latest_mean:.2f} mmol/L**）。"
+                f"ℹ️ **個人基準建立中：** 目前僅有 1 期歷史紀錄（{latest_date}，平均 **{latest_mean:.2f} mM**）。"
                 "待累積第 2 期以上紀錄後，系統將自動啟動近五期乳酸動態左右移對比與訓練調整建議。"
             ),
             "ui_box_type": "info"
@@ -134,11 +134,11 @@ def analyze_lactate_fatigue(
         ui_box_type = "warning"
         shift_desc = "顯著左移（Leftward Shift / 反應提前）"
         
-        detail_txt = f"提早上升顯著（前期各點平均位移 +{early_stage_diff:.2f} mmol/L）" if early_onset_leftward else f"整體乳酸顯著偏高（+{diff:.2f} mmol/L，超過 MDC₉₅ 閾值 {mdc_threshold:.2f} mmol/L）"
+        detail_txt = f"提早上升顯著（前期各點平均位移 +{early_stage_diff:.2f} mM）" if early_onset_leftward else f"整體乳酸顯著偏高（+{diff:.2f} mM，超過 MDC₉₅ 閾值 {mdc_threshold:.2f} mM）"
 
         physio_mechanism = (
-            f"最新一期乳酸動力學呈現**曲線{shift_desc}**。最新平均乳酸 **{latest_mean:.2f} mmol/L**，"
-            f"較前 {num_prev} 期基準（**{prev_mean:.2f} mmol/L**）高出 **+{diff:.2f} mmol/L (+{diff_pct:.1f}%)**，"
+            f"最新一期乳酸動力學呈現**曲線{shift_desc}**。最新平均乳酸 **{latest_mean:.2f} mM**，"
+            f"較前 {num_prev} 期基準（**{prev_mean:.2f} mM**）高出 **+{diff:.2f} mM (+{diff_pct:.1f}%)**，"
             f"{detail_txt}。\n\n"
             "**🔬 生理學機制（Okawara 2022 & Takemoto 2026 動力學模型）：**\n"
             "研究指出，疲勞的核心特徵並非單點濃度絕對值，而是**乳酸生成曲線提前或在更低負荷提早竄升**。"
@@ -160,9 +160,9 @@ def analyze_lactate_fatigue(
         shift_desc = "良好右移（Rightward Shift / 延遲累積）"
 
         physio_mechanism = (
-            f"最新一期乳酸動力學呈現**曲線{shift_desc}**。最新平均乳酸 **{latest_mean:.2f} mmol/L**，"
-            f"較前 {num_prev} 期基準（**{prev_mean:.2f} mmol/L**）顯著降低 **{abs(diff):.2f} mmol/L ({diff_pct:.1f}%)**，"
-            f"已突破最小可偵測變化量（MDC₉₅ = {mdc_threshold:.2f} mmol/L）。\n\n"
+            f"最新一期乳酸動力學呈現**曲線{shift_desc}**。最新平均乳酸 **{latest_mean:.2f} mM**，"
+            f"較前 {num_prev} 期基準（**{prev_mean:.2f} mM**）顯著降低 **{abs(diff):.2f} mM ({diff_pct:.1f}%)**，"
+            f"已突破最小可偵測變化量（MDC₉₅ = {mdc_threshold:.2f} mM）。\n\n"
             "**🔬 生理學機制（有氧適應與清除率提升）：**\n"
             "在相同運動強度與測試階段下乳酸反應顯著延遲且整體值更低，代表肌纖維粒線體氧化能力顯著增強，"
             "單羧酸轉運蛋白（MCT1/4）的乳酸攝取與緩衝清除效率極佳，有氧代謝系統能承擔更高的能量輸出比例。"
@@ -181,9 +181,9 @@ def analyze_lactate_fatigue(
         ui_box_type = "info"
 
         physio_mechanism = (
-            f"最新一期乳酸動力學曲線與前 {num_prev} 期歷史基準維持高度一致。最新平均乳酸 **{latest_mean:.2f} mmol/L**，"
-            f"與前 {num_prev} 期平均（**{prev_mean:.2f} mmol/L**）差異僅 **{diff:+.2f} mmol/L ({diff_pct:+.1f}%)**，"
-            f"變動落在個人最小可偵測變化量（MDC₉₅ = ±{mdc_threshold:.2f} mmol/L）與日常生理波動誤差線內。\n\n"
+            f"最新一期乳酸動力學曲線與前 {num_prev} 期歷史基準維持高度一致。最新平均乳酸 **{latest_mean:.2f} mM**，"
+            f"與前 {num_prev} 期平均（**{prev_mean:.2f} mM**）差異僅 **{diff:+.2f} mM ({diff_pct:+.1f}%)**，"
+            f"變動落在個人最小可偵測變化量（MDC₉₅ = ±{mdc_threshold:.2f} mM）與日常生理波動誤差線內。\n\n"
             "**🔬 生理學機制：**\n"
             "當前未見乳酸曲線提早竄升（左移）或顯著延後（右移）之動力學偏移，代表能量代謝系統與神經肌肉系統處於良好平衡，"
             "未見顯著急性代謝疲勞殘留。"

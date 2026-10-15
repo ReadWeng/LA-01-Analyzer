@@ -124,7 +124,7 @@ def parse_single_session_html(html_source):
             if tds and len(tds) == len(headers):
                 row_dict = dict(zip(headers, tds))
                 t_val = row_dict.get('量測時間 (分)')
-                lac_val = row_dict.get('乳酸值 (mmol/L)')
+                lac_val = row_dict.get('乳酸值 (mM)') or row_dict.get('乳酸值 (mmol/L)')
                 glu_val = row_dict.get('血糖值 (mg/dL)')
                 src_val = row_dict.get('量測點來源', '自訂時間')
                 pw_val = row_dict.get('對應功率 (W)')
@@ -188,7 +188,7 @@ def parse_single_session_html(html_source):
     # Calculate max lactate / max glucose in stats if not present
     if session['lactate']:
         max_lac = max(pt['y'] for pt in session['lactate'] if pt.get('y') is not None)
-        session['stats']['max_lactate'] = f"{max_lac:.1f} mmol/L"
+        session['stats']['max_lactate'] = f"{max_lac:.1f} mM"
     if session['glucose']:
         max_glu = max(pt['y'] for pt in session['glucose'] if pt.get('y') is not None)
         session['stats']['max_glucose'] = f"{int(max_glu)} mg/dL"
@@ -328,7 +328,7 @@ def parse_lactate_file(file_source):
             return pd.DataFrame()
             
     time_col = find_column_name(df, ["相對時間", "時間", "time", "elapsed", "duration", "min", "分鐘", "分"])
-    lac_col = find_column_name(df, ["乳酸", "lac", "mmol"])
+    lac_col = find_column_name(df, ["乳酸", "lac", "mmol", "mm"])
     glu_col = find_column_name(df, ["血糖", "glucose", "glu", "mg/dl", "mg"])
     src_col = find_column_name(df, ["來源", "source", "量測點來源"])
     
@@ -387,7 +387,7 @@ def compute_session_stats(df_fit_down, df_lac):
     if not df_lac.empty:
         lac = [l for l in df_lac['lactate'] if l is not None and pd.notna(l)]
         if lac:
-            stats['max_lactate'] = f"{max(lac):.1f} mmol/L"
+            stats['max_lactate'] = f"{max(lac):.1f} mM"
             
         glu = [g for g in df_lac['glucose'] if g is not None and pd.notna(g)]
         if glu:
@@ -408,6 +408,28 @@ def build_integrated_html(raw_data_dict, theme='dark'):
     """
     Generates a beautiful Chart.js-based integrated HTML report using the raw data dictionary.
     """
+    # 依規則：若同日有多次紀錄，僅保留有乳酸紀錄者進行比較，排除無乳酸者
+    from collections import defaultdict
+    day_sessions_map = defaultdict(list)
+    for d, sess in raw_data_dict.items():
+        st_t = sess.get('startTime', '')
+        day_k = sess.get('date_key') or (st_t[:10] if len(st_t) >= 10 else d.split()[0].split('_')[0])
+        day_sessions_map[day_k].append((d, sess))
+
+    clean_data_dict = {}
+    for day_k, d_list in day_sessions_map.items():
+        if len(d_list) > 1:
+            has_la = [it for it in d_list if len(it[1].get('lactate', [])) > 0]
+            if has_la:
+                for k, s in has_la:
+                    clean_data_dict[k] = s
+            else:
+                for k, s in d_list:
+                    clean_data_dict[k] = s
+        else:
+            clean_data_dict[d_list[0][0]] = d_list[0][1]
+
+    raw_data_dict = clean_data_dict
     dates = sorted(list(raw_data_dict.keys()))
     
     # 1. Generate KPI Cards HTML
@@ -962,7 +984,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                     <button class="btn active" data-metric="power">⚡ 功率 (30s平均)</button>
                     <button class="btn active" data-metric="hr">❤️ 心率 (30s平均)</button>
                     <button class="btn active" data-metric="coreTemp">🔥 核心溫度 (°C)</button>
-                    <button class="btn active" data-metric="lactate">🩸 乳酸 (mmol/L)</button>
+                    <button class="btn active" data-metric="lactate">🩸 乳酸 (mM)</button>
                     {glucose_toggle_html}
                     <button class="btn btn-utility" id="select-all-metrics">全選</button>
                     <button class="btn btn-utility" id="clear-all-metrics">清除</button>
@@ -1138,7 +1160,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
             // 4. Lactate
             if (session.lactate && session.lactate.length > 0) {{
                 datasets.push({{
-                    label: `${{date}} 乳酸 (mmol/L)`,
+                    label: `${{date}} 乳酸 (mM)`,
                     data: session.lactate,
                     borderColor: colors['lactate'][date],
                     backgroundColor: colors['lactate'][date] + '33',
@@ -1263,7 +1285,7 @@ def build_integrated_html(raw_data_dict, theme='dark'):
                 }},
                 title: {{
                     display: true,
-                    text: '乳酸值 (mmol/L)',
+                    text: '乳酸值 (mM)',
                     color: '#00e676',
                     font: {{ family: 'Outfit', size: baseFontSizes.axisTitle, weight: 'bold' }}
                 }},

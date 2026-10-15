@@ -116,7 +116,7 @@ with m1:
 with m2:
     st.markdown(f'<div class="stat-box"><div class="stat-lbl">乳酸加權總負荷</div><div class="stat-val" style="color:#ffab00;">{metrics.get("total_lactate_load")}</div><div style="font-size:0.8rem; color:#94a3b8;">Lactate Load Score</div></div>', unsafe_allow_html=True)
 with m3:
-    st.markdown(f'<div class="stat-box"><div class="stat-lbl">最高乳酸峰值</div><div class="stat-val" style="color:#ff5252;">{metrics.get("peak_lactate_week")}</div><div style="font-size:0.8rem; color:#94a3b8;">mmol/L</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="stat-box"><div class="stat-lbl">最高乳酸峰值</div><div class="stat-val" style="color:#ff5252;">{metrics.get("peak_lactate_week")}</div><div style="font-size:0.8rem; color:#94a3b8;">mM</div></div>', unsafe_allow_html=True)
 with m4:
     delta = metrics.get("efficiency_delta_pct", 0)
     delta_color = "#00e676" if delta >= 0 else "#ff5252"

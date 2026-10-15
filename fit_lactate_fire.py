@@ -2058,40 +2058,52 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
             except Exception as e:
                 st.error(f"解析上傳報告 `{f.name}` 失敗: {e}")
 
-    # 合併雲端與上傳的期數
+    # 彙整所有候選期數 (包含雲端選取與本機上傳)
+    all_raw_list = []
+    for k, s in cloud_sessions.items():
+        st_time = s.get('startTime', '')
+        d_str = s.get('date_key') or (st_time[:10] if len(st_time) >= 10 else k.split('_')[0])
+        all_raw_list.append(('cloud', k, d_str, s))
+
+    for k, s in uploaded_sessions.items():
+        st_time = s.get('startTime', '')
+        d_str = s.get('date_key') or (st_time[:10] if len(st_time) >= 10 else k.split('_')[0])
+        all_raw_list.append(('upload', k, d_str, s))
+
+    # 依日期分組：落實「同日有多次紀錄請把有乳酸的放進來比較即可，沒乳酸的就別放一起」
+    from collections import defaultdict
+    by_date_map = defaultdict(list)
+    for item in all_raw_list:
+        by_date_map[item[2]].append(item)
+
+    filtered_sessions = []
+    excluded_no_lac_count = 0
+    for d_str, day_items in by_date_map.items():
+        if len(day_items) > 1:
+            has_la = [it for it in day_items if len(it[3].get('lactate', [])) > 0]
+            if has_la:
+                filtered_sessions.extend(has_la)
+                excluded_no_lac_count += (len(day_items) - len(has_la))
+            else:
+                filtered_sessions.extend(day_items)
+        else:
+            filtered_sessions.extend(day_items)
+
+    # 建立最終合併數據與預覽表格
     merged_data = {}
     preview_rows = []
 
-    # (A) 處理雲端點選期數
-    for k, s in cloud_sessions.items():
+    for src_type, orig_k, d_str, s in filtered_sessions:
         st_time = s.get('startTime', '')
-        d_str = st_time[:10] if len(st_time) >= 10 else k
+        src_label = '☁️ Firebase 雲端' if src_type == 'cloud' else '📄 上傳報告'
+        fallback_name = '雲端活動' if src_type == 'cloud' else '上傳檔案'
         key_name = d_str
         if key_name in merged_data:
-            key_name = f"{d_str} ({s.get('activity_name', '雲端活動')})"
+            key_name = f"{d_str} ({s.get('activity_name', fallback_name)})"
         merged_data[key_name] = s
         preview_rows.append({
             '期數標籤': key_name,
-            '來源': '☁️ Firebase 雲端',
-            '活動名稱': s.get('activity_name', '-'),
-            '開始時間': st_time,
-            '時長': s.get('stats', {}).get('duration', '-'),
-            '平均/最大功率': f"{s.get('stats', {}).get('avg_power', '-')} / {s.get('stats', {}).get('max_power', '-')} W",
-            '乳酸記錄': f"💧 {len(s.get('lactate', []))} 點" if s.get('lactate') else '無',
-            '血糖記錄': f"{len(s.get('glucose', []))} 點" if s.get('glucose') else '無',
-        })
-
-    # (B) 處理上傳期數
-    for k, s in uploaded_sessions.items():
-        st_time = s.get('startTime', '')
-        d_str = s.get('date_key', st_time[:10] if len(st_time) >= 10 else k)
-        key_name = d_str
-        if key_name in merged_data:
-            key_name = f"{d_str} ({s.get('activity_name', '上傳檔案')})"
-        merged_data[key_name] = s
-        preview_rows.append({
-            '期數標籤': key_name,
-            '來源': '📄 上傳報告',
+            '來源': src_label,
             '活動名稱': s.get('activity_name', '-'),
             '開始時間': st_time,
             '時長': s.get('stats', {}).get('duration', '-'),
@@ -2102,6 +2114,8 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
 
     st.markdown("---")
     st.markdown("### 📋 待整合之多期數據清單")
+    if excluded_no_lac_count > 0:
+        st.info(f"💡 **同日多筆自動篩選**：檢測到同一天內有多筆運動紀錄，系統已自動篩選保留含乳酸採樣之測驗場次（共自動排除 {excluded_no_lac_count} 筆同日無乳酸之日常活動）。")
     if preview_rows:
         col_p1, col_p2 = st.columns([4, 1])
         with col_p1:
@@ -2287,7 +2301,7 @@ st.markdown('<div class="subtitle-text">上傳運動 .fit 檔案，標定乳酸�
 if 'custom_lactate' not in st.session_state:
     st.session_state['custom_lactate'] = pd.DataFrame({
         '相對時間 (分鐘)': pd.Series(dtype='float'),
-        '乳酸值 (mmol/L)': pd.Series(dtype='float'),
+        '乳酸值 (mM)': pd.Series(dtype='float'),
         '血糖值 (mg/dL)': pd.Series(dtype='float'),
         '體感': pd.Series(dtype='object')
     })
@@ -2343,7 +2357,7 @@ if file_name and file_name != st.session_state['last_file']:
     # 重設為預設乳酸與血糖數據
     st.session_state['custom_lactate'] = pd.DataFrame({
         '相對時間 (分鐘)': pd.Series(dtype='float'),
-        '乳酸值 (mmol/L)': pd.Series(dtype='float'),
+        '乳酸值 (mM)': pd.Series(dtype='float'),
         '血糖值 (mg/dL)': pd.Series(dtype='float'),
         '體感': pd.Series(dtype='object')
     })
@@ -2461,7 +2475,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                             for r in cloud_records:
                                 new_rows.append({
                                     '相對時間 (分鐘)': round(r['elapsed_minutes'], 1),
-                                    '乳酸值 (mmol/L)': round(r['lactate_mmol'], 2),
+                                    '乳酸值 (mM)': round(r['lactate_mmol'], 2),
                                     '血糖值 (mg/dL)': np.nan,
                                     '體感': r.get('feeling', '')
                                 })
@@ -2472,7 +2486,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             st.session_state['custom_lactate'],
             column_config={
                 '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
-                '乳酸值 (mmol/L)': st.column_config.NumberColumn("乳酸值 (mmol/L)", min_value=0.0, step=0.1, format="%.2f"),
+                '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
                 '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
                 '體感': st.column_config.TextColumn("體感 / RPE", help="例如: 輕鬆、適中、吃力、力竭、RPE 7")
             },
@@ -2510,7 +2524,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         custom_lactate_points = []
         for idx, row in edited_custom_df.iterrows():
             t = row['相對時間 (分鐘)']
-            lac = row.get('乳酸值 (mmol/L)')
+            lac = row.get('乳酸值 (mM)') if row.get('乳酸值 (mM)') is not None else row.get('乳酸值 (mmol/L)')
             glc = row.get('血糖值 (mg/dL)')
             has_lac = pd.notna(lac) and lac >= 0
             has_glc = pd.notna(glc) and glc >= 0
@@ -2628,12 +2642,12 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     go.Scatter(
                         x=all_lactate['elapsed_minutes'],
                         y=all_lactate['lactate'],
-                        name="乳酸 (mmol/L)",
+                        name="乳酸 (mM)",
                         mode="lines+markers",
                         marker=dict(size=10, color="#00e676", symbol="diamond", line=dict(color="white", width=1.5)),
                         line=dict(color="#00e676", width=2.5, dash="dash"),
                         text=all_lactate['source'],
-                        hovertemplate="時間: %{x:.1f} 分<br>乳酸: %{y:.2f} mmol/L<br>來源: %{text}<extra></extra>"
+                        hovertemplate="時間: %{x:.1f} 分<br>乳酸: %{y:.2f} mM<br>來源: %{text}<extra></extra>"
                     ),
                     row=lactate_row, col=1, secondary_y=False
                 )
@@ -2710,7 +2724,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         if show_temp_panel:
             fig.update_yaxes(title_text="核心溫度 (°C)", row=2, col=1, title_font=dict(color="#ff9100", size=18), tickfont=dict(size=14))
                 
-        fig.update_yaxes(title_text="乳酸 (mmol/L)", row=lactate_row, col=1, secondary_y=False, range=[0, 45], title_font=dict(color="#00e676", size=18), tickfont=dict(size=14))
+        fig.update_yaxes(title_text="乳酸 (mM)", row=lactate_row, col=1, secondary_y=False, range=[0, 45], title_font=dict(color="#00e676", size=18), tickfont=dict(size=14))
         fig.update_yaxes(title_text="血糖 (mg/dL)", row=lactate_row, col=1, secondary_y=True, title_font=dict(color="#d500f9", size=18), tickfont=dict(size=14))
         
         st.plotly_chart(fig, use_container_width=True)
@@ -2739,7 +2753,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 
                 summary_rows.append({
                     '量測時間 (分)': round(t, 1),
-                    '乳酸值 (mmol/L)': round(lac, 2) if pd.notna(lac) else "-",
+                    '乳酸值 (mM)': round(lac, 2) if pd.notna(lac) else "-",
                     '血糖值 (mg/dL)': int(glc) if pd.notna(glc) else "-",
                     '量測點來源': source,
                     '對應功率 (W)': "-" if is_before_start else (str(int(nearest['power'])) if pd.notna(nearest['power']) else "-"),
@@ -2900,7 +2914,7 @@ else:
                         color_discrete_map=color_discrete_map,
                         category_orders={'date_str': dates_chrono},
                         title='📈 最近五期乳酸紀錄趨勢',
-                        labels={'測試點順序': '該期量測順序 (點)', 'lactate_mmol': '乳酸值 (mmol/L)', 'date_str': '測試日期'}
+                        labels={'測試點順序': '該期量測順序 (點)', 'lactate_mmol': '乳酸值 (mM)', 'date_str': '測試日期'}
                     )
                     
                     # 最新一期特別強調線條寬度與標記
@@ -2919,7 +2933,7 @@ else:
                     
                     fig.update_layout(
                         xaxis_title="該期量測順序 (點)",
-                        yaxis_title="乳酸值 (mmol/L)",
+                        yaxis_title="乳酸值 (mM)",
                         xaxis=dict(tickmode='linear', tick0=1, dtick=1),
                         hovermode="x unified",
                         plot_bgcolor='rgba(0,0,0,0)',
@@ -2956,24 +2970,24 @@ else:
                         with col_m1:
                             st.metric(
                                 label=f"最新期 ({analysis_res['latest_date']}) 平均乳酸",
-                                value=f"{analysis_res['latest_mean']:.2f} mmol/L"
+                                value=f"{analysis_res['latest_mean']:.2f} mM"
                             )
                         with col_m2:
                             st.metric(
                                 label=f"前 {len(dates_chrono)-1} 期歷史基準平均",
-                                value=f"{analysis_res['prev_mean']:.2f} mmol/L"
+                                value=f"{analysis_res['prev_mean']:.2f} mM"
                             )
                         with col_m3:
                             st.metric(
                                 label="最新期 vs 歷史基準差異",
-                                value=f"{analysis_res['diff']:+.2f} mmol/L",
+                                value=f"{analysis_res['diff']:+.2f} mM",
                                 delta=f"{analysis_res['diff_pct']:+.1f}%",
                                 delta_color="inverse"
                             )
                         with col_m4:
                             st.metric(
                                 label="最小可偵測變化量 (MDC₉₅)",
-                                value=f"±{analysis_res['mdc_threshold']:.2f} mmol/L",
+                                value=f"±{analysis_res['mdc_threshold']:.2f} mM",
                                 help="依據 Takemoto et al. (2026) 統計模型，唯有超過此個體量測雜訊邊界，才判定為真實生理動態位移。"
                             )
                         

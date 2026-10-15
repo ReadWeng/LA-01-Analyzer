@@ -140,21 +140,21 @@ def render_modern_html_report(report_data):
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 20px;">
                 <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
                     <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最新期 ({f_latest_date}) 平均乳酸</div>
-                    <div style="font-size: 1.35rem; font-weight: 800; color: #ffffff; margin-top: 4px;">{f_latest_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #ffffff; margin-top: 4px;">{f_latest_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mM</span></div>
                 </div>
                 <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
                     <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">前期歷史基準平均</div>
-                    <div style="font-size: 1.35rem; font-weight: 800; color: #94a3b8; margin-top: 4px;">{f_prev_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #94a3b8; margin-top: 4px;">{f_prev_mean:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mM</span></div>
                 </div>
                 <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
                     <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最新期 vs 基準差異 (Δ)</div>
                     <div style="font-size: 1.35rem; font-weight: 800; color: {c_color}; margin-top: 4px;">
-                        {f_diff:+.2f} <span style="font-size: 0.85rem;">mmol/L ({f_diff_pct:+.1f}%)</span>
+                        {f_diff:+.2f} <span style="font-size: 0.85rem;">mM ({f_diff_pct:+.1f}%)</span>
                     </div>
                 </div>
                 <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 12px 16px;">
                     <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">最小可偵測變化量 (MDC₉₅)</div>
-                    <div style="font-size: 1.35rem; font-weight: 800; color: #00f2fe; margin-top: 4px;">±{f_mdc:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mmol/L</span></div>
+                    <div style="font-size: 1.35rem; font-weight: 800; color: #00f2fe; margin-top: 4px;">±{f_mdc:.2f} <span style="font-size: 0.85rem; color: var(--text-secondary);">mM</span></div>
                 </div>
             </div>
 
@@ -178,7 +178,7 @@ def render_modern_html_report(report_data):
 
     # 圖表資料準備
     dates_labels = [s["date"] for s in sessions]
-    # 若某場次為手錶日常（無乳酸採樣），在乳酸數值填入 None (JSON null)，避免繪出 0 mmol/L 的突兀柱狀
+    # 若某場次為手錶日常（無乳酸採樣），在乳酸數值填入 None (JSON null)，避免繪出 0 mM 的突兀柱狀
     avg_lactates = [(s.get("avg_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else None) for s in sessions]
     max_lactates = [(s.get("max_lactate") if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) else None) for s in sessions]
     powers = [s.get("avg_power", 0) for s in sessions]
@@ -210,7 +210,7 @@ def render_modern_html_report(report_data):
 
     zone_pct = metrics.get("zone_percentage", {})
     polar_labels = [
-        f"低代謝負荷 (主動排酸 <= {metrics.get('baseline_low', 6.0)} mmol/L)",
+        f"低代謝負荷 (主動排酸 <= {metrics.get('baseline_low', 6.0)} mM)",
         f"中等代謝負荷 (節奏穩態 {metrics.get('baseline_low', 6.0)}-{metrics.get('baseline_high', 15.0)})",
         f"高代謝負荷 (高糖解輸出 > {metrics.get('baseline_high', 15.0)})"
     ]
@@ -326,7 +326,7 @@ def render_modern_html_report(report_data):
             hero_insights.insert(0, {
                 "metric": "疲勞動力學 (Okawara/Takemoto)",
                 "value": fatigue_kinetics.get("badge", "穩態基準"),
-                "desc": f"位移 {fatigue_kinetics.get('diff', 0):+.2f} mmol/L (MDC95: ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f})"
+                "desc": f"位移 {fatigue_kinetics.get('diff', 0):+.2f} mM (MDC95: ±{fatigue_kinetics.get('mdc_threshold', 0.25):.2f})"
             })
 
     hero_cards_html = ""
@@ -774,8 +774,8 @@ def render_modern_html_report(report_data):
             </div>
             <div class="kpi-card">
                 <div class="kpi-label">💧 汗乳酸動態範圍</div>
-                <div class="kpi-value" style="color: var(--neon-amber);">{metrics.get('min_sweat_lactate')} ~ {metrics.get('peak_sweat_lactate')} <span style="font-size: 0.95rem; color: var(--text-secondary);">mmol/L</span></div>
-                <div class="kpi-sub">平均濃度 {metrics.get('avg_sweat_lactate')} mmol/L（非血乳酸標準）</div>
+                <div class="kpi-value" style="color: var(--neon-amber);">{metrics.get('min_sweat_lactate')} ~ {metrics.get('peak_sweat_lactate')} <span style="font-size: 0.95rem; color: var(--text-secondary);">mM</span></div>
+                <div class="kpi-sub">平均濃度 {metrics.get('avg_sweat_lactate')} mM（非血乳酸標準）</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-label">📈 輸出/汗乳酸代謝經濟性</div>
@@ -842,8 +842,8 @@ def render_modern_html_report(report_data):
             </div>
             {f'''<div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(0, 242, 254, 0.2); border-left: 4px solid #00f2fe; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.88rem; color: #cbd5e1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
                 <div>📅 <strong>全歷史跨度：</strong>{long_term_ada.get("history_start_date")} ~ {long_term_ada.get("history_end_date")}（共 {long_term_ada.get("total_historical_tests")} 場汗乳酸測驗，跨越 {long_term_ada.get("history_span_days")} 天）</div>
-                <div>⚡ <strong>長期代謝經濟性變動：</strong><span style="color: {'#00e676' if (long_term_ada.get('efficiency_change_pct', 0) or 0) >= 0 else '#ff5252'}; font-weight: 700;">{'+' if (long_term_ada.get('efficiency_change_pct', 0) or 0) > 0 else ''}{long_term_ada.get('efficiency_change_pct', 0)}% ({long_term_ada.get('efficiency_unit', 'W/mmol')})</span></div>
-                <div>💧 <strong>歷史乳酸水平演變：</strong>早期均值 {long_term_ada.get('early_avg_lactate')} mmol/L ➔ 近期均值 {long_term_ada.get('recent_avg_lactate')} mmol/L</div>
+                <div>⚡ <strong>長期代謝經濟性變動：</strong><span style="color: {'#00e676' if (long_term_ada.get('efficiency_change_pct', 0) or 0) >= 0 else '#ff5252'}; font-weight: 700;">{'+' if (long_term_ada.get('efficiency_change_pct', 0) or 0) > 0 else ''}{long_term_ada.get('efficiency_change_pct', 0)}% ({long_term_ada.get('efficiency_unit', 'W/mM')})</span></div>
+                <div>💧 <strong>歷史乳酸水平演變：</strong>早期均值 {long_term_ada.get('early_avg_lactate')} mM ➔ 近期均值 {long_term_ada.get('recent_avg_lactate')} mM</div>
             </div>''' if (long_term_ada and long_term_ada.get("has_long_term_history")) else ''}
             <div class="prose">
                 {ai.get('lactate_kinetics_analysis', '')}
@@ -941,7 +941,7 @@ def render_modern_html_report(report_data):
                 datasets: [
                     {{
                         type: 'line',
-                        label: '峰值汗乳酸 (mmol/L)',
+                        label: '峰值汗乳酸 (mM)',
                         data: maxLa,
                         borderColor: '#ff5252',
                         backgroundColor: '#ff5252',
@@ -953,7 +953,7 @@ def render_modern_html_report(report_data):
                     }},
                     {{
                         type: 'bar',
-                        label: '平均汗乳酸 (mmol/L)',
+                        label: '平均汗乳酸 (mM)',
                         data: avgLa,
                         backgroundColor: 'rgba(255, 171, 0, 0.7)',
                         borderRadius: 6,
@@ -989,7 +989,7 @@ def render_modern_html_report(report_data):
                     yLactate: {{
                         type: 'linear',
                         position: 'left',
-                        title: {{ display: true, text: '汗乳酸 (mmol/L)', color: '#ffab00' }},
+                        title: {{ display: true, text: '汗乳酸 (mM)', color: '#ffab00' }},
                         grid: {{ color: 'rgba(255, 255, 255, 0.05)' }},
                         ticks: {{ color: '#ffab00' }}
                     }},

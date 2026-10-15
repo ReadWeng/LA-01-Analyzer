@@ -644,7 +644,7 @@
             // 4. Lactate
             if (session.lactate && session.lactate.length > 0) {
                 datasets.push({
-                    label: `${date} 乳酸 (mmol/L)`,
+                    label: `${date} 乳酸 (mM)`,
                     data: session.lactate,
                     borderColor: colors['lactate'][date],
                     backgroundColor: colors['lactate'][date] + '33',
@@ -747,7 +747,7 @@
                 position: 'right',
                 title: {
                     display: true,
-                    text: '乳酸值 (mmol/L)',
+                    text: '乳酸值 (mM)',
                     color: '#00e676',
                     font: { family: 'Outfit', size: baseFontSizes.axisTitle, weight: 'bold' }
                 },

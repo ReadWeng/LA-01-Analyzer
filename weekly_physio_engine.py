@@ -4,11 +4,11 @@ weekly_physio_engine.py
 汗乳酸 (Sweat Lactate) 運動生理學與跨期負荷運算核心引擎
 
 領域特性：
-1. 監控對象為【汗乳酸 (Sweat Lactate)】，數值尺度不可與侵入式血乳酸（2.0/4.0 mmol/L）一概而論。
-   汗乳酸數值常在 5 ~ 25+ mmol/L，需以受測者個人相對歷史 Baseline 與動態分佈評估。
+1. 監控對象為【汗乳酸 (Sweat Lactate)】，數值尺度不可與侵入式血乳酸（2.0/4.0 mM）一概而論。
+   汗乳酸數值常在 5 ~ 25+ mM，需以受測者個人相對歷史 Baseline 與動態分佈評估。
 2. 支援以「實際訓練場次（Sessions）」為主軸，不侷限於連續 5~7 天，時間跨度可橫跨 2~4 週甚至整個月。
 3. 精確計算「相鄰場次間隔天數 (Rest/Interval Days)」，探討休息充分度對汗乳酸生成的影響。
-4. 核心分析：縱向對比各場次的「平均功率 / 平均心率」與「汗乳酸濃度」，評估代謝經濟性（W/mmol, bpm/mmol）與疲勞累積。
+4. 核心分析：縱向對比各場次的「平均功率 / 平均心率」與「汗乳酸濃度」，評估代謝經濟性（W/mM, bpm/mM）與疲勞累積。
 """
 
 import os
@@ -823,7 +823,7 @@ def calculate_long_term_adaptation(all_lactate_sessions, current_sessions=None):
 
     # 代謝效率趨勢 (Power 或 HR)
     adaptation_direction = "平穩"
-    eff_unit = "W/mmol" if len(valid_pwr_tests) >= 2 else "bpm/mmol"
+    eff_unit = "W/mM" if len(valid_pwr_tests) >= 2 else "bpm/mM"
     eff_change_pct = 0.0
 
     if len(valid_pwr_tests) >= 2:
@@ -964,13 +964,13 @@ def calculate_comprehensive_load(sessions, all_historical_lactate=None):
             h = s.get("avg_hr", 0)
             la = s.get("avg_lactate", 0)
             
-            # 若該測驗場次具備功率，優先以 W/mmol 評估輸出代謝經濟性！
+            # 若該測驗場次具備功率，優先以 W/mM 評估輸出代謝經濟性！
             if p > 0 and la > 0:
-                eff = round(p / la, 1)  # W per mmol
-                unit = "W/mmol"
+                eff = round(p / la, 1)  # W per mM
+                unit = "W/mM"
             elif h > 0 and la > 0:
-                eff = round(h / la, 1)  # bpm per mmol
-                unit = "bpm/mmol"
+                eff = round(h / la, 1)  # bpm per mM
+                unit = "bpm/mM"
             else:
                 eff = 0.0
                 unit = "N/A"
@@ -1173,7 +1173,7 @@ def calculate_comprehensive_load(sessions, all_historical_lactate=None):
         "zone_duration_min": zone_duration,
         "zone_percentage": zone_pct,
         "latest_efficiency": latest.get("metabolic_efficiency", 0),
-        "efficiency_unit": latest.get("efficiency_unit", "W/mmol"),
+        "efficiency_unit": latest.get("efficiency_unit", "W/mM"),
         "efficiency_delta_pct": eff_delta_pct,
         "days_since_prior": days_since_last,
         "has_full_power": has_full_power,
