@@ -284,6 +284,44 @@ def _clean_firestore_doc_in_background(doc_url, headers, sport, sub_sport, durat
         pass
 
 
+def _fetch_all_firestore_documents(base_url, headers, timeout=12, refresh_token=None):
+    """抓取 Firestore Collection 下的所有 documents，自動處理分頁 (pageSize=300 與 nextPageToken) 以及 401 Token 自動刷新"""
+    docs = []
+    page_token = None
+    url_sep = "&" if "?" in base_url else "?"
+    active_headers = dict(headers)
+    new_token = None
+
+    while True:
+        cur_url = f"{base_url}{url_sep}pageSize=300"
+        if page_token:
+            cur_url += f"&pageToken={page_token}"
+        try:
+            r = requests.get(cur_url, headers=active_headers, timeout=timeout)
+            if r.status_code in [401, 403] and refresh_token and not new_token:
+                API_KEY_LOCAL = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+                r_ref = requests.post(
+                    f"https://securetoken.googleapis.com/v1/token?key={API_KEY_LOCAL}",
+                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                    timeout=8
+                )
+                if r_ref.status_code == 200:
+                    new_token = r_ref.json().get("id_token")
+                    active_headers["Authorization"] = f"Bearer {new_token}"
+                    continue
+            if r.status_code == 200:
+                data = r.json()
+                docs.extend(data.get("documents") or [])
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+            else:
+                break
+        except Exception:
+            break
+    return docs, new_token
+
+
 def get_user_training_date_bounds(uid, token, refresh_token=None):
     """
     快速查詢使用者的運動與乳酸測試歷史的最早與最晚日期，作為前端日期區間拉桿的 min_value 與 max_value
@@ -301,41 +339,35 @@ def get_user_training_date_bounds(uid, token, refresh_token=None):
     la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
 
     all_dates = set()
-    try:
-        r_fit = requests.get(fit_url, headers=headers, timeout=5)
-        if r_fit.status_code == 200:
-            docs = r_fit.json().get("documents", [])
-            for d in docs:
-                st_val = d.get("fields", {}).get("start_time", {}).get("timestampValue")
-                if st_val:
-                    try:
-                        clean_ts = st_val.replace("Z", "+00:00")
-                        d_fit = datetime.fromisoformat(clean_ts).date()
-                        if d_fit <= today:
-                            all_dates.add(d_fit)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    fit_docs, _ = _fetch_all_firestore_documents(fit_url, headers, timeout=8, refresh_token=refresh_token)
+    for d in fit_docs:
+        st_val = d.get("fields", {}).get("start_time", {}).get("timestampValue")
+        if st_val:
+            try:
+                clean_ts = st_val.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(clean_ts)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone()
+                d_fit = dt.date()
+                if d_fit <= today:
+                    all_dates.add(d_fit)
+            except Exception:
+                pass
 
-    la_dates = []
-    try:
-        r_la = requests.get(la_url, headers=headers, timeout=5)
-        if r_la.status_code == 200:
-            docs = r_la.json().get("documents", [])
-            for d in docs:
-                f = d.get("fields", {})
-                y = int(f.get("year", {}).get("integerValue", 0))
-                m = int(f.get("month", {}).get("integerValue", 0))
-                day = int(f.get("day", {}).get("integerValue", 0))
-                if y > 0 and m > 0 and day > 0:
-                    fy = y + 2000 if y < 100 else y
-                    d_obj = date(fy, m, day)
-                    if d_obj <= today:
-                        all_dates.add(d_obj)
-                        la_dates.append(d_obj)
-    except Exception:
-        pass
+    la_docs, _ = _fetch_all_firestore_documents(la_url, headers, timeout=8, refresh_token=refresh_token)
+    for d in la_docs:
+        f = d.get("fields", {})
+        y = int(f.get("year", {}).get("integerValue", 0))
+        m = int(f.get("month", {}).get("integerValue", 0))
+        day = int(f.get("day", {}).get("integerValue", 0))
+        if y > 0 and m > 0 and day > 0:
+            fy = y + 2000 if y < 100 else y
+            try:
+                d_obj = date(fy, m, day)
+                if d_obj <= today:
+                    all_dates.add(d_obj)
+            except Exception:
+                pass
 
     if all_dates:
         sorted_all = sorted(all_dates)
@@ -381,29 +413,16 @@ def fetch_firestore_dataset_with_status(
     fit_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records"
     fit_sessions = []
     try:
-        r_fit = requests.get(fit_url, headers=headers, timeout=12)
-        
-        # 若遭遇 401 Unauthorized 且具備 refresh_token，自動刷新一次
-        if r_fit.status_code in [401, 403] and refresh_token:
-            try:
-                API_KEY_LOCAL = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
-                r_ref = requests.post(
-                    f"https://securetoken.googleapis.com/v1/token?key={API_KEY_LOCAL}",
-                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                    timeout=8
-                )
-                if r_ref.status_code == 200:
-                    active_token = r_ref.json().get("id_token")
-                    headers = {"Authorization": f"Bearer {active_token}"}
-                    r_fit = requests.get(fit_url, headers=headers, timeout=12)
-            except Exception:
-                pass
+        fit_docs, new_token_fit = _fetch_all_firestore_documents(fit_url, headers, timeout=12, refresh_token=refresh_token)
+        if new_token_fit:
+            active_token = new_token_fit
+            headers = {"Authorization": f"Bearer {active_token}"}
 
-        if r_fit.status_code == 200:
-            fit_docs = r_fit.json().get("documents", [])
+        if fit_docs:
             for doc in fit_docs:
                 f = doc.get("fields", {})
                 doc_name = doc.get("name", "")
+                doc_id = doc_name.split("/")[-1] if doc_name else ""
                 file_name = f.get("file_name", {}).get("stringValue", "Activity")
                 st_val = f.get("start_time", {}).get("timestampValue")
                 start_dt = None
@@ -411,6 +430,9 @@ def fetch_firestore_dataset_with_status(
                     try:
                         clean_ts = st_val.replace("Z", "+00:00")
                         start_dt = datetime.fromisoformat(clean_ts)
+                        # 安全轉換至本地時間 (UTC+8 台灣時間)，避免 UTC 與本地時間 8 小時時差
+                        if start_dt.tzinfo is not None:
+                            start_dt = start_dt.astimezone().replace(tzinfo=None)
                     except Exception:
                         pass
 
@@ -508,8 +530,12 @@ def fetch_firestore_dataset_with_status(
                 act_name = f.get("activity_name", {}).get("stringValue", file_name)
                 icu_load = _get_fs_val(f.get("icu_training_load", {}), 0.0)
 
+                has_la_flag = f.get("has_lactate", {}).get("booleanValue", False)
+
                 fit_sessions.append({
                     "id": doc.get("name"),
+                    "doc_id": doc_id,
+                    "has_lactate_flag": has_la_flag,
                     "source_file": file_name,
                     "activity_name": act_name,
                     "source": source_val,
@@ -595,35 +621,39 @@ def fetch_firestore_dataset_with_status(
     except Exception as e:
         return [], active_token, f"連線至 fit_records 失敗: {e}"
 
-    # 2. 抓取 lactate_records
+    # 2. 抓取 lactate_records (支援分頁讀取全部)
     la_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records"
     all_lactate = []
-    try:
-        r_la = requests.get(la_url, headers=headers, timeout=12)
-        if r_la.status_code == 200:
-            la_docs = r_la.json().get("documents", [])
-            for doc in la_docs:
-                f = doc.get("fields", {})
-                year = int(f.get("year", {}).get("integerValue", 0))
-                month = int(f.get("month", {}).get("integerValue", 0))
-                day = int(f.get("day", {}).get("integerValue", 0))
-                hour = int(f.get("hour", {}).get("integerValue", 0))
-                minute = int(f.get("minute", {}).get("integerValue", 0))
-                final_la_obj = f.get("final_la_mmol", {})
-                final_la = float(final_la_obj.get("doubleValue", final_la_obj.get("integerValue", 0)))
-                
-                if year > 0:
-                    full_year = year + 2000 if year < 100 else year
-                    try:
-                        rec_dt = datetime(full_year, month, day, hour, minute)
-                        all_lactate.append({
-                            "record_time": rec_dt,
-                            "lactate_mmol": final_la
-                        })
-                    except Exception:
-                        pass
-    except Exception as e:
-        print(f"Error fetching lactate_records: {e}")
+    la_docs, new_token_la = _fetch_all_firestore_documents(la_url, headers, timeout=12, refresh_token=refresh_token)
+    if new_token_la:
+        active_token = new_token_la
+        headers = {"Authorization": f"Bearer {active_token}"}
+
+    for doc in la_docs:
+        f = doc.get("fields", {})
+        doc_name = doc.get("name", "")
+        doc_id = doc_name.split("/")[-1] if doc_name else ""
+        fit_bound_id = f.get("fit_doc_id", {}).get("stringValue", "")
+        year = int(f.get("year", {}).get("integerValue", 0))
+        month = int(f.get("month", {}).get("integerValue", 0))
+        day = int(f.get("day", {}).get("integerValue", 0))
+        hour = int(f.get("hour", {}).get("integerValue", 0))
+        minute = int(f.get("minute", {}).get("integerValue", 0))
+        final_la_obj = f.get("final_la_mmol", {})
+        final_la = float(final_la_obj.get("doubleValue", final_la_obj.get("integerValue", 0)))
+        
+        if year > 0 and month > 0 and day > 0:
+            full_year = year + 2000 if year < 100 else year
+            try:
+                rec_dt = datetime(full_year, month, day, hour, minute)
+                all_lactate.append({
+                    "doc_id": doc_id,
+                    "fit_doc_id": fit_bound_id,
+                    "record_time": rec_dt,
+                    "lactate_mmol": final_la
+                })
+            except Exception:
+                pass
 
     # 2.1 乳酸紀錄智慧去重 (相差 <= 120 秒且乳酸數值相同視為重複，保留第一筆；若數值不同視為重測則保留)
     all_lactate = sorted(all_lactate, key=lambda x: x["record_time"])
@@ -640,18 +670,40 @@ def fetch_firestore_dataset_with_status(
                 dedup_lactate.append(la)
     all_lactate = dedup_lactate
 
-    # 3. 配對汗乳酸數據
+    # 3. 配對汗乳酸數據 (支援 fit_doc_id 精確綁定、時間窗口容錯、UTC 時差容錯與同日智慧歸戶)
     for s in fit_sessions:
         s_time = s["start_time"]
+        s_id = s.get("id", "")
+        s_doc_id = s.get("doc_id", "")
         matched_la = []
         if s_time:
             s_naive = s_time.replace(tzinfo=None)
             dur = s["duration_min"]
             for la in all_lactate:
-                diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
-                if -30 <= diff_min <= (dur + 45):
+                # 策略 1: fit_doc_id 精確綁定
+                b_id = la.get("fit_doc_id", "")
+                if b_id and (b_id == s_doc_id or b_id == s_id or s_doc_id in b_id or b_id in s_id):
+                    diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
                     matched_la.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
-        
+                    continue
+
+                # 策略 2: 本地時間窗口比對 (前後容錯擴大至 -60 ~ dur + 90 分鐘)
+                diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
+                if -60 <= diff_min <= (dur + 90):
+                    matched_la.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
+                    continue
+
+                # 策略 3: 時區 8 小時偏差容錯 (若活動 start_time 殘留純 UTC)
+                diff_utc = diff_min - 480.0
+                if -60 <= diff_utc <= (dur + 90):
+                    matched_la.append({"time_min": max(0, round(diff_utc, 1)), "lactate": la["lactate_mmol"]})
+                    continue
+
+                diff_utc_plus = diff_min + 480.0
+                if -60 <= diff_utc_plus <= (dur + 90):
+                    matched_la.append({"time_min": max(0, round(diff_utc_plus, 1)), "lactate": la["lactate_mmol"]})
+                    continue
+
         raw_las = [x["lactate"] for x in matched_la]
         s["lactate_readings"] = matched_la
         s["lactate_values"] = raw_las
@@ -669,6 +721,25 @@ def fetch_firestore_dataset_with_status(
                 s["duration_min"] = round(max_la_t, 1)
             else:
                 s["duration_min"] = 35.0
+
+    # 策略 4: 同日未配對乳酸智慧歸戶 (若某天有乳酸，但活動因時差或時間未命中，依同日活動或 has_lactate_flag 配對)
+    for s in fit_sessions:
+        if s.get("start_time") and not s.get("lactate_readings"):
+            s_date = s["start_time"].date()
+            s_naive = s["start_time"].replace(tzinfo=None)
+            same_day_las = [la for la in all_lactate if la["record_time"].date() == s_date]
+            same_day_acts = [x for x in fit_sessions if x.get("start_time") and x["start_time"].date() == s_date]
+            if same_day_las and (s.get("has_lactate_flag") or len(same_day_acts) == 1):
+                new_matched = []
+                for la in same_day_las:
+                    diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
+                    new_matched.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
+                raw_las = [x["lactate"] for x in new_matched]
+                s["lactate_readings"] = new_matched
+                s["lactate_values"] = raw_las
+                s["avg_lactate"] = round(float(np.mean(raw_las)), 2) if raw_las else 0.0
+                s["max_lactate"] = round(float(np.max(raw_las)), 2) if raw_las else 0.0
+                s["initial_lactate"] = raw_las[0] if raw_las else 0.0
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     
@@ -734,6 +805,22 @@ def fetch_firestore_dataset_with_status(
         # 關鍵策略：拉入自最早該場乳酸測驗起至最新一場之間的所有運動
         # （包含這 5 場乳酸測驗 + 期間所有中間有運動但沒乳酸的手錶日常數據）
         final_sessions = [s for s in valid if s["start_time"] >= earliest_la_time]
+
+    # 同日多次紀錄過濾策略：若同日有多次紀錄且當天至少有一筆包含乳酸，只保留有乳酸之活動，排除同日無乳酸場次
+    day_groups = {}
+    for s in final_sessions:
+        d_key = s["start_time"].strftime("%Y-%m-%d") if s.get("start_time") else "unknown"
+        day_groups.setdefault(d_key, []).append(s)
+
+    filtered_sessions = []
+    for d_key, s_list in day_groups.items():
+        has_la_in_day = any((s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0) for s in s_list)
+        if len(s_list) > 1 and has_la_in_day:
+            filtered_sessions.extend([s for s in s_list if (s.get("avg_lactate", 0) > 0 or len(s.get("lactate_readings", [])) > 0)])
+        else:
+            filtered_sessions.extend(s_list)
+
+    final_sessions = sorted(filtered_sessions, key=lambda x: x["start_time"])
 
     # 5. 從 Intervals.icu 撈取對應週期的晨間 HRV (rMSSD) 與靜息心率 (Resting HR) 數據
     if final_sessions and uid and active_token:
