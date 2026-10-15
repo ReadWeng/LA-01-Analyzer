@@ -670,42 +670,120 @@ def fetch_firestore_dataset_with_status(
                 dedup_lactate.append(la)
     all_lactate = dedup_lactate
 
-    # 3. 配對汗乳酸數據 (支援 fit_doc_id 精確綁定、時間窗口容錯、UTC 時差容錯與同日智慧歸戶)
+    # 3. 配對汗乳酸數據 (嚴格原則：同一天的汗乳酸只標在收到數據的活動上，絕不重複標註在其他無採樣的活動上)
     for s in fit_sessions:
-        s_time = s["start_time"]
-        s_id = s.get("id", "")
-        s_doc_id = s.get("doc_id", "")
-        matched_la = []
-        if s_time:
-            s_naive = s_time.replace(tzinfo=None)
-            dur = s["duration_min"]
-            for la in all_lactate:
-                # 策略 1: fit_doc_id 精確綁定
-                b_id = la.get("fit_doc_id", "")
-                if b_id and (b_id == s_doc_id or b_id == s_id or s_doc_id in b_id or b_id in s_id):
-                    diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
-                    matched_la.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
-                    continue
+        s["lactate_readings"] = []
 
-                # 策略 2: 本地時間窗口比對 (前後容錯擴大至 -60 ~ dur + 90 分鐘)
+    # 依日期分組
+    sessions_by_date = {}
+    for s in fit_sessions:
+        if s.get("start_time"):
+            d_str = s["start_time"].strftime("%Y-%m-%d")
+            sessions_by_date.setdefault(d_str, []).append(s)
+
+    lactates_by_date = {}
+    for la in all_lactate:
+        d_str = la["record_time"].strftime("%Y-%m-%d")
+        lactates_by_date.setdefault(d_str, []).append(la)
+
+    for d_str, day_las in lactates_by_date.items():
+        day_sessions = sessions_by_date.get(d_str, [])
+        if not day_sessions:
+            # 容錯：檢查是否有時區差導致日期偏差一天的活動
+            for other_d, other_sessions in sessions_by_date.items():
+                for s in other_sessions:
+                    s_naive = s["start_time"].replace(tzinfo=None)
+                    for la in day_las:
+                        diff_sec = abs((la["record_time"] - s_naive).total_seconds())
+                        if diff_sec <= 7200 or abs(diff_sec - 28800) <= 7200:
+                            day_sessions = other_sessions
+                            break
+                    if day_sessions:
+                        break
+                if day_sessions:
+                    break
+
+        if not day_sessions:
+            continue
+
+        # 若當天只有 1 場活動，直接歸給該活動
+        if len(day_sessions) == 1:
+            target_session = day_sessions[0]
+            s_naive = target_session["start_time"].replace(tzinfo=None)
+            for la in day_las:
                 diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
-                if -60 <= diff_min <= (dur + 90):
-                    matched_la.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
-                    continue
+                target_session["lactate_readings"].append({
+                    "time_min": max(0, round(diff_min, 1)),
+                    "lactate": la["lactate_mmol"],
+                    "doc_id": la.get("doc_id")
+                })
+            continue
 
-                # 策略 3: 時區 8 小時偏差容錯 (若活動 start_time 殘留純 UTC)
-                diff_utc = diff_min - 480.0
-                if -60 <= diff_utc <= (dur + 90):
-                    matched_la.append({"time_min": max(0, round(diff_utc, 1)), "lactate": la["lactate_mmol"]})
-                    continue
+        # 當天存在多筆活動時：只標在「真正收到數據」的那一筆活動上
+        for la in day_las:
+            target_s = None
+            b_id = la.get("fit_doc_id", "")
+            
+            # 優先 1: fit_doc_id 明確綁定
+            if b_id:
+                for s in day_sessions:
+                    s_id = s.get("id", "")
+                    s_doc_id = s.get("doc_id", "")
+                    if b_id == s_doc_id or b_id == s_id or s_doc_id in b_id or b_id in s_id:
+                        target_s = s
+                        break
 
-                diff_utc_plus = diff_min + 480.0
-                if -60 <= diff_utc_plus <= (dur + 90):
-                    matched_la.append({"time_min": max(0, round(diff_utc_plus, 1)), "lactate": la["lactate_mmol"]})
-                    continue
+            # 優先 2: 當天有活動明確標記 has_lactate_flag = True (且其他活動沒有)
+            if not target_s:
+                la_flagged_sessions = [s for s in day_sessions if s.get("has_lactate_flag")]
+                if len(la_flagged_sessions) == 1:
+                    target_s = la_flagged_sessions[0]
 
-        raw_las = [x["lactate"] for x in matched_la]
-        s["lactate_readings"] = matched_la
+            # 優先 3: 依乳酸採樣時間點與活動進行區間重疊度判定 (落在運動開始至結束後 20 分鐘內)
+            if not target_s:
+                best_s = None
+                best_score = float('inf')
+                for s in day_sessions:
+                    s_naive = s["start_time"].replace(tzinfo=None)
+                    dur = s.get("duration_min", 30.0)
+                    diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
+                    
+                    if -5 <= diff_min <= (dur + 20):
+                        score = abs(diff_min - dur)
+                        if score < best_score:
+                            best_score = score
+                            best_s = s
+                    elif -30 <= diff_min <= (dur + 60):
+                        score = 1000 + abs(diff_min - dur)
+                        if score < best_score:
+                            best_score = score
+                            best_s = s
+
+                target_s = best_s
+
+            # 優先 4: 若仍未定，選當天主要運動 (時長最長、有功率優先者)
+            if not target_s:
+                sorted_by_weight = sorted(
+                    day_sessions,
+                    key=lambda s: (1 if s.get("avg_power", 0) > 0 else 0, s.get("duration_min", 0)),
+                    reverse=True
+                )
+                target_s = sorted_by_weight[0]
+
+            # 嚴格將乳酸分配給唯一的 target_s
+            if target_s:
+                s_naive = target_s["start_time"].replace(tzinfo=None)
+                diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
+                target_s["lactate_readings"].append({
+                    "time_min": max(0, round(diff_min, 1)),
+                    "lactate": la["lactate_mmol"],
+                    "doc_id": la.get("doc_id")
+                })
+
+    # 計算各 session 的乳酸統計指標
+    for s in fit_sessions:
+        s_time = s.get("start_time")
+        raw_las = [x["lactate"] for x in s.get("lactate_readings", [])]
         s["lactate_values"] = raw_las
         s["avg_lactate"] = round(float(np.mean(raw_las)), 2) if raw_las else 0.0
         s["max_lactate"] = round(float(np.max(raw_las)), 2) if raw_las else 0.0
@@ -713,33 +791,13 @@ def fetch_firestore_dataset_with_status(
         s["date"] = s_time.strftime("%m/%d") if s_time else "近期"
         s["full_date"] = s_time.strftime("%Y-%m-%d") if s_time else "2026-09-10"
 
-        # 校正運動時長：嚴禁以運動結束後休息/恢復期的乳酸採血時間點覆蓋真正的運動時長！
-        # 運動時長 (duration_min) 若已有正值，保持真實運動時長；只有在缺失 (<= 0) 時才作為備援
+        # 校正運動時長
         if s["duration_min"] <= 0:
-            if matched_la:
-                max_la_t = max([x["time_min"] for x in matched_la])
+            if s.get("lactate_readings"):
+                max_la_t = max([x["time_min"] for x in s["lactate_readings"]])
                 s["duration_min"] = round(max_la_t, 1)
             else:
                 s["duration_min"] = 35.0
-
-    # 策略 4: 同日未配對乳酸智慧歸戶 (若某天有乳酸，但活動因時差或時間未命中，依同日活動或 has_lactate_flag 配對)
-    for s in fit_sessions:
-        if s.get("start_time") and not s.get("lactate_readings"):
-            s_date = s["start_time"].date()
-            s_naive = s["start_time"].replace(tzinfo=None)
-            same_day_las = [la for la in all_lactate if la["record_time"].date() == s_date]
-            same_day_acts = [x for x in fit_sessions if x.get("start_time") and x["start_time"].date() == s_date]
-            if same_day_las and (s.get("has_lactate_flag") or len(same_day_acts) == 1):
-                new_matched = []
-                for la in same_day_las:
-                    diff_min = (la["record_time"] - s_naive).total_seconds() / 60.0
-                    new_matched.append({"time_min": max(0, round(diff_min, 1)), "lactate": la["lactate_mmol"]})
-                raw_las = [x["lactate"] for x in new_matched]
-                s["lactate_readings"] = new_matched
-                s["lactate_values"] = raw_las
-                s["avg_lactate"] = round(float(np.mean(raw_las)), 2) if raw_las else 0.0
-                s["max_lactate"] = round(float(np.max(raw_las)), 2) if raw_las else 0.0
-                s["initial_lactate"] = raw_las[0] if raw_las else 0.0
 
     valid = [s for s in fit_sessions if s["start_time"] is not None]
     
