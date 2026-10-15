@@ -284,7 +284,7 @@ def render_modern_html_report(report_data):
 
         if has_la:
             avg_la_html = f"<span style='color: #ffab00; font-weight: 700;'>{s.get('avg_lactate')}</span>"
-            max_la_html = f"<span style='color: #ff5252; font-weight: 700;'>{s.get('max_lactate')}</span>"
+            max_la_html = f"<span style='color: #2979ff; font-weight: 700;'>{s.get('max_lactate')}</span>"
         else:
             avg_la_html = "<span style='color:#64748b; font-size:0.8rem;'>未採樣</span>"
             max_la_html = "<span style='color:#64748b; font-size:0.8rem;'>未採樣</span>"
@@ -943,8 +943,8 @@ def render_modern_html_report(report_data):
                         type: 'line',
                         label: '峰值汗乳酸 (mM)',
                         data: maxLa,
-                        borderColor: '#ff5252',
-                        backgroundColor: '#ff5252',
+                        borderColor: '#2979ff',
+                        backgroundColor: '#2979ff',
                         borderWidth: 2,
                         tension: 0.3,
                         pointRadius: 5,
@@ -1014,7 +1014,7 @@ def render_modern_html_report(report_data):
                     data: polarValues,
                     backgroundColor: [
                         '#00e676', // Low
-                        '#00f2fe', // Tempo
+                        '#ffd600', // Tempo
                         '#ff5252'  // High
                     ],
                     borderWidth: 0
