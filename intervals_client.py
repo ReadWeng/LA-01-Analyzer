@@ -18,7 +18,7 @@ INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 
 
 DEFAULT_INTERVALS_CLIENT_ID = "1038"
-DEFAULT_INTERVALS_CLIENT_SECRET = "ebb88ff05c8240dd98143baca7764a4f"
+DEFAULT_INTERVALS_CLIENT_SECRET = ""
 
 
 def resolve_redirect_uri(configured_uri: str = "") -> str:
@@ -80,10 +80,10 @@ def get_intervals_oauth_config() -> Dict[str, str]:
     if not redirect_uri:
         redirect_uri = os.environ.get("INTERVALS_REDIRECT_URI", "")
 
-    # 若未在外部環境變數設定，使用官方核發之正式憑證
+    # 若未在外部環境變數設定，使用官方核發之預設 Client ID
     if not client_id:
         client_id = DEFAULT_INTERVALS_CLIENT_ID
-    if not client_secret:
+    if not client_secret and DEFAULT_INTERVALS_CLIENT_SECRET:
         client_secret = DEFAULT_INTERVALS_CLIENT_SECRET
 
     return {

@@ -5,7 +5,23 @@ import base64
 import time
 from datetime import datetime, date, timedelta
 
-FIREBASE_API_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
+def get_firebase_api_key() -> str:
+    """
+    動態讀取 Firebase Web API Key
+    優先序: Streamlit secrets -> 系統環境變數
+    """
+    try:
+        if hasattr(st, "secrets"):
+            if "firebase" in st.secrets and "api_key" in st.secrets["firebase"]:
+                return str(st.secrets["firebase"]["api_key"]).strip()
+            if "FIREBASE_API_KEY" in st.secrets:
+                return str(st.secrets["FIREBASE_API_KEY"]).strip()
+    except Exception:
+        pass
+    import os
+    return os.environ.get("FIREBASE_API_KEY", "").strip()
+
+FIREBASE_API_KEY = get_firebase_api_key()
 
 def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     """

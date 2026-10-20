@@ -284,6 +284,24 @@ def _clean_firestore_doc_in_background(doc_url, headers, sport, sub_sport, durat
         pass
 
 
+def get_firebase_api_key() -> str:
+    """
+    動態讀取 Firebase Web API Key
+    優先序: Streamlit secrets -> 系統環境變數
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            if "firebase" in st.secrets and "api_key" in st.secrets["firebase"]:
+                return str(st.secrets["firebase"]["api_key"]).strip()
+            if "FIREBASE_API_KEY" in st.secrets:
+                return str(st.secrets["FIREBASE_API_KEY"]).strip()
+    except Exception:
+        pass
+    import os
+    return os.environ.get("FIREBASE_API_KEY", "").strip()
+
+
 def _fetch_all_firestore_documents(base_url, headers, timeout=12, refresh_token=None):
     """抓取 Firestore Collection 下的所有 documents，自動處理分頁 (pageSize=300 與 nextPageToken) 以及 401 Token 自動刷新"""
     docs = []
@@ -299,12 +317,13 @@ def _fetch_all_firestore_documents(base_url, headers, timeout=12, refresh_token=
         try:
             r = requests.get(cur_url, headers=active_headers, timeout=timeout)
             if r.status_code in [401, 403] and refresh_token and not new_token:
-                API_KEY_LOCAL = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
-                r_ref = requests.post(
-                    f"https://securetoken.googleapis.com/v1/token?key={API_KEY_LOCAL}",
-                    data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                    timeout=8
-                )
+                api_key_local = get_firebase_api_key()
+                if api_key_local:
+                    r_ref = requests.post(
+                        f"https://securetoken.googleapis.com/v1/token?key={api_key_local}",
+                        data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                        timeout=8
+                    )
                 if r_ref.status_code == 200:
                     new_token = r_ref.json().get("id_token")
                     active_headers["Authorization"] = f"Bearer {new_token}"

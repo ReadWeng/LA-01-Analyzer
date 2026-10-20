@@ -14,15 +14,37 @@ import re
 import json
 import requests
 
-DEFAULT_FIREBASE_KEY = "AIzaSyAhU1n_IIF7AEHXkrQCoToR3gkKe2umpuM"
 DEFAULT_PROJECT_ID = "lactatecloud"
+
+
+def get_gemini_api_key(passed_key=None) -> str:
+    """
+    動態讀取 Gemini API Key
+    優先序: 傳入參數 -> Streamlit secrets -> 系統環境變數
+    """
+    if passed_key and str(passed_key).strip():
+        return str(passed_key).strip()
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+                return str(st.secrets["gemini"]["api_key"]).strip()
+            if "GEMINI_API_KEY" in st.secrets:
+                return str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        pass
+    import os
+    return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 def call_firebase_ai_logic(metrics, athlete_name="選手", firebase_token=None, api_key=None):
     """
     透過 Firebase AI Logic / Gemini 生成深度汗乳酸運動生理評析與下一次訓練處方
     """
-    active_key = api_key or os.environ.get("GEMINI_API_KEY") or DEFAULT_FIREBASE_KEY
+    active_key = get_gemini_api_key(api_key)
+    if not active_key:
+        # 若尚未設定 GEMINI_API_KEY，自動啟用高階汗乳酸動態生理學運算備援引擎
+        return generate_dynamic_sweat_lactate_fallback(metrics, athlete_name)
 
     sessions_detail = []
     for s in metrics.get("sessions", []):
