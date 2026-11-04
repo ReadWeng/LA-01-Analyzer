@@ -14,3 +14,4 @@ test_*.html
 .streamlit/
 *.env
 .env
+screenshots/

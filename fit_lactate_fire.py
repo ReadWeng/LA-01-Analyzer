@@ -347,79 +347,89 @@ def refresh_firebase_token():
         pass
     return False
 
+FIREBASE_API_KEY = get_firebase_api_key()
+
 # 檢查 Streamlit 原生 Google OIDC 登入狀態
 if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
     if "firebase_uid" not in st.session_state:
-        g_token = None
-        # 從 st.user.tokens 提取 token (支援 dict 或 Mapping 物件)
-        tokens_obj = getattr(st.user, "tokens", None)
-        if tokens_obj is not None:
-            if hasattr(tokens_obj, "get"):
-                g_token = tokens_obj.get("id") or tokens_obj.get("id_token") or tokens_obj.get("access") or tokens_obj.get("access_token")
-            elif isinstance(tokens_obj, dict):
-                g_token = tokens_obj.get("id") or tokens_obj.get("id_token") or tokens_obj.get("access") or tokens_obj.get("access_token")
-        
-        # 兼容性：檢查 st.user 字典屬性
-        if not g_token and hasattr(st.user, "get"):
-            g_token = st.user.get("id_token") or st.user.get("id") or st.user.get("access_token")
+        if not FIREBASE_API_KEY:
+            st.session_state["_firebase_link_error"] = "MISSING_FIREBASE_API_KEY"
+        else:
+            id_tok = None
+            acc_tok = None
+            tokens_obj = getattr(st.user, "tokens", None)
+            if tokens_obj is not None and hasattr(tokens_obj, "get"):
+                id_tok = tokens_obj.get("id") or tokens_obj.get("id_token")
+                acc_tok = tokens_obj.get("access") or tokens_obj.get("access_token")
+            if hasattr(st.user, "get"):
+                id_tok = id_tok or st.user.get("id_token") or st.user.get("id")
+                acc_tok = acc_tok or st.user.get("access_token") or st.user.get("access")
 
-        if g_token:
-            is_jwt = isinstance(g_token, str) and g_token.count(".") == 2
-            
-            # 若為 JWT，檢查是否為已過期憑證
-            if is_jwt:
-                payload_info = parse_jwt_payload(g_token)
-                exp = payload_info.get("exp", 0)
-                now_ts = time.time()
-                # 若憑證已過期，嘗試由 refresh_token 自動換新，不主動強行登出用戶
+            candidate_bodies = []
+            now_ts = time.time()
+            id_expired = False
+            if id_tok and isinstance(id_tok, str) and id_tok.count(".") == 2:
+                exp = parse_jwt_payload(id_tok).get("exp", 0)
                 if exp > 0 and now_ts > exp:
-                    refresh_firebase_token()
-
-            post_body = f"id_token={g_token}&providerId=google.com" if is_jwt else f"access_token={g_token}&providerId=google.com"
-            url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
-            payload = {
-                "postBody": post_body,
-                "requestUri": "https://lactatecloud.firebaseapp.com",
-                "returnIdpCredential": True,
-                "returnSecureToken": True
-            }
-            try:
-                res = requests.post(url, json=payload, timeout=8)
-                data = res.json()
-                if "localId" in data:
-                    u_uid = data["localId"]
-                    u_token = data["idToken"]
-                    user_email = data.get("email", getattr(st.user, "email", ""))
-                    st.session_state["firebase_uid"] = u_uid
-                    st.session_state["firebase_token"] = u_token
-                    st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
-                    st.session_state["firebase_email"] = user_email
-                    ensure_user_profile_in_firestore(
-                        u_uid,
-                        user_email,
-                        u_token,
-                        display_name=data.get("displayName", getattr(st.user, "name", None))
-                    )
-                    if "pending_intervals_oauth" in st.session_state:
-                        import intervals_client as ic
-                        p_data = st.session_state.pop("pending_intervals_oauth")
-                        ic.save_user_intervals_oauth(
-                            uid=u_uid,
-                            firebase_token=u_token,
-                            access_token=p_data.get("access_token", ""),
-                            athlete_id=p_data.get("athlete_id", "0"),
-                            athlete_name=p_data.get("athlete_name", ""),
-                            scope=p_data.get("scope", "")
-                        )
-                    st.session_state.pop("cached_weekly_report_html", None)
-                    st.session_state.pop("cached_report_key", None)
-                    st.session_state.pop(f"intervals_auto_synced_{u_uid}", None)
-                    st.rerun()
+                    id_expired = True
                 else:
-                    # Token 暫時無效：不調用 st.logout()，僅在畫面上提示，避免強行登出使用者
-                    pass
-            except Exception:
-                pass
+                    candidate_bodies.append(f"id_token={id_tok}&providerId=google.com")
+            if acc_tok and isinstance(acc_tok, str):
+                candidate_bodies.append(f"access_token={acc_tok}&providerId=google.com")
+            if id_tok and id_expired:
+                candidate_bodies.append(f"id_token={id_tok}&providerId=google.com")
+
+            if not candidate_bodies:
+                st.session_state["_firebase_link_error"] = "NO_GOOGLE_TOKEN"
+            else:
+                url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
+                last_err = ""
+                for post_body in candidate_bodies:
+                    payload = {
+                        "postBody": post_body,
+                        "requestUri": "https://lactatecloud.firebaseapp.com",
+                        "returnIdpCredential": True,
+                        "returnSecureToken": True
+                    }
+                    try:
+                        res = requests.post(url, json=payload, timeout=8)
+                        data = res.json()
+                        if "localId" in data:
+                            u_uid = data["localId"]
+                            u_token = data["idToken"]
+                            user_email = data.get("email", getattr(st.user, "email", ""))
+                            st.session_state["firebase_uid"] = u_uid
+                            st.session_state["firebase_token"] = u_token
+                            st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
+                            st.session_state["firebase_email"] = user_email
+                            st.session_state.pop("_firebase_link_error", None)
+                            ensure_user_profile_in_firestore(
+                                u_uid,
+                                user_email,
+                                u_token,
+                                display_name=data.get("displayName", getattr(st.user, "name", None))
+                            )
+                            if "pending_intervals_oauth" in st.session_state:
+                                import intervals_client as ic
+                                p_data = st.session_state.pop("pending_intervals_oauth")
+                                ic.save_user_intervals_oauth(
+                                    uid=u_uid,
+                                    firebase_token=u_token,
+                                    access_token=p_data.get("access_token", ""),
+                                    athlete_id=p_data.get("athlete_id", "0"),
+                                    athlete_name=p_data.get("athlete_name", ""),
+                                    scope=p_data.get("scope", "")
+                                )
+                            st.session_state.pop("cached_weekly_report_html", None)
+                            st.session_state.pop("cached_report_key", None)
+                            st.session_state.pop(f"intervals_auto_synced_{u_uid}", None)
+                            st.rerun()
+                        else:
+                            last_err = data.get("error", {}).get("message", f"HTTP {res.status_code}")
+                    except Exception as ex:
+                        last_err = str(ex)
+                if last_err:
+                    st.session_state["_firebase_link_error"] = last_err
 
 # 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:
@@ -1719,7 +1729,17 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         if st.sidebar.button("🚪 登出並清除所有紀錄", use_container_width=True):
             logout_firebase()
 elif hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
-    st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但尚未連結 MyLactate 雲端金鑰。")
+    link_err = st.session_state.get("_firebase_link_error", "")
+    if not FIREBASE_API_KEY or link_err == "MISSING_FIREBASE_API_KEY" or "API_KEY_INVALID" in link_err or "API key not valid" in link_err:
+        st.sidebar.error(
+            f"❌ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但雲端尚未設定 `[firebase] api_key` 金鑰！\n\n"
+            "請至 Streamlit Cloud 右下角 **Manage app → Settings → Secrets**，補上 `[firebase]` 金鑰設定（保留原有的 `[auth]` 區塊）並儲存。"
+        )
+    else:
+        detail_hint = f"（原因：`{link_err}`）" if link_err else ""
+        st.sidebar.warning(f"⚠️ Google 帳號已驗證 ({getattr(st.user, 'email', '')})，但登入憑證已逾時或尚未完成連結{detail_hint}。")
+        if st.sidebar.button("🔄 重新驗證 Google 帳號", type="primary", use_container_width=True):
+            st.login()
     if st.sidebar.button("🧹 清除舊紀錄並重新登入", use_container_width=True):
         logout_firebase()
 else:
