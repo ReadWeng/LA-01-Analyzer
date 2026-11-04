@@ -66,7 +66,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.1"
+APP_VERSION = "v1.0.2"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -832,6 +832,42 @@ try:
     streamlit_keep_alive.init_keep_alive(interval_seconds=25, enable_wake_lock=True, show_badge=False)
 except Exception:
     pass
+
+# 注入前端動態模組載入錯誤自動修復器 (若遇到 Streamlit Cloud 舊版 chunk 快取失效，自動執行快取破除重整)
+st.markdown("""
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" style="display:none;" onload="(function(){
+    if (window.__stChunkHealerActive) return;
+    window.__stChunkHealerActive = true;
+    function checkChunkError() {
+        var text = (document.body && document.body.innerText) || '';
+        if (text.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+            text.indexOf('Importing a module script failed') !== -1 ||
+            text.indexOf('error loading dynamically imported module') !== -1) {
+            var now = Date.now();
+            var last = parseInt(sessionStorage.getItem('st_chunk_heal_ts') || '0', 10);
+            if (now - last > 15000) {
+                sessionStorage.setItem('st_chunk_heal_ts', String(now));
+                console.warn('[ChunkHealer] 偵測到過期前端模組快取，執行重載...');
+                var url = new URL(window.location.href);
+                url.searchParams.set('_reload', String(now));
+                window.location.replace(url.toString());
+            }
+        }
+    }
+    window.addEventListener('unhandledrejection', function(e) {
+        var msg = String((e && e.reason && (e.reason.message || e.reason)) || '');
+        if (msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+            msg.indexOf('Importing a module script failed') !== -1) {
+            checkChunkError();
+        }
+    });
+    var obs = new MutationObserver(checkChunkError);
+    if (document.body) {
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+    setTimeout(checkChunkError, 1200);
+})()"/>
+""", unsafe_allow_html=True)
 
 # 注入高級感 CSS 樣式
 st.markdown("""
@@ -2528,8 +2564,9 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         st.markdown("請在下方表格中輸入各時間點量測的乳酸與血糖數據。您可以自由新增或刪除行數，時間為相對於運動起點的累計分鐘數（支援輸入負數以代表運動前的熱身或基期測量）。")
         
 
-        col1, col2 = st.columns([1, 1])
-        with col2:
+                # 頂部動作列：同步、範本與重設
+        col_sync1, col_sync2, col_sync3 = st.columns([2, 1, 1])
+        with col_sync1:
             if st.button('From MyLactate Sync LA-01', use_container_width=True):
                 if "firebase_uid" not in st.session_state:
                     st.error("請先在左側邊欄登入 MyLactate 帳號！")
@@ -2549,22 +2586,123 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                                 st.session_state['custom_lactate'] = normalize_lactate_editor_df(pd.DataFrame(new_rows))
                                 st.session_state.pop('custom_lactate_editor', None)
                                 st.rerun()
-        st.session_state['custom_lactate'] = normalize_lactate_editor_df(st.session_state.get('custom_lactate'))
+        with col_sync2:
+            if st.button('🔄 載入預設範本', use_container_width=True, help="載入 0分、15分、30分 的基期範本"):
+                st.session_state['custom_lactate'] = get_default_lactate_df()
+                st.session_state.pop('custom_lactate_editor', None)
+                st.rerun()
+        with col_sync3:
+            if st.button('🧹 清空全部', use_container_width=True, help="清空所有暫存乳酸與血糖輸入"):
+                st.session_state['custom_lactate'] = pd.DataFrame(columns=['相對時間 (分鐘)', '乳酸值 (mM)', '血糖值 (mg/dL)', '體感'])
+                st.session_state.pop('custom_lactate_editor', None)
+                st.rerun()
 
-        edited_custom_df = st.data_editor(
-            st.session_state['custom_lactate'],
-            column_config={
-                '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
-                '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
-                '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
-                '體感': st.column_config.TextColumn("體感 / RPE", help="例如: 輕鬆、適中、吃力、力竭、RPE 7")
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            height=220,
-            key="custom_lactate_editor"
-        )
-        
+        # 確保 custom_lactate 正確正規化
+        curr_custom_df = normalize_lactate_editor_df(st.session_state.get('custom_lactate'))
+        st.session_state['custom_lactate'] = curr_custom_df
+
+        # 雙軌輸入介面 Tabs
+        tab_form, tab_sheet = st.tabs(["📝 表單逐筆輸入 / 快速管理 (推薦 · 100% 穩定)", "📊 試算表整批編輯模式 (st.data_editor)"])
+
+        with tab_form:
+            # 快速表單輸入區 (原生 HTML 輸入元件，完全不依賴前端動態 Chunk，極致穩定順暢)
+            with st.container():
+                st.markdown("<div style='background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px; margin-bottom:12px;'>", unsafe_allow_html=True)
+                with st.form("form_add_lactate_record", clear_on_submit=False):
+                    f_col1, f_col2, f_col3, f_col4 = st.columns([1.2, 1.2, 1.2, 1.8])
+                    
+                    # 預估下一個合理時間 (例如最後一筆時間 + 15 分鐘，或從 0.0 開始)
+                    suggested_time = 0.0
+                    if not curr_custom_df.empty:
+                        valid_times = curr_custom_df['相對時間 (分鐘)'].dropna()
+                        if not valid_times.empty:
+                            suggested_time = float(valid_times.max() + 15.0)
+
+                    with f_col1:
+                        inp_time = st.number_input("⏱️ 相對時間 (分鐘)", value=float(suggested_time), step=0.5, format="%.1f", help="相對於運動起點的累計分鐘數，支援負數")
+                    with f_col2:
+                        inp_lac = st.number_input("🩸 乳酸值 (mM)", value=2.0, min_value=0.0, max_value=30.0, step=0.1, format="%.2f", help="檢測到的乳酸數值 (mM)")
+                    with f_col3:
+                        inp_glu = st.number_input("🍬 血糖值 (mg/dL，選填)", value=0.0, min_value=0.0, max_value=500.0, step=1.0, format="%.0f", help="若無測量血糖請填 0 或留空")
+                    with f_col4:
+                        inp_feel = st.text_input("💪 體感 / RPE / 備註", value="運動前基期" if inp_time <= 0 else "", placeholder="例如: 輕鬆、適中、吃力、RPE 7...")
+
+                    btn_add_pt = st.form_submit_button("➕ 新增 / 更新此量測點", type="primary", use_container_width=True)
+                    if btn_add_pt:
+                        glu_final = float(inp_glu) if inp_glu > 0 else np.nan
+                        existing_mask = (curr_custom_df['相對時間 (分鐘)'] == inp_time)
+                        if existing_mask.any():
+                            curr_custom_df.loc[existing_mask, '乳酸值 (mM)'] = float(inp_lac)
+                            curr_custom_df.loc[existing_mask, '血糖值 (mg/dL)'] = glu_final
+                            curr_custom_df.loc[existing_mask, '體感'] = str(inp_feel).strip()
+                        else:
+                            new_row = pd.DataFrame([{
+                                '相對時間 (分鐘)': float(inp_time),
+                                '乳酸值 (mM)': float(inp_lac),
+                                '血糖值 (mg/dL)': glu_final,
+                                '體感': str(inp_feel).strip()
+                            }])
+                            curr_custom_df = pd.concat([curr_custom_df, new_row], ignore_index=True)
+                        curr_custom_df = curr_custom_df.sort_values(by='相對時間 (分鐘)').reset_index(drop=True)
+                        st.session_state['custom_lactate'] = curr_custom_df
+                        st.session_state.pop('custom_lactate_editor', None)
+                        st.toast(f"✅ 已成功記錄 {inp_time:.1f} 分鐘：乳酸 {inp_lac:.2f} mM", icon="🩸")
+                        st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            # 已記錄清單預覽與逐行刪除
+            st.markdown("##### 📋 目前已輸入之量測數據清單")
+            valid_rows = curr_custom_df[curr_custom_df['乳酸值 (mM)'].notna() | curr_custom_df['血糖值 (mg/dL)'].notna() | (curr_custom_df['體感'].str.strip() != '')]
+            if valid_rows.empty:
+                st.info("💡 目前尚未輸入任何有效乳酸/血糖數據，請於上方表單填寫並點擊「➕ 新增 / 更新此量測點」，或點擊上方「From MyLactate Sync LA-01」。")
+            else:
+                for r_idx, r_val in curr_custom_df.iterrows():
+                    t_val = r_val['相對時間 (分鐘)']
+                    lac_val = r_val['乳酸值 (mM)']
+                    glu_val = r_val['血糖值 (mg/dL)']
+                    feel_val = r_val['體感']
+
+                    c_r1, c_r2, c_r3, c_r4, c_r5 = st.columns([1.5, 1.5, 1.5, 2.5, 0.8])
+                    with c_r1:
+                        st.markdown(f"⏱️ **{t_val:.1f}** 分鐘")
+                    with c_r2:
+                        lac_str = f"🩸 **{lac_val:.2f}** mM" if pd.notna(lac_val) else "🩸 <span style='color:#8b949e;'>未測</span>"
+                        st.markdown(lac_str, unsafe_allow_html=True)
+                    with c_r3:
+                        glu_str = f"🍬 **{int(glu_val)}** mg/dL" if pd.notna(glu_val) and glu_val > 0 else "🍬 <span style='color:#8b949e;'>-</span>"
+                        st.markdown(glu_str, unsafe_allow_html=True)
+                    with c_r4:
+                        feel_str = f"💪 **{feel_val}**" if feel_val else "<span style='color:#8b949e;'>-</span>"
+                        st.markdown(feel_str, unsafe_allow_html=True)
+                    with c_r5:
+                        if st.button("🗑️", key=f"btn_del_row_{r_idx}_{t_val}", help=f"刪除 {t_val:.1f} 分鐘數據"):
+                            curr_custom_df = curr_custom_df.drop(index=r_idx).reset_index(drop=True)
+                            st.session_state['custom_lactate'] = curr_custom_df
+                            st.session_state.pop('custom_lactate_editor', None)
+                            st.rerun()
+
+        with tab_sheet:
+            st.caption("💡 **試算表操作提示**：請在儲存格上【**連按兩下 (Double-Click)**】直接輸入數值；在最下方空白行點擊可新增行。若瀏覽器遇到連線或外掛阻擋，可隨時切換至上方「📝 表單逐筆輸入」！")
+            edited_custom_df = st.data_editor(
+                curr_custom_df,
+                column_config={
+                    '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
+                    '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
+                    '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
+                    '體感': st.column_config.TextColumn("體感 / RPE", help="例如: 輕鬆、適中、吃力、力竭、RPE 7")
+                },
+                num_rows="dynamic",
+                use_container_width=True,
+                height=220,
+                key="custom_lactate_editor"
+            )
+            # 若試算表有被使用者修改，即時同步回 session_state
+            if not edited_custom_df.equals(curr_custom_df):
+                st.session_state['custom_lactate'] = edited_custom_df
+
+        # 最終採納的有效乳酸數據
+        effective_custom_df = st.session_state.get('custom_lactate', curr_custom_df)
+
         col_s1, col_s2 = st.columns([2.5, 1.5])
         with col_s2:
             if st.button("💾 儲存並綁定乳酸數據至此活動", type="primary", use_container_width=True, help="將上方編輯的乳酸數據直接綁定寫入此運動活動的 Firebase 紀錄中"):
@@ -2582,7 +2720,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                             token=st.session_state.get('firebase_token', ''),
                             fit_doc_id=fit_doc_id,
                             start_time=start_time,
-                            lactate_df=edited_custom_df
+                            lactate_df=effective_custom_df
                         )
                         if ok:
                             st.toast(msg, icon="✅")
@@ -2592,7 +2730,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
 
         # 彙整 custom 乳酸與血糖點
         custom_lactate_points = []
-        for idx, row in edited_custom_df.iterrows():
+        for idx, row in effective_custom_df.iterrows():
             t = row['相對時間 (分鐘)']
             lac = row.get('乳酸值 (mM)') if row.get('乳酸值 (mM)') is not None else row.get('乳酸值 (mmol/L)')
             glc = row.get('血糖值 (mg/dL)')

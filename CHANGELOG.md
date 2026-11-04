@@ -2,6 +2,16 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.2] - 2026-11-04
+
+### 🚀 雙軌輸入革新與前端極致韌性 (Features & Fixes)
+- **乳酸與血糖數據「雙軌輸入機制 (Dual-Input Mode)」**：
+  - **模式一：【📝 表單逐筆輸入 / 快速管理】（推薦首選）**：採用原生 HTML 數字與文字輸入框（st.number_input / st.text_input），完全不依賴前端大型動態 JS Chunk 與 Canvas，100% 免疫 Failed to fetch dynamically imported module 錯誤，在手機、平板與各類輸入法（含 Windows 注音/拼音 IME）下保證隨點即打、順暢新增、即時預覽與單鍵刪除。
+  - **模式二：【📊 試算表整批編輯模式】（st.data_editor）**：保留仿 Excel 試算表表格供習慣批次複製貼上的使用者，並提供「連按兩下 (Double-Click)」明確操作指引。
+  - **狀態雙向即時同步**：兩套介面無縫共享底層 custom_lactate 資料狀態，無論在表單或試算表增刪修改，皆能即時反映於圖表、生理數據對照彙整表與 Firebase 雲端綁定。
+- **頂部主動式前端模組載入錯誤自動修復器**：
+  - 於主文件頂部注入主動偵測器，一旦瀏覽器捕捉到 Failed to fetch dynamically imported module，自動透過帶有時間戳記的 URL 參數（?_reload=...）執行破除快取之即時重載，防止瀏覽器 V8 模組快取長期鎖定失敗狀態。
+
 ## [v1.0.1] - 2026-11-04
 
 ### 🛠️ 修復與強化 (Fixes)

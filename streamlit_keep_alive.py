@@ -176,7 +176,7 @@ def init_keep_alive(
                     const now = Date.now();
                     const guardKey = 'st_chunk_auto_heal_ts';
                     const lastHeal = parseInt(window.parent.sessionStorage.getItem(guardKey) || '0', 10);
-                    if (now - lastHeal < 30000) return;
+                    if (now - lastHeal < 15000) return;
                     window.parent.sessionStorage.setItem(guardKey, String(now));
                     console.warn('[KeepAlive] 偵測到過期前端模組快取 (' + reason + ')，自動刷新 /~/+/ 快取...');
                     try {{
@@ -185,7 +185,13 @@ def init_keep_alive(
                             credentials: 'same-origin'
                         }});
                     }} catch (e) {{}}
-                    window.parent.location.reload();
+                    try {{
+                        const targetUrl = new URL(window.parent.location.href);
+                        targetUrl.searchParams.set('_st_heal', String(now));
+                        window.parent.location.replace(targetUrl.toString());
+                    }} catch (e) {{
+                        window.parent.location.reload();
+                    }}
                 }} catch (e) {{}}
             }}
 
