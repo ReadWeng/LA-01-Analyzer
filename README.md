@@ -1,7 +1,7 @@
 # LA-01 乳酸與生理指標分析系統 (Firebase 雲端版)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.0.0-success.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.0.1-success.svg)](./CHANGELOG.md)
 
 這是一個基於 Streamlit 的網頁應用程式，能夠分析 LA-01 乳酸機資料、Garmin / COROS FIT 運動數據，並進行單期與多期的深度交叉對比，以及生成 AI 運動生理週報與下一次訓練處方。
 

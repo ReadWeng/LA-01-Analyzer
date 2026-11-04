@@ -168,6 +168,83 @@ def init_keep_alive(
                 }}
             }});
 
+            // 4. 自動偵測並修復 Streamlit Cloud 內層 /~/+/ iframe 舊版 JS Chunk 快取失效問題
+            //    (解決重新部署或升級後出現 "Failed to fetch dynamically imported module")
+            async function healStaleParentCache(reason) {{
+                try {{
+                    if (!window.parent || window.parent === window) return;
+                    const now = Date.now();
+                    const guardKey = 'st_chunk_auto_heal_ts';
+                    const lastHeal = parseInt(window.parent.sessionStorage.getItem(guardKey) || '0', 10);
+                    if (now - lastHeal < 30000) return;
+                    window.parent.sessionStorage.setItem(guardKey, String(now));
+                    console.warn('[KeepAlive] 偵測到過期前端模組快取 (' + reason + ')，自動刷新 /~/+/ 快取...');
+                    try {{
+                        await window.parent.fetch(window.parent.location.href, {{
+                            cache: 'reload',
+                            credentials: 'same-origin'
+                        }});
+                    }} catch (e) {{}}
+                    window.parent.location.reload();
+                }} catch (e) {{}}
+            }}
+
+            function installChunkErrorSelfHealer() {{
+                try {{
+                    if (!window.parent || !window.parent.document) return;
+                    const pWin = window.parent;
+                    const pDoc = pWin.document;
+
+                    // (A) 主動檢查主入口 script chunk 是否已在伺服器端被新版取代 (404 或回傳 HTML fallback)
+                    const entryScript = pDoc.querySelector('script[type="module"][src*="static/js/index."]');
+                    if (entryScript && entryScript.src && pWin.fetch) {{
+                        pWin.fetch(entryScript.src, {{ method: 'HEAD', cache: 'no-store' }})
+                            .then(function(res) {{
+                                const ct = (res.headers && res.headers.get('content-type')) || '';
+                                if (res.status === 404 || ct.indexOf('text/html') !== -1) {{
+                                    healStaleParentCache('entry_chunk_404');
+                                }}
+                            }})
+                            .catch(function() {{}});
+                    }}
+
+                    // (B) 監聽動態 import 拋出之未捕捉 Promise 拒絕
+                    if (!pWin.__stChunkHealBound) {{
+                        pWin.__stChunkHealBound = true;
+                        pWin.addEventListener('unhandledrejection', function(ev) {{
+                            const msg = String((ev && ev.reason && (ev.reason.message || ev.reason)) || '');
+                            if (
+                                msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+                                msg.indexOf('Importing a module script failed') !== -1 ||
+                                msg.indexOf('error loading dynamically imported module') !== -1
+                            ) {{
+                                healStaleParentCache('unhandledrejection');
+                            }}
+                        }});
+
+                        // (C) 監聽 React ErrorBoundary 渲染出之動態模組錯誤紅框
+                        const checkDomForChunkErr = function() {{
+                            const bodyText = (pDoc.body && pDoc.body.innerText) || '';
+                            if (
+                                bodyText.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+                                bodyText.indexOf('Importing a module script failed') !== -1
+                            ) {{
+                                healStaleParentCache('dom_error_boundary');
+                            }}
+                        }};
+                        checkDomForChunkErr();
+                        const obs = new MutationObserver(function() {{
+                            checkDomForChunkErr();
+                        }});
+                        if (pDoc.body) {{
+                            obs.observe(pDoc.body, {{ childList: true, subtree: true }});
+                        }}
+                    }}
+                }} catch (e) {{}}
+            }}
+
+            installChunkErrorSelfHealer();
+
             // 立即執行第一次保活
             sendKeepAlivePing();
         }})();

@@ -2,6 +2,12 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.1] - 2026-11-04
+
+### 🛠️ 修復與強化 (Fixes)
+- **前端動態模組（Chunk）快取自動自癒機制**：於 `streamlit_keep_alive.py` 新增內層 `/~/+/` iframe 快取版本偵測與 `Failed to fetch dynamically imported module` 自動強制刷新（`cache: 'reload'`）機制，解決雲端容器重啟或升級後瀏覽器快取舊版 JS 雜湊導致元件載入失敗的問題。
+- **鎖定 Streamlit 版本**：將 `requirements.txt` 固定為 `streamlit==1.57.0`，避免雲端重啟時自動跨版本升級造成前端靜態模組雜湊變動。
+
 ## [v1.0.0] - 2026-11-04
 
 首個正式雲端穩定版發布，涵蓋單期運動與汗乳酸協同分析、多期動力學整合儀表板（LacV5）、AI 運動生理週報與下一次處方系統，以及雲端安全架構重構。
