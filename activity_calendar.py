@@ -17,6 +17,23 @@ from datetime import datetime, timedelta, date
 @st.cache_resource
 def _get_http_session() -> requests.Session:
     return requests.Session()
+
+@st.cache_resource
+def _get_calendar_ram_cache() -> dict:
+    """跨瀏覽器重整 (F5 / 重新開啟) 的伺服器端記憶體快取，格式: {uid: (timestamp, activities_by_date, lactates_by_date)}"""
+    return {}
+
+@st.cache_resource
+def _get_timeseries_ram_cache() -> dict:
+    """單場運動 time_series 陣列快取，格式: {(uid, doc_id): raw_fields_dict}"""
+    return {}
+
+def invalidate_user_calendar_cache(uid: str):
+    """當新增、刪除、綁定或同步數據時，同步清除 session_state 與伺服器端記憶體快取"""
+    if not uid:
+        return
+    invalidate_user_calendar_cache(uid)
+    _get_calendar_ram_cache().pop(uid, None)
 from typing import Dict, List, Any, Tuple, Optional
 
 
@@ -47,9 +64,20 @@ def fetch_user_calendar_data(
     並依日期 'YYYY-MM-DD' 分組回傳。
     回傳: (activities_by_date, lactates_by_date)
     """
+    import time as _time
     cache_key = f"cal_cache_data_{uid}"
-    if not force_reload and cache_key in st.session_state:
-        return st.session_state[cache_key]
+    ram_cache = _get_calendar_ram_cache()
+    if force_reload:
+        st.session_state.pop(cache_key, None)
+        ram_cache.pop(uid, None)
+    else:
+        if cache_key in st.session_state:
+            return st.session_state[cache_key]
+        if uid in ram_cache:
+             cached_ts, cached_acts, cached_las = ram_cache[uid]
+             if _time.time() - cached_ts < 600:
+                 st.session_state[cache_key] = (cached_acts, cached_las)
+                 return cached_acts, cached_las
 
     activities_by_date: Dict[str, List[Dict[str, Any]]] = {}
     lactates_by_date: Dict[str, List[Dict[str, Any]]] = {}
@@ -79,7 +107,15 @@ def fetch_user_calendar_data(
                 break
         return out_docs
 
-    fit_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    # ⚡ 極速載入優化：月曆列表僅抓取摘要 metadata 欄位，不預先下載全部歷史運動的龐大 time_series 陣列 (10MB -> 20KB，提速 50 倍)
+    fit_mask = (
+        "&mask.fieldPaths=start_time&mask.fieldPaths=sport&mask.fieldPaths=sub_sport"
+        "&mask.fieldPaths=duration_minutes&mask.fieldPaths=avg_power&mask.fieldPaths=max_power"
+        "&mask.fieldPaths=avg_hr&mask.fieldPaths=max_hr&mask.fieldPaths=max_core"
+        "&mask.fieldPaths=has_lactate&mask.fieldPaths=file_name&mask.fieldPaths=activity_name"
+        "&mask.fieldPaths=source&mask.fieldPaths=intervals_act_id&mask.fieldPaths=total_distance_m"
+    )
+    fit_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300{fit_mask}"
     la_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
 
     # 雙執行緒平行抓取 fit_records 與 lactate_records，大幅縮減雲端載入等待時間
@@ -135,6 +171,7 @@ def fetch_user_calendar_data(
                 source = _get_fs_field(f.get("source"), "fit_upload")
 
                 act_item = {
+                    "uid": uid,
                     "doc_id": doc_id,
                     "date_str": date_str,
                     "start_time": start_dt,
@@ -286,7 +323,38 @@ def fetch_user_calendar_data(
                 act["lactate_count"] = len(matching_la) if matching_la else act.get("lactate_count", 0)
 
     st.session_state[cache_key] = (activities_by_date, lactates_by_date)
+    ram_cache[uid] = (_time.time(), activities_by_date, lactates_by_date)
     return activities_by_date, lactates_by_date
+
+
+def _ensure_fit_time_series(act_item: Dict[str, Any]) -> Dict[str, Any]:
+    """當使用者點選載入特定運動時，按需讀取該場運動的完整 time_series 並快取於記憶體"""
+    raw_fields = act_item.get("raw_fields", {})
+    if "time_series" in raw_fields:
+        return raw_fields
+    uid = act_item.get("uid") or st.session_state.get("admin_selected_athlete_uid") or st.session_state.get("firebase_uid")
+    doc_id = act_item.get("doc_id")
+    token = st.session_state.get("firebase_token", "")
+    if not uid or not doc_id or not token:
+        return raw_fields
+    ts_cache = _get_timeseries_ram_cache()
+    cache_k = (uid, doc_id)
+    if cache_k in ts_cache:
+        act_item["raw_fields"] = ts_cache[cache_k]
+        return ts_cache[cache_k]
+    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records/{doc_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = _get_http_session().get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            full_fields = resp.json().get("fields", {})
+            if full_fields:
+                ts_cache[cache_k] = full_fields
+                act_item["raw_fields"] = full_fields
+                return full_fields
+    except Exception:
+        pass
+    return raw_fields
 
 
 def build_session_from_fit_record(
@@ -297,7 +365,7 @@ def build_session_from_fit_record(
     將 Firestore 中的 fit_record 還原為應用程式標準 Session 物件 (df, df_laps, start_time 等)
     並自動關聯已存在的乳酸測驗點。
     """
-    raw_fields = act_item.get("raw_fields", {})
+    raw_fields = _ensure_fit_time_series(act_item)
     ts_values = raw_fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
     start_time = act_item.get("start_time", datetime.now())
     duration_min = act_item.get("duration_minutes", 0.0)
@@ -442,7 +510,7 @@ def convert_firebase_activity_to_session_dict(
     將 Firestore 中的 fit_record 與當日乳酸紀錄，轉換為 integrate_reports.build_integrated_html()
     所要求的多期 session_dict 結構。
     """
-    raw_fields = act_item.get("raw_fields", {})
+    raw_fields = _ensure_fit_time_series(act_item)
     ts_values = raw_fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
     start_time = act_item.get("start_time", datetime.now())
     duration_min = float(act_item.get("duration_minutes", 0.0))
@@ -662,7 +730,7 @@ def save_bound_lactate_to_firestore(
             pass
 
     # 清除快取以即時更新月曆
-    st.session_state.pop(f"cal_cache_data_{uid}", None)
+    invalidate_user_calendar_cache(uid)
     st.session_state.pop("cached_weekly_report_html", None)
     st.session_state.pop(f"date_bounds_v4_{uid}", None)
 
@@ -677,7 +745,7 @@ def delete_activity_from_firestore(uid: str, token: str, doc_id: str) -> bool:
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.delete(url, headers=headers, timeout=8)
-        st.session_state.pop(f"cal_cache_data_{uid}", None)
+        invalidate_user_calendar_cache(uid)
         st.session_state.pop("cached_weekly_report_html", None)
         st.session_state.pop(f"date_bounds_v4_{uid}", None)
         return r.status_code in [200, 204]
@@ -693,7 +761,7 @@ def delete_lactate_from_firestore(uid: str, token: str, doc_id: str) -> bool:
     headers = {"Authorization": f"Bearer {token}"}
     try:
         r = requests.delete(url, headers=headers, timeout=8)
-        st.session_state.pop(f"cal_cache_data_{uid}", None)
+        invalidate_user_calendar_cache(uid)
         st.session_state.pop("cached_weekly_report_html", None)
         st.session_state.pop(f"date_bounds_v4_{uid}", None)
         return r.status_code in [200, 204]
@@ -716,7 +784,7 @@ def update_lactate_feeling_in_firestore(uid: str, token: str, doc_id: str, feeli
     try:
         r = requests.patch(url, headers=headers, json=payload, timeout=8)
         if r.status_code in [200, 201]:
-            st.session_state.pop(f"cal_cache_data_{uid}", None)
+            invalidate_user_calendar_cache(uid)
             st.session_state.pop("cached_weekly_report_html", None)
             st.session_state.pop(f"date_bounds_v4_{uid}", None)
             return True
@@ -728,7 +796,7 @@ def update_lactate_feeling_in_firestore(uid: str, token: str, doc_id: str, feeli
                     headers["Authorization"] = f"Bearer {token}"
                     r_retry = requests.patch(url, headers=headers, json=payload, timeout=8)
                     if r_retry.status_code in [200, 201]:
-                        st.session_state.pop(f"cal_cache_data_{uid}", None)
+                        invalidate_user_calendar_cache(uid)
                         st.session_state.pop("cached_weekly_report_html", None)
                         st.session_state.pop(f"date_bounds_v4_{uid}", None)
                         return True

@@ -4,7 +4,19 @@ import json
 import base64
 import time
 import html
+import threading
 from datetime import datetime, date, timedelta
+
+@st.cache_resource
+def _get_server_ram_store() -> dict:
+    """跨瀏覽器重新整理 (F5 / 重新開啟分頁) 的伺服器端常駐記憶體快取"""
+    return {
+        "oidc_auth": {},       # {token_hash: (ts, auth_dict)}
+        "profile_synced": set(), # {uid}
+        "coach_roster": {},    # {admin_uid: (ts, athletes_list, debug_msg)}
+        "icu_creds": {},       # {uid: (ts, creds_dict)}
+        "icu_sync_ts": {},     # {uid: last_sync_timestamp}
+    }
 
 def get_firebase_api_key() -> str:
     """
@@ -27,14 +39,42 @@ FIREBASE_API_KEY = get_firebase_api_key()
 def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     """
     確保 Firebase Firestore 中的 users/{uid} 根文件必定標記 email 與最後登入時間。
-    使用 updateMask 進行 upsert，若文件不存在則自動建立，若已存在則安全合併欄位。
+    採用背景執行緒非同步寫入且於伺服器記憶體去重，0 毫秒不阻塞畫面載入。
     """
     if not uid or not email or not token:
         return
-    
     clean_email = str(email).strip()
     if not clean_email or "@" not in clean_email:
         return
+    ram_store = _get_server_ram_store()
+    if uid in ram_store["profile_synced"]:
+        st.session_state["_user_email_synced_to_firestore"] = uid
+        return
+    ram_store["profile_synced"].add(uid)
+    st.session_state["_user_email_synced_to_firestore"] = uid
+
+    def _bg_patch():
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        fields = {
+            "email": {"stringValue": clean_email},
+            "last_login": {"timestampValue": now_iso}
+        }
+        field_paths = ["email", "last_login"]
+        if display_name:
+            fields["display_name"] = {"stringValue": str(display_name).strip()}
+            field_paths.append("display_name")
+        mask_str = "&".join([f"updateMask.fieldPaths={fp}" for fp in field_paths])
+        url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}?{mask_str}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        try:
+            requests.patch(url, headers=headers, json={"fields": fields}, timeout=4)
+        except Exception:
+            pass
+
+    threading.Thread(target=_bg_patch, daemon=True).start()
+    return
+
+def _unused_legacy_profile_sync(uid, email, token, display_name=None):
 
     now_iso = datetime.utcnow().isoformat() + "Z"
     fields = {
@@ -66,7 +106,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.5"
+APP_VERSION = "v1.0.6"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -212,6 +252,7 @@ def get_all_firestore_athletes(token, admin_uid=None):
         for col_name in ["fit_records", "lactate_records"]:
             cg_query = {
                 "structuredQuery": {
+                    "select": {"fields": [{"fieldPath": "__name__"}]},
                     "from": [{"collectionId": col_name, "allDescendants": True}],
                     "limit": 100
                 }
@@ -286,6 +327,8 @@ def logout_firebase():
     for k in list(st.session_state.keys()):
         if any(str(k).startswith(p) for p in ("intervals_auto_synced_", "cal_cache_data_", "icu_creds_cache_", "coach_athletes_cache_")):
             keys_to_clear.append(k)
+    ram_store = _get_server_ram_store()
+    ram_store["oidc_auth"].clear()
     for k in keys_to_clear:
         st.session_state.pop(k, None)
     if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
@@ -383,54 +426,70 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
             if not candidate_bodies:
                 st.session_state["_firebase_link_error"] = "NO_GOOGLE_TOKEN"
             else:
-                url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
-                last_err = ""
-                for post_body in candidate_bodies:
-                    payload = {
-                        "postBody": post_body,
-                        "requestUri": "https://lactatecloud.firebaseapp.com",
-                        "returnIdpCredential": True,
-                        "returnSecureToken": True
-                    }
-                    try:
-                        res = requests.post(url, json=payload, timeout=8)
-                        data = res.json()
-                        if "localId" in data:
-                            u_uid = data["localId"]
-                            u_token = data["idToken"]
-                            user_email = data.get("email", getattr(st.user, "email", ""))
-                            st.session_state["firebase_uid"] = u_uid
-                            st.session_state["firebase_token"] = u_token
-                            st.session_state["firebase_refresh_token"] = data.get("refreshToken", "")
-                            st.session_state["firebase_email"] = user_email
-                            st.session_state.pop("_firebase_link_error", None)
-                            ensure_user_profile_in_firestore(
-                                u_uid,
-                                user_email,
-                                u_token,
-                                display_name=data.get("displayName", getattr(st.user, "name", None))
-                            )
-                            if "pending_intervals_oauth" in st.session_state:
-                                import intervals_client as ic
-                                p_data = st.session_state.pop("pending_intervals_oauth")
-                                ic.save_user_intervals_oauth(
-                                    uid=u_uid,
-                                    firebase_token=u_token,
-                                    access_token=p_data.get("access_token", ""),
-                                    athlete_id=p_data.get("athlete_id", "0"),
-                                    athlete_name=p_data.get("athlete_name", ""),
-                                    scope=p_data.get("scope", "")
+                ram_store = _get_server_ram_store()
+                oidc_cache_key = candidate_bodies[0]
+                cached_oidc = ram_store["oidc_auth"].get(oidc_cache_key)
+                if cached_oidc and (now_ts - cached_oidc[0] < 2400):
+                    # ⚡ 命中伺服器端記憶體快取：重新開啟網頁時 0 毫秒瞬間完成登入，不發送外部請求、不觸發二次 st.rerun()
+                    c_data = cached_oidc[1]
+                    st.session_state["firebase_uid"] = c_data["uid"]
+                    st.session_state["firebase_token"] = c_data["token"]
+                    st.session_state["firebase_refresh_token"] = c_data["refresh_token"]
+                    st.session_state["firebase_email"] = c_data["email"]
+                    st.session_state.pop("_firebase_link_error", None)
+                else:
+                    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
+                    last_err = ""
+                    for post_body in candidate_bodies:
+                        payload = {
+                            "postBody": post_body,
+                            "requestUri": "https://lactatecloud.firebaseapp.com",
+                            "returnIdpCredential": True,
+                            "returnSecureToken": True
+                        }
+                        try:
+                            res = requests.post(url, json=payload, timeout=8)
+                            data = res.json()
+                            if "localId" in data:
+                                u_uid = data["localId"]
+                                u_token = data["idToken"]
+                                u_ref = data.get("refreshToken", "")
+                                user_email = data.get("email", getattr(st.user, "email", ""))
+                                st.session_state["firebase_uid"] = u_uid
+                                st.session_state["firebase_token"] = u_token
+                                st.session_state["firebase_refresh_token"] = u_ref
+                                st.session_state["firebase_email"] = user_email
+                                st.session_state.pop("_firebase_link_error", None)
+                                ram_store["oidc_auth"][oidc_cache_key] = (now_ts, {
+                                    "uid": u_uid,
+                                    "token": u_token,
+                                    "refresh_token": u_ref,
+                                    "email": user_email
+                                })
+                                ensure_user_profile_in_firestore(
+                                    u_uid,
+                                    user_email,
+                                    u_token,
+                                    display_name=data.get("displayName", getattr(st.user, "name", None))
                                 )
-                            st.session_state.pop("cached_weekly_report_html", None)
-                            st.session_state.pop("cached_report_key", None)
-                            st.session_state.pop(f"intervals_auto_synced_{u_uid}", None)
-                            st.rerun()
-                        else:
-                            last_err = data.get("error", {}).get("message", f"HTTP {res.status_code}")
-                    except Exception as ex:
-                        last_err = str(ex)
-                if last_err:
-                    st.session_state["_firebase_link_error"] = last_err
+                                if "pending_intervals_oauth" in st.session_state:
+                                    import intervals_client as ic
+                                    p_data = st.session_state.pop("pending_intervals_oauth")
+                                    ic.save_user_intervals_oauth(
+                                        uid=u_uid,
+                                        firebase_token=u_token,
+                                        access_token=p_data.get("access_token", ""),
+                                        athlete_id=p_data.get("athlete_id", "0"),
+                                        athlete_name=p_data.get("athlete_name", ""),
+                                        scope=p_data.get("scope", "")
+                                    )
+                                break
+                            else:
+                                last_err = data.get("error", {}).get("message", f"HTTP {res.status_code}")
+                        except Exception as ex:
+                            last_err = str(ex)
+                    if "firebase_uid" not in st.session_state and last_err:
+                        st.session_state["_firebase_link_error"] = last_err
 
 # 檢查相容 Query Params (如果有其他地方轉跳)
 if "google_uid" in st.query_params:
@@ -494,6 +553,7 @@ if "code" in st.query_params and str(st.query_params.get("state", "")).startswit
                 st.session_state["intervals_api_key"] = acc_tok
                 st.session_state["intervals_is_oauth"] = True
                 st.session_state.pop(f"icu_creds_cache_{effective_uid}", None)
+                _get_server_ram_store()["icu_creds"].pop(effective_uid, None)
                 st.toast(f"🎉 Intervals.icu 授權成功！已連結運動員：{ath_name}", icon="✅")
             else:
                 st.error(f"❌ Intervals.icu OAuth 授權失敗: {msg}")
@@ -1178,6 +1238,12 @@ def import_historical_html_to_firebase(html_content, file_name):
                 except Exception as e:
                     pass
 
+    try:
+        import activity_calendar as _ac
+        _ac.invalidate_user_calendar_cache(uid)
+        _ac._get_timeseries_ram_cache().pop((uid, fit_doc_id), None)
+    except Exception:
+        pass
     return True, f"成功匯入（包含 {len(time_series_points)} 個軌跡點，{la_count} 筆乳酸數據）"
 
 def upload_report_to_firebase_storage(html_data, file_name):
@@ -1294,6 +1360,12 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
         response = requests.patch(url, headers=headers, json=payload, timeout=10)
         
         if response.status_code in [200, 201]:
+            try:
+                import activity_calendar as _ac
+                _ac.invalidate_user_calendar_cache(uid)
+                _ac._get_timeseries_ram_cache().pop((uid, doc_id), None)
+            except Exception:
+                pass
             return True
         else:
             st.error(f'Upload failed: {response.text}')
@@ -1308,20 +1380,28 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0, target
     eff_uid = target_uid or (st.session_state.get('admin_selected_athlete_uid') if st.session_state.get('firebase_email', '').lower() in [e.lower() for e in ADMIN_EMAILS] else None) or st.session_state.get('firebase_uid')
     # 若為首頁趨勢圖調用 (start_time is None) 且月曆已載入快取，直接復用快取數據免除重複網路請求
     cal_cache_key = f"cal_cache_data_{eff_uid}"
-    if start_time is None and cal_cache_key in st.session_state:
+    if start_time is None:
         try:
-            _, las_by_date = st.session_state[cal_cache_key]
-            cached_records = []
-            for d_las in las_by_date.values():
-                for la in d_las:
-                    cached_records.append({
-                        "elapsed_minutes": 0.0,
-                        "lactate_mmol": float(la.get("lactate_mmol", 0.0)),
-                        "record_time": la.get("record_time"),
-                        "doc_id": la.get("doc_id", ""),
-                        "feeling": la.get("feeling", "")
-                    })
-            return sorted(cached_records, key=lambda x: x["record_time"])
+            las_by_date = None
+            if cal_cache_key in st.session_state:
+                _, las_by_date = st.session_state[cal_cache_key]
+            else:
+                import activity_calendar as _ac
+                ram_entry = _ac._get_calendar_ram_cache().get(eff_uid)
+                if ram_entry:
+                    _, las_by_date = ram_entry["data"]
+            if las_by_date is not None:
+                cached_records = []
+                for d_las in las_by_date.values():
+                    for la in d_las:
+                        cached_records.append({
+                            "elapsed_minutes": 0.0,
+                            "lactate_mmol": float(la.get("lactate_mmol", 0.0)),
+                            "record_time": la.get("record_time"),
+                            "doc_id": la.get("doc_id", ""),
+                            "feeling": la.get("feeling", "")
+                        })
+                return sorted(cached_records, key=lambda x: x["record_time"])
         except Exception:
             pass
     url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{eff_uid}/lactate_records?pageSize=300"
@@ -1630,12 +1710,19 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         </div>
         """.format(logged_email=html.escape(logged_email)), unsafe_allow_html=True)
 
-        # 撈取 Firestore 全體選手名冊 (快取於 session_state，避免每次點擊重複發送多個 Firestore 請求)
+        # 撈取 Firestore 全體選手名冊 (跨重整常駐快取於伺服器記憶體，重新開啟網頁 0 毫秒載入)
         admin_uid = st.session_state.get("firebase_uid")
         admin_token = st.session_state.get("firebase_token", "")
         roster_cache_key = f"coach_athletes_cache_{admin_uid}"
+        ram_store = _get_server_ram_store()
         if roster_cache_key not in st.session_state:
-            st.session_state[roster_cache_key] = get_all_firestore_athletes(admin_token, admin_uid=admin_uid)
+            cached_r = ram_store["coach_roster"].get(admin_uid)
+            if cached_r and (time.time() - cached_r[0] < 900):
+                st.session_state[roster_cache_key] = (cached_r[1], cached_r[2])
+            else:
+                res_ath, res_dbg = get_all_firestore_athletes(admin_token, admin_uid=admin_uid)
+                ram_store["coach_roster"][admin_uid] = (time.time(), res_ath, res_dbg)
+                st.session_state[roster_cache_key] = (res_ath, res_dbg)
         athletes_list, debug_msg = [list(x) if isinstance(x, list) else x for x in st.session_state[roster_cache_key]]
 
         # 檢查 session_state 自訂名冊
@@ -1772,6 +1859,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                         persisted.append(new_entry)
                         save_coach_roster(admin_uid, admin_token, persisted)
                         st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
+                        _get_server_ram_store()["coach_roster"].pop(admin_uid, None)
                         
                         st.session_state["admin_selected_athlete_uid"] = resolved_uid
                         st.session_state["admin_selected_athlete_email"] = resolved_email
@@ -1784,6 +1872,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
             with col_m_ref:
                 if st.button("🔄 重新整理", use_container_width=True, key="btn_refresh_ath_list"):
                     st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
+                    _get_server_ram_store()["coach_roster"].pop(admin_uid, None)
                     st.rerun()
 
         # 若當前選手為手動自訂選手，提供移除按鈕
@@ -1796,6 +1885,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                 persisted = [p for p in persisted if p.get("uid") != sel_ath_uid]
                 save_coach_roster(admin_uid, admin_token, persisted)
                 st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
+                _get_server_ram_store()["coach_roster"].pop(admin_uid, None)
                 st.session_state["admin_selected_athlete_uid"] = admin_uid
                 st.session_state["admin_selected_athlete_email"] = logged_email
                 st.session_state["admin_selected_athlete_name"] = "教練本人"
@@ -1930,44 +2020,47 @@ if st.session_state.get('firebase_uid'):
     icu_token = st.session_state.get('firebase_token')
     import intervals_client as ic
 
-    # 讀取當前儲存的認證資訊 (快取於 session_state，避免每次點擊重複查詢 Firestore)
+    # 讀取當前儲存的認證資訊 (跨重整常駐快取於伺服器記憶體，重新開啟網頁 0 毫秒完成)
+    ram_store = _get_server_ram_store()
     icu_creds_key = f"icu_creds_cache_{icu_uid}"
     if icu_creds_key not in st.session_state:
-        st.session_state[icu_creds_key] = ic.get_user_intervals_credentials(icu_uid, icu_token)
+        cached_c = ram_store["icu_creds"].get(icu_uid)
+        if cached_c and (time.time() - cached_c[0] < 900):
+            st.session_state[icu_creds_key] = cached_c[1]
+        else:
+            fetched_c = ic.get_user_intervals_credentials(icu_uid, icu_token)
+            ram_store["icu_creds"][icu_uid] = (time.time(), fetched_c)
+            st.session_state[icu_creds_key] = fetched_c
     icu_creds = st.session_state[icu_creds_key]
     oauth_cfg = ic.get_intervals_oauth_config()
 
-    # --- 登入即自動背景同步機制 (增量極速模式：僅撈取 Firebase 尚未收錄的最新運動) ---
-    auto_sync_key = f"intervals_auto_synced_{icu_uid}"
-    last_sync_time = st.session_state.get(auto_sync_key, 0)
-    # 冷卻時間設為 600 秒 (10 分鐘)：登入初次必同步，之後每 10 分鐘背景檢查一次，避免頻繁點擊時卡頓
+    # --- 非阻塞式背景自動同步機制 (使用背景執行緒執行，完全不卡住網頁開啟速度！) ---
+    last_sync_time = ram_store["icu_sync_ts"].get(icu_uid, 0)
     if icu_creds["configured"] and (time.time() - last_sync_time > 600):
-        st.session_state[auto_sync_key] = time.time()
-        try:
-            s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
-                uid=icu_uid,
-                firebase_token=icu_token,
-                intervals_api_key=icu_creds["token"],
-                athlete_id=icu_creds["athlete_id"],
-                lookback_days=7,
-                lookahead_days=7,
-                is_oauth=icu_creds["is_oauth"],
-                incremental_only=True,
-                force_overwrite=False
-            )
-            # 若有同步到新數據，清除月曆快取、將焦點移至今天並觸發 rerun 立即顯示
-            if s_count > 0:
-                st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
-                st.session_state.pop("cached_weekly_report_html", None)
-                st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
-                today_str = date.today().strftime("%Y-%m-%d")
-                st.session_state["cal_selected_date"] = today_str
-                st.session_state["cal_view_year"] = date.today().year
-                st.session_state["cal_view_month"] = date.today().month
-                st.toast(f"⚡ 登入自動同步：已載入 {s_count} 筆今日最新手錶運動！", icon="🏃")
-                st.rerun()
-        except Exception as e:
-            print(f"登入自動同步發生異常: {e}")
+        ram_store["icu_sync_ts"][icu_uid] = time.time()
+        def _bg_icu_sync(_uid, _tok, _key, _ath_id, _is_oauth):
+            try:
+                s_cnt, _, _ = ic.sync_pre_lactate_activities_to_firebase(
+                    uid=_uid,
+                    firebase_token=_tok,
+                    intervals_api_key=_key,
+                    athlete_id=_ath_id,
+                    lookback_days=7,
+                    lookahead_days=7,
+                    is_oauth=_is_oauth,
+                    incremental_only=True,
+                    force_overwrite=False
+                )
+                if s_cnt > 0:
+                    import activity_calendar as _ac
+                    _ac._get_calendar_ram_cache().pop(_uid, None)
+            except Exception as e:
+                print(f"背景自動同步異常: {e}")
+        threading.Thread(
+            target=_bg_icu_sync,
+            args=(icu_uid, icu_token, icu_creds["token"], icu_creds["athlete_id"], icu_creds["is_oauth"]),
+            daemon=True
+        ).start()
 
     exp_title = f"🔗 運動手錶雲端綁定 ({active_target_name})" if is_viewing_other else "🔗 運動手錶雲端綁定 (Garmin / COROS)"
     with st.sidebar.expander(exp_title, expanded=False):
@@ -1990,6 +2083,7 @@ if st.session_state.get('firebase_uid'):
                 if st.button("🔌 解除連結", use_container_width=True, key="btn_disconnect_icu"):
                     ic.disconnect_user_intervals(icu_uid, icu_token)
                     st.session_state.pop(f"icu_creds_cache_{icu_uid}", None)
+                    _get_server_ram_store()["icu_creds"].pop(icu_uid, None)
                     st.session_state.pop("intervals_api_key", None)
                     st.session_state.pop("intervals_athlete_id", None)
                     st.session_state.pop("intervals_oauth_connected", None)
@@ -2020,7 +2114,7 @@ if st.session_state.get('firebase_uid'):
                         )
                         # 清除月曆快取、週報快取與日期範圍快取，確保日曆重新自 Firestore 載入最新狀態
                         st.session_state[auto_sync_key] = time.time()
-                        st.session_state.pop(f"cal_cache_data_{icu_uid}", None)
+                        import activity_calendar as _ac; _ac.invalidate_user_calendar_cache(icu_uid)
                         st.session_state.pop("cached_weekly_report_html", None)
                         st.session_state.pop(f"date_bounds_v4_{icu_uid}", None)
                         today_str = date.today().strftime("%Y-%m-%d")
@@ -2069,6 +2163,7 @@ if st.session_state.get('firebase_uid'):
                         if ok:
                             ic.save_user_intervals_apikey(icu_uid, icu_token, api_key_input, ath_id_input)
                             st.session_state.pop(f"icu_creds_cache_{icu_uid}", None)
+                            _get_server_ram_store()["icu_creds"].pop(icu_uid, None)
                             st.toast("已儲存 API Key 連線！", icon="✅")
                             st.rerun()
                         else:

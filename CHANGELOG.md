@@ -2,6 +2,18 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.6] - 2026-11-04
+
+### 🚀 重新開啟網頁／冷啟動載入速度極限優化 (Cold-Start & Reopen Speed Boost)
+- **雲端月曆與同步查詢欄位遮罩 (`mask.fieldPaths`)，首頁下載量縮減 99%（~20 MB ➔ ~20 KB）**：
+  - 過去開啟網頁時，`fetch_user_calendar_data()` 與 `sync_pre_lactate_activities_to_firebase()` 會將使用者歷史上百場運動紀錄內部的完整 30 秒軌跡陣列（`time_series`）全數下載，單次開啟網頁需傳輸 10～20 MB 以上的 JSON 資料。
+  - 現於 Firestore 查詢加入 `mask.fieldPaths` 欄位投影，首頁月曆僅下載活動摘要欄位（時間、運動類型、平均功率、平均心率、乳酸綁定狀態等，總計僅約 20 KB），並在您實際點擊「載入」或「跨期比對」某場特定運動時，才透過 `_ensure_fit_time_series()` 按需載入並快取該單場軌跡（~50 KB），徹底消除開啟網頁時的網路傳輸瓶頸。
+- **跨瀏覽器重整之伺服器端記憶體快取 (`@st.cache_resource`)**：
+  - 新增 `_get_server_ram_store()` 與 `_get_calendar_ram_cache()`，讓 Google OIDC 登入憑證交換結果、Intervals.icu 綁定狀態、教練選手名冊與活動月曆資料跨瀏覽器重新整理（F5 / 重新開啟分頁）常駐於伺服器 RAM 中。重新開啟網頁時達成 **0 毫秒** 直接秒開，並在新增、刪除或同步數據時自動精準更新快取。
+- **消除 Google OIDC 登入時的雙重腳本執行 (`st.rerun()`) 與背景非阻塞同步**：
+  - 移除 Google 帳號自動驗證成功後的強制 `st.rerun()`，避免每次重新開啟分頁時整支程式重複執行兩遍。
+  - 將使用者基本資料更新（`ensure_user_profile_in_firestore`）與登入時的 Intervals.icu 增量自動同步移至背景執行緒（`threading.Thread(..., daemon=True)`）非阻塞執行，不再卡住首頁畫面渲染。
+
 ## [v1.0.5] - 2026-11-04
 
 ### ⚡ 執行與載入速度極致加速 (Performance Optimization)

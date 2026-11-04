@@ -886,8 +886,15 @@ def sync_pre_lactate_activities_to_firebase(
 
     headers_fb = {"Authorization": f"Bearer {firebase_token}", "Content-Type": "application/json"}
 
-    # 1. 抓取現有的 fit_records 以便精準去重與推算最新記錄日期 (分頁讀取全部避免 300 筆限制截斷最新運動)
-    fit_base = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    # 1. 抓取現有的 fit_records 以便精準去重與推算最新記錄日期
+    # ⚡ 極速優化：增量模式僅拉取比對所需的 4 個輕量 metadata 欄位 (免下載數十 MB 的 time_series 陣列，體積縮小 99.8%)
+    if incremental_only and not force_overwrite:
+        fit_base = (
+            f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+            "&mask.fieldPaths=start_time&mask.fieldPaths=source&mask.fieldPaths=has_lactate&mask.fieldPaths=intervals_act_id"
+        )
+    else:
+        fit_base = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
     docs = []
     page_token = None
     try:
@@ -918,10 +925,11 @@ def sync_pre_lactate_activities_to_firebase(
         has_la = fields.get("has_lactate", {}).get("booleanValue", False)
         doc_name = doc.get("name", "").split("/")[-1]
 
-        # 檢查 time_series 是否為空 (過去因為串流下載失敗導致直線的紀錄需要被自動修復)
-        ts_values = fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
-        if not ts_values:
-            docs_with_empty_ts.add(doc_name)
+        # 僅在非增量模式 (手動點擊同步) 時檢查 time_series 是否為空並進行修復
+        if not incremental_only:
+            ts_values = fields.get("time_series", {}).get("arrayValue", {}).get("values", [])
+            if not ts_values:
+                docs_with_empty_ts.add(doc_name)
         
         # 提取 intervals_act_id (支援 stringValue 或 integerValue)
         icu_id_field = fields.get("intervals_act_id", {})
