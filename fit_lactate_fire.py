@@ -66,7 +66,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.2"
+APP_VERSION = "v1.0.3"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2386,10 +2386,10 @@ st.markdown('<div class="subtitle-text">上傳運動 .fit 檔案，標定乳酸�
 
 def get_default_lactate_df():
     return pd.DataFrame({
-        '相對時間 (分鐘)': pd.Series([0.0, 15.0, 30.0], dtype='float64'),
-        '乳酸值 (mM)': pd.Series([np.nan, np.nan, np.nan], dtype='float64'),
-        '血糖值 (mg/dL)': pd.Series([np.nan, np.nan, np.nan], dtype='float64'),
-        '體感': pd.Series(['運動前基期', '', ''], dtype='object')
+        '相對時間 (分鐘)': pd.Series([], dtype='float64'),
+        '乳酸值 (mM)': pd.Series([], dtype='float64'),
+        '血糖值 (mg/dL)': pd.Series([], dtype='float64'),
+        '體感': pd.Series([], dtype='object')
     })
 
 def normalize_lactate_editor_df(df):
@@ -2407,6 +2407,11 @@ def normalize_lactate_editor_df(df):
         out['體感'] = out['體感'].fillna('').astype(str)
     else:
         out['體感'] = pd.Series('', index=out.index, dtype='object')
+    
+    # 自動過濾所有欄位皆為空或無效的空白行
+    valid_mask = out['相對時間 (分鐘)'].notna() | out['乳酸值 (mM)'].notna() | out['血糖值 (mg/dL)'].notna() | (out['體感'].str.strip() != '')
+    out = out[valid_mask]
+    
     return out[['相對時間 (分鐘)', '乳酸值 (mM)', '血糖值 (mg/dL)', '體感']].reset_index(drop=True)
 
 # 初始化 session state 中的乳酸與血糖數據
@@ -2587,8 +2592,13 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                                 st.session_state.pop('custom_lactate_editor', None)
                                 st.rerun()
         with col_sync2:
-            if st.button('🔄 載入預設範本', use_container_width=True, help="載入 0分、15分、30分 的基期範本"):
-                st.session_state['custom_lactate'] = get_default_lactate_df()
+            if st.button('🔄 載入範本數據', use_container_width=True, help="載入 0分、15分、30分 測試範本"):
+                st.session_state['custom_lactate'] = pd.DataFrame({
+                    '相對時間 (分鐘)': pd.Series([0.0, 15.0, 30.0], dtype='float64'),
+                    '乳酸值 (mM)': pd.Series([1.8, 2.5, 4.2], dtype='float64'),
+                    '血糖值 (mg/dL)': pd.Series([95.0, 102.0, 110.0], dtype='float64'),
+                    '體感': pd.Series(['運動前基期', '輕鬆 RPE 2', '適中 RPE 5'], dtype='object')
+                })
                 st.session_state.pop('custom_lactate_editor', None)
                 st.rerun()
         with col_sync3:
@@ -2625,22 +2635,49 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     with f_col3:
                         inp_glu = st.number_input("🍬 血糖值 (mg/dL，選填)", value=0.0, min_value=0.0, max_value=500.0, step=1.0, format="%.0f", help="若無測量血糖請填 0 或留空")
                     with f_col4:
-                        inp_feel = st.text_input("💪 體感 / RPE / 備註", value="運動前基期" if inp_time <= 0 else "", placeholder="例如: 輕鬆、適中、吃力、RPE 7...")
+                        # 與 NFC 程式 (LA01LactateApp) 完全一致之 RPE 區間
+                        rpe_options = ["運動前基期", "輕鬆 RPE 2", "適中 RPE 5", "吃力 RPE 7", "極限 RPE 9", "無 / 未填", "自訂輸入（依下方備註）"]
+                        def_rpe_idx = 0 if inp_time <= 0 else 1
+                        sel_rpe = st.selectbox(
+                            "💪 體感 / RPE (與 NFC 同步)",
+                            rpe_options,
+                            index=def_rpe_idx,
+                            key="sel_rpe_dropdown",
+                            help="與 LA-01 手機 NFC App 相同之自覺強度選項"
+                        )
+                    
+                    inp_custom_feel = st.text_input(
+                        "📝 自訂體感 / 額外備註 (選填，若填寫將接續於 RPE 後或作為自訂說明)",
+                        value="",
+                        placeholder="例如: 呼吸微喘、腿部發酸、第 3 趟間歇...",
+                        key="inp_custom_feel"
+                    )
 
                     btn_add_pt = st.form_submit_button("➕ 新增 / 更新此量測點", type="primary", use_container_width=True)
                     if btn_add_pt:
+                        # 決定體感標記
+                        custom_text = inp_custom_feel.strip()
+                        if sel_rpe == "自訂輸入（依下方備註）":
+                            final_feel = custom_text
+                        elif sel_rpe == "無 / 未填":
+                            final_feel = custom_text
+                        elif custom_text:
+                            final_feel = f"{sel_rpe} ({custom_text})"
+                        else:
+                            final_feel = sel_rpe
+
                         glu_final = float(inp_glu) if inp_glu > 0 else np.nan
                         existing_mask = (curr_custom_df['相對時間 (分鐘)'] == inp_time)
                         if existing_mask.any():
                             curr_custom_df.loc[existing_mask, '乳酸值 (mM)'] = float(inp_lac)
                             curr_custom_df.loc[existing_mask, '血糖值 (mg/dL)'] = glu_final
-                            curr_custom_df.loc[existing_mask, '體感'] = str(inp_feel).strip()
+                            curr_custom_df.loc[existing_mask, '體感'] = final_feel
                         else:
                             new_row = pd.DataFrame([{
                                 '相對時間 (分鐘)': float(inp_time),
                                 '乳酸值 (mM)': float(inp_lac),
                                 '血糖值 (mg/dL)': glu_final,
-                                '體感': str(inp_feel).strip()
+                                '體感': final_feel
                             }])
                             curr_custom_df = pd.concat([curr_custom_df, new_row], ignore_index=True)
                         curr_custom_df = curr_custom_df.sort_values(by='相對時間 (分鐘)').reset_index(drop=True)
@@ -2652,11 +2689,11 @@ if fit_bytes is not None or loaded_cloud_session is not None:
 
             # 已記錄清單預覽與逐行刪除
             st.markdown("##### 📋 目前已輸入之量測數據清單")
-            valid_rows = curr_custom_df[curr_custom_df['乳酸值 (mM)'].notna() | curr_custom_df['血糖值 (mg/dL)'].notna() | (curr_custom_df['體感'].str.strip() != '')]
+            valid_rows = curr_custom_df[curr_custom_df['相對時間 (分鐘)'].notna() & (curr_custom_df['乳酸值 (mM)'].notna() | curr_custom_df['血糖值 (mg/dL)'].notna() | (curr_custom_df['體感'].str.strip() != ''))]
             if valid_rows.empty:
-                st.info("💡 目前尚未輸入任何有效乳酸/血糖數據，請於上方表單填寫並點擊「➕ 新增 / 更新此量測點」，或點擊上方「From MyLactate Sync LA-01」。")
+                st.info("💡 目前尚未輸入任何量測數據。請於上方表單填寫並點擊「➕ 新增 / 更新此量測點」，或點擊上方「From MyLactate Sync LA-01」。")
             else:
-                for r_idx, r_val in curr_custom_df.iterrows():
+                for r_idx, r_val in valid_rows.iterrows():
                     t_val = r_val['相對時間 (分鐘)']
                     lac_val = r_val['乳酸值 (mM)']
                     glu_val = r_val['血糖值 (mg/dL)']
@@ -2683,13 +2720,23 @@ if fit_bytes is not None or loaded_cloud_session is not None:
 
         with tab_sheet:
             st.caption("💡 **試算表操作提示**：請在儲存格上【**連按兩下 (Double-Click)**】直接輸入數值；在最下方空白行點擊可新增行。若瀏覽器遇到連線或外掛阻擋，可隨時切換至上方「📝 表單逐筆輸入」！")
+            editor_rpe_options = ["運動前基期", "輕鬆 RPE 2", "適中 RPE 5", "吃力 RPE 7", "極限 RPE 9"]
+            existing_feelings = [str(f).strip() for f in curr_custom_df['體感'].dropna().unique() if str(f).strip() and str(f).strip() not in editor_rpe_options]
+            if existing_feelings:
+                editor_rpe_options = editor_rpe_options + existing_feelings
+
             edited_custom_df = st.data_editor(
                 curr_custom_df,
                 column_config={
                     '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
                     '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
                     '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
-                    '體感': st.column_config.TextColumn("體感 / RPE", help="例如: 輕鬆、適中、吃力、力竭、RPE 7")
+                    '體感': st.column_config.SelectboxColumn(
+                        "體感 / RPE",
+                        help="與 NFC 程式相同之自覺強度選項",
+                        options=editor_rpe_options,
+                        required=False
+                    )
                 },
                 num_rows="dynamic",
                 use_container_width=True,

@@ -417,10 +417,10 @@ def build_session_from_fit_record(
         df_la["體感"] = df_la["體感"].fillna("").astype(str)
     else:
         df_la = pd.DataFrame({
-            "相對時間 (分鐘)": pd.Series([0.0, 15.0, 30.0], dtype="float64"),
-            "乳酸值 (mM)": pd.Series([np.nan, np.nan, np.nan], dtype="float64"),
-            "血糖值 (mg/dL)": pd.Series([np.nan, np.nan, np.nan], dtype="float64"),
-            "體感": pd.Series(["運動前基期", "", ""], dtype="object")
+            "相對時間 (分鐘)": pd.Series([], dtype="float64"),
+            "乳酸值 (mM)": pd.Series([], dtype="float64"),
+            "血糖值 (mg/dL)": pd.Series([], dtype="float64"),
+            "體感": pd.Series([], dtype="object")
         })
 
     return {
