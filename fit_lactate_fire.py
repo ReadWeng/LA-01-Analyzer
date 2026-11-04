@@ -66,6 +66,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
+APP_VERSION = "v1.0.0"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -1535,7 +1536,13 @@ def parse_fit_file_data(uploaded_file_bytes):
 
 
 # MyLactate 雲端登入區
-st.sidebar.markdown("### ☁️ MyLactate 雲端帳號")
+st.sidebar.markdown(
+    f"<div style='display:flex;align-items:baseline;justify-content:space-between;'>"
+    f"<h3 style='margin:0;'>☁️ MyLactate 雲端帳號</h3>"
+    f"<span style='font-size:0.75rem;color:#8b949e;border:1px solid rgba(139,148,158,0.35);border-radius:999px;padding:1px 8px;'>{APP_VERSION}</span>"
+    f"</div>",
+    unsafe_allow_html=True
+)
 if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
     # 確保 Firestore users/{uid} 根文件必定標記 email 與最新登入時間
     if st.session_state.get("_user_email_synced_to_firestore") != st.session_state["firebase_uid"]:

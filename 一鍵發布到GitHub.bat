@@ -36,7 +36,7 @@ git commit -m "Auto-deploy update: %date% %time%"
 
 echo.
 echo [*] Pushing to GitHub... (A browser window may pop up for login)
-git push -u origin main
+git push -u origin main --tags
 
 if %errorlevel% equ 0 (
     echo.
@@ -44,7 +44,7 @@ if %errorlevel% equ 0 (
 ) else (
     echo.
     echo [Error] Push failed! Please check your network connection or GitHub permissions.
-    echo Hint: You can open CMD in this folder and manually type 'git push -u origin main' to troubleshoot.
+    echo Hint: You can open CMD in this folder and manually type 'git push -u origin main --tags' to troubleshoot.
 )
 
 echo ===================================================
