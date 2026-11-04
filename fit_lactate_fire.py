@@ -66,7 +66,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.3"
+APP_VERSION = "v1.0.4"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2037,8 +2037,13 @@ if st.session_state.get('firebase_uid'):
 
     st.sidebar.markdown("---")
 
-st.sidebar.markdown("### 介面設定")
-chart_theme = st.sidebar.radio("圖表主題", ["深色模式 (Dark)", "淺色模式 (Light)"])
+st.sidebar.markdown("### 🎨 輸出報告顏色設定")
+chart_theme = st.sidebar.radio(
+    "輸出報告顏色設定",
+    ["深色模式 (Dark)", "淺色模式 (Light)"],
+    label_visibility="collapsed",
+    help="設定數據協同圖表與匯出 HTML 分析報告之深色或淺色底色主題"
+)
 theme_str = "dark" if "Dark" in chart_theme else "light"
 st.sidebar.markdown("---")
 
