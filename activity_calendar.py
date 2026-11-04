@@ -11,7 +11,12 @@ import pandas as pd
 import numpy as np
 import requests
 import calendar
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, date
+
+@st.cache_resource
+def _get_http_session() -> requests.Session:
+    return requests.Session()
 from typing import Dict, List, Any, Tuple, Optional
 
 
@@ -53,36 +58,54 @@ def fetch_user_calendar_data(
         return activities_by_date, lactates_by_date
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    http_sess = _get_http_session()
 
-    # 1. 抓取 fit_records (支援分頁讀取全部，避免 300 筆上限截斷最新運動)
-    fit_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
-    docs = []
-    page_token = None
-    try:
+    def _fetch_all_pages(base_url: str, req_headers: dict) -> list:
+        out_docs = []
+        ptok = None
         while True:
-            cur_url = fit_base_url if not page_token else f"{fit_base_url}&pageToken={page_token}"
+            c_url = base_url if not ptok else f"{base_url}&pageToken={ptok}"
             try:
-                r_fit = requests.get(cur_url, headers=headers, timeout=10)
-                if r_fit.status_code == 200:
-                    res_data = r_fit.json()
-                    docs.extend(res_data.get("documents") or [])
-                    page_token = res_data.get("nextPageToken")
-                    if not page_token:
+                resp = http_sess.get(c_url, headers=req_headers, timeout=10)
+                if resp.status_code == 200:
+                    rdata = resp.json()
+                    out_docs.extend(rdata.get("documents") or [])
+                    ptok = rdata.get("nextPageToken")
+                    if not ptok:
                         break
-                elif r_fit.status_code == 401:
-                    try:
-                        from fit_lactate_fire import refresh_firebase_token
-                        if refresh_firebase_token():
-                            token = st.session_state.get("firebase_token", token)
-                            headers["Authorization"] = f"Bearer {token}"
-                            continue
-                    except Exception:
-                        pass
-                    break
                 else:
                     break
             except Exception:
                 break
+        return out_docs
+
+    fit_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/fit_records?pageSize=300"
+    la_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
+
+    # 雙執行緒平行抓取 fit_records 與 lactate_records，大幅縮減雲端載入等待時間
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_fit = pool.submit(_fetch_all_pages, fit_base_url, dict(headers))
+        fut_la = pool.submit(_fetch_all_pages, la_base_url, dict(headers))
+        docs = fut_fit.result()
+        la_docs = fut_la.result()
+
+    # 若因 token 過期導致兩邊皆為空，嘗試刷新 token 後重試一次
+    if not docs and not la_docs:
+        try:
+            from fit_lactate_fire import refresh_firebase_token
+            if refresh_firebase_token():
+                token = st.session_state.get("firebase_token", token)
+                headers["Authorization"] = f"Bearer {token}"
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_fit = pool.submit(_fetch_all_pages, fit_base_url, dict(headers))
+                    fut_la = pool.submit(_fetch_all_pages, la_base_url, dict(headers))
+                    docs = fut_fit.result()
+                    la_docs = fut_la.result()
+        except Exception:
+            pass
+
+    # 1. 解析 fit_records
+    try:
         for doc in docs:
                 f = doc.get("fields", {})
                 doc_id = doc.get("name", "").split("/")[-1]
@@ -169,35 +192,8 @@ def fetch_user_calendar_data(
     except Exception as e:
         print(f"Error fetching fit records for calendar: {e}")
 
-    # 2. 抓取 lactate_records (支援分頁讀取全部)
-    la_base_url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}/lactate_records?pageSize=300"
-    la_docs = []
-    page_token = None
+    # 2. 解析 lactate_records (已於上方平行抓取完畢)
     try:
-        while True:
-            cur_url = la_base_url if not page_token else f"{la_base_url}&pageToken={page_token}"
-            try:
-                r_la = requests.get(cur_url, headers=headers, timeout=10)
-                if r_la.status_code == 200:
-                    res_data = r_la.json()
-                    la_docs.extend(res_data.get("documents") or [])
-                    page_token = res_data.get("nextPageToken")
-                    if not page_token:
-                        break
-                elif r_la.status_code == 401:
-                    try:
-                        from fit_lactate_fire import refresh_firebase_token
-                        if refresh_firebase_token():
-                            token = st.session_state.get("firebase_token", token)
-                            headers["Authorization"] = f"Bearer {token}"
-                            continue
-                    except Exception:
-                        pass
-                    break
-                else:
-                    break
-            except Exception:
-                break
         for doc in la_docs:
                 f = doc.get("fields", {})
                 doc_id = doc.get("name", "").split("/")[-1]

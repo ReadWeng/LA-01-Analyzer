@@ -66,7 +66,7 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.4"
+APP_VERSION = "v1.0.5"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -284,7 +284,7 @@ def logout_firebase():
         "intervals_api_key", "intervals_athlete_id", "_user_email_synced_to_firestore"
     ]
     for k in list(st.session_state.keys()):
-        if str(k).startswith("intervals_auto_synced_") or str(k).startswith("cal_cache_data_"):
+        if any(str(k).startswith(p) for p in ("intervals_auto_synced_", "cal_cache_data_", "icu_creds_cache_", "coach_athletes_cache_")):
             keys_to_clear.append(k)
     for k in keys_to_clear:
         st.session_state.pop(k, None)
@@ -493,6 +493,7 @@ if "code" in st.query_params and str(st.query_params.get("state", "")).startswit
                 st.session_state["intervals_athlete_name"] = ath_name
                 st.session_state["intervals_api_key"] = acc_tok
                 st.session_state["intervals_is_oauth"] = True
+                st.session_state.pop(f"icu_creds_cache_{effective_uid}", None)
                 st.toast(f"🎉 Intervals.icu 授權成功！已連結運動員：{ath_name}", icon="✅")
             else:
                 st.error(f"❌ Intervals.icu OAuth 授權失敗: {msg}")
@@ -630,13 +631,9 @@ import streamlit.components.v1 as components
 sys.path.append(os.path.abspath("LactateReport"))
 try:
     import integrate_reports
-    import importlib
-    importlib.reload(integrate_reports)
 except ImportError:
     sys.path.append(os.path.join(os.path.dirname(__file__), "LactateReport"))
     import integrate_reports
-    import importlib
-    importlib.reload(integrate_reports)
 
 def generate_html_report(df_summary, fig, start_time, file_name, metrics):
     plotly_html = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
@@ -814,10 +811,29 @@ def generate_html_report(df_summary, fig, start_time, file_name, metrics):
 
 # 頁面配置與高級視覺主題
 from PIL import Image
-try:
-    page_icon_img = Image.open("logo.jpg")
-except:
-    page_icon_img = "🩸"
+
+@st.cache_resource
+def _get_cached_page_icon():
+    try:
+        return Image.open("logo.jpg")
+    except Exception:
+        return "🩸"
+
+@st.cache_data(show_spinner=False)
+def _get_cached_logo_b64():
+    try:
+        with open("logo.jpg", "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode()
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False)
+def _convert_df_to_csv_str(df_in):
+    buf = io.StringIO()
+    df_in.to_csv(buf, index=False, encoding='utf-8-sig')
+    return buf.getvalue()
+
+page_icon_img = _get_cached_page_icon()
 
 st.set_page_config(
     page_title="FIT 檔與乳酸協同分析工具",
@@ -939,11 +955,6 @@ hr {
 """, unsafe_allow_html=True)
 
 # ----------------- 核心解析邏輯 -----------------
-
-@st.cache_data(show_spinner=False)
-
-
-
 
 def import_historical_html_to_firebase(html_content, file_name):
     import json
@@ -1295,6 +1306,24 @@ def upload_fit_to_firebase(df, file_name, start_time, avg_power, max_power, avg_
 
 def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0, target_uid=None):
     eff_uid = target_uid or (st.session_state.get('admin_selected_athlete_uid') if st.session_state.get('firebase_email', '').lower() in [e.lower() for e in ADMIN_EMAILS] else None) or st.session_state.get('firebase_uid')
+    # 若為首頁趨勢圖調用 (start_time is None) 且月曆已載入快取，直接復用快取數據免除重複網路請求
+    cal_cache_key = f"cal_cache_data_{eff_uid}"
+    if start_time is None and cal_cache_key in st.session_state:
+        try:
+            _, las_by_date = st.session_state[cal_cache_key]
+            cached_records = []
+            for d_las in las_by_date.values():
+                for la in d_las:
+                    cached_records.append({
+                        "elapsed_minutes": 0.0,
+                        "lactate_mmol": float(la.get("lactate_mmol", 0.0)),
+                        "record_time": la.get("record_time"),
+                        "doc_id": la.get("doc_id", ""),
+                        "feeling": la.get("feeling", "")
+                    })
+            return sorted(cached_records, key=lambda x: x["record_time"])
+        except Exception:
+            pass
     url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{eff_uid}/lactate_records?pageSize=300"
     try:
         headers = {"Authorization": f"Bearer {st.session_state.get('firebase_token')}"}
@@ -1381,6 +1410,7 @@ def fetch_firebase_lactate_records(start_time=None, duration_minutes=0.0, target
     return []
 
 
+@st.cache_data(show_spinner=False)
 def parse_fit_file_data(uploaded_file_bytes):
     """
     解析 FIT 檔案的 records 與 laps 數據，並提取運動類型 (sport, sub_sport)。
@@ -1600,10 +1630,13 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
         </div>
         """.format(logged_email=html.escape(logged_email)), unsafe_allow_html=True)
 
-        # 撈取 Firestore 全體選手名冊
+        # 撈取 Firestore 全體選手名冊 (快取於 session_state，避免每次點擊重複發送多個 Firestore 請求)
         admin_uid = st.session_state.get("firebase_uid")
         admin_token = st.session_state.get("firebase_token", "")
-        athletes_list, debug_msg = get_all_firestore_athletes(admin_token, admin_uid=admin_uid)
+        roster_cache_key = f"coach_athletes_cache_{admin_uid}"
+        if roster_cache_key not in st.session_state:
+            st.session_state[roster_cache_key] = get_all_firestore_athletes(admin_token, admin_uid=admin_uid)
+        athletes_list, debug_msg = [list(x) if isinstance(x, list) else x for x in st.session_state[roster_cache_key]]
 
         # 檢查 session_state 自訂名冊
         if "coach_custom_athletes" in st.session_state:
@@ -1738,6 +1771,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                         persisted = [p for p in persisted if p.get("uid") != resolved_uid]
                         persisted.append(new_entry)
                         save_coach_roster(admin_uid, admin_token, persisted)
+                        st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
                         
                         st.session_state["admin_selected_athlete_uid"] = resolved_uid
                         st.session_state["admin_selected_athlete_email"] = resolved_email
@@ -1749,6 +1783,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                         st.rerun()
             with col_m_ref:
                 if st.button("🔄 重新整理", use_container_width=True, key="btn_refresh_ath_list"):
+                    st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
                     st.rerun()
 
         # 若當前選手為手動自訂選手，提供移除按鈕
@@ -1760,6 +1795,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
                 persisted = load_coach_roster(admin_uid, admin_token)
                 persisted = [p for p in persisted if p.get("uid") != sel_ath_uid]
                 save_coach_roster(admin_uid, admin_token, persisted)
+                st.session_state.pop(f"coach_athletes_cache_{admin_uid}", None)
                 st.session_state["admin_selected_athlete_uid"] = admin_uid
                 st.session_state["admin_selected_athlete_email"] = logged_email
                 st.session_state["admin_selected_athlete_name"] = "教練本人"
@@ -1893,18 +1929,19 @@ if st.session_state.get('firebase_uid'):
     icu_uid = active_target_uid if is_viewing_other else st.session_state.get('firebase_uid')
     icu_token = st.session_state.get('firebase_token')
     import intervals_client as ic
-    import importlib
-    importlib.reload(ic)
 
-    # 讀取當前儲存的認證資訊 (支援 OAuth 2.0 與 API Key)
-    icu_creds = ic.get_user_intervals_credentials(icu_uid, icu_token)
+    # 讀取當前儲存的認證資訊 (快取於 session_state，避免每次點擊重複查詢 Firestore)
+    icu_creds_key = f"icu_creds_cache_{icu_uid}"
+    if icu_creds_key not in st.session_state:
+        st.session_state[icu_creds_key] = ic.get_user_intervals_credentials(icu_uid, icu_token)
+    icu_creds = st.session_state[icu_creds_key]
     oauth_cfg = ic.get_intervals_oauth_config()
 
-    # --- 登入即自動背景同步機制 (增量極速模式：僅撈取 Firebase 尚未收錄的最新運動，毫秒級載入) ---
+    # --- 登入即自動背景同步機制 (增量極速模式：僅撈取 Firebase 尚未收錄的最新運動) ---
     auto_sync_key = f"intervals_auto_synced_{icu_uid}"
     last_sync_time = st.session_state.get(auto_sync_key, 0)
-    # 冷卻時間設為 45 秒：登入時或距離上次檢查超過 45 秒時自動執行 (增量僅需 0.2 秒)
-    if icu_creds["configured"] and (time.time() - last_sync_time > 45):
+    # 冷卻時間設為 600 秒 (10 分鐘)：登入初次必同步，之後每 10 分鐘背景檢查一次，避免頻繁點擊時卡頓
+    if icu_creds["configured"] and (time.time() - last_sync_time > 600):
         st.session_state[auto_sync_key] = time.time()
         try:
             s_count, sk_count, s_msg = ic.sync_pre_lactate_activities_to_firebase(
@@ -1952,6 +1989,7 @@ if st.session_state.get('firebase_uid'):
             with col_a2:
                 if st.button("🔌 解除連結", use_container_width=True, key="btn_disconnect_icu"):
                     ic.disconnect_user_intervals(icu_uid, icu_token)
+                    st.session_state.pop(f"icu_creds_cache_{icu_uid}", None)
                     st.session_state.pop("intervals_api_key", None)
                     st.session_state.pop("intervals_athlete_id", None)
                     st.session_state.pop("intervals_oauth_connected", None)
@@ -2030,6 +2068,7 @@ if st.session_state.get('firebase_uid'):
                         ok, msg = ic.test_intervals_connection(api_key_input, ath_id_input, is_oauth=False)
                         if ok:
                             ic.save_user_intervals_apikey(icu_uid, icu_token, api_key_input, ath_id_input)
+                            st.session_state.pop(f"icu_creds_cache_{icu_uid}", None)
                             st.toast("已儲存 API Key 連線！", icon="✅")
                             st.rerun()
                         else:
@@ -2101,8 +2140,6 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
             if is_coach_view:
                 st.caption(f"👑 **教練視角**：正調閱選手 **{active_name}** ({active_email}) 之雲端活動記錄")
             import activity_calendar
-            import importlib
-            importlib.reload(activity_calendar)
             activity_calendar.render_activity_calendar(
                 uid=active_uid,
                 token=token,
@@ -2280,11 +2317,8 @@ if app_mode == "AI 運動生理週報與下一次處方":
     else:
         st.success(f"👤 已連結個人雲端帳號：**{active_email or st.session_state.get('firebase_email')}**（數據來源：Firebase 雲端資料庫）")
 
-    import importlib
     import weekly_physio_engine as wpe
     import ai_weekly_report as awr
-    importlib.reload(wpe)
-    importlib.reload(awr)
     import streamlit.components.v1 as components
     from datetime import datetime
 
@@ -2379,13 +2413,11 @@ if app_mode == "AI 運動生理週報與下一次處方":
 
 
 
-import base64
-try:
-    with open("logo.jpg", "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read()).decode()
-    img_tag = f'<img src="data:image/jpeg;base64,{encoded_string}" style="height: 50px; vertical-align: middle; margin-right: 15px; border-radius: 50%; object-fit: cover;">'
+encoded_logo = _get_cached_logo_b64()
+if encoded_logo:
+    img_tag = f'<img src="data:image/jpeg;base64,{encoded_logo}" style="height: 50px; vertical-align: middle; margin-right: 15px; border-radius: 50%; object-fit: cover;">'
     st.markdown(f'<div class="title-container" style="display: flex; align-items: center;">{img_tag}FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
-except:
+else:
     st.markdown('<div class="title-container">🩸 FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-text">上傳運動 .fit 檔案，標定乳酸測試數據，進行心率、功率、核心體溫與乳酸的完美對照作圖。</div>', unsafe_allow_html=True)
 
@@ -3101,11 +3133,9 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             
         # 額外功能：允許下載完整解析後的 FIT 檔案 CSV
         with st.expander("🛠️ 進階：下載完整解析的 FIT 軌跡 CSV"):
-            csv_full_buffer = io.StringIO()
-            df.to_csv(csv_full_buffer, index=False, encoding='utf-8-sig')
             st.download_button(
                 label="📥 下載完整 FIT 軌跡資料 CSV",
-                data=csv_full_buffer.getvalue(),
+                data=_convert_df_to_csv_str(df),
                 file_name=f"parsed_fit_data_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
@@ -3116,8 +3146,6 @@ else:
         if is_coach_view:
             st.info(f"👑 **教練視角**：正瀏覽選手 **{athlete_name}** ({active_email}) 之活動月曆與歷史乳酸紀錄")
         import activity_calendar
-        import importlib
-        importlib.reload(activity_calendar)
         activity_calendar.render_activity_calendar(
             uid=active_uid,
             token=st.session_state.get('firebase_token', ''),
@@ -3219,8 +3247,6 @@ else:
                     st.markdown("#### 🧠 近五期乳酸智能評估與訓練建議")
                     
                     import lactate_fatigue_analyzer
-                    import importlib
-                    importlib.reload(lactate_fatigue_analyzer)
                     
                     analysis_res = lactate_fatigue_analyzer.analyze_lactate_fatigue(df_top5, dates_chrono)
                     

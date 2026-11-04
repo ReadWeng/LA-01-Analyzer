@@ -2,6 +2,22 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.5] - 2026-11-04
+
+### ⚡ 執行與載入速度極致加速 (Performance Optimization)
+- **消除每次互動之冗餘模組重編譯 (`importlib.reload`)**：
+  - 移除 `fit_lactate_fire.py` 內 7 處於每次頁面重繪（Rerun）時強制重新載入與編譯子模組（`activity_calendar`、`intervals_client`、`integrate_reports`、`weekly_physio_engine`、`ai_weekly_report`、`lactate_fatigue_analyzer`）的開銷，大幅降低每次按鈕點擊的 CPU 延遲。
+- **修復 `.fit` 檔案解析快取與大型 CSV 序列化快取**：
+  - 修正 `@st.cache_data` 裝飾器位置至 `parse_fit_file_data()`，確保上傳 `.fit` 檔案後切換設定或新增乳酸點時直接讀取記憶體快取，免除重複解析二進位檔案。
+  - 為完整 FIT 軌跡 CSV 下載新增 `@st.cache_data` 快取，避免每次重繪重複序列化數千筆軌跡列。
+  - 為 `logo.jpg` 圖片與 Base64 編碼新增 `@st.cache_resource` / `@st.cache_data` 快取，消除重複磁碟 I/O。
+- **消除側邊欄與首頁重複 Firestore 網路請求**：
+  - 將 Intervals.icu 認證狀態（`icu_creds_cache`）與教練模式選手名冊（`coach_athletes_cache`）快取於 `st.session_state`，避免每次點擊按鈕都向 Google Firestore 發送 2～6 次同步 HTTPS 請求。
+  - 首頁「最近五期乳酸紀錄趨勢」直接復用活動月曆已載入之 `cal_cache_data` 記憶體快取，省去重複抓取 `lactate_records` 的網路等待。
+  - 將自動背景同步冷卻時間由 45 秒調整為 600 秒（登入時立即同步一次，並隨時支援手動點擊同步），避免操作過程中頻繁觸發背景連線卡頓。
+- **雲端月曆雙執行緒平行載入 (`ThreadPoolExecutor`)**：
+  - 於 `activity_calendar.py` 採用 `ThreadPoolExecutor(max_workers=2)` 與 `requests.Session()` 連線池平行抓取 `fit_records` 與 `lactate_records`，將初次載入雲端月曆的網路耗時縮減近半。
+
 ## [v1.0.4] - 2026-11-04
 
 ### 🎨 側邊欄介面與文案優化 (UI & Usability)
