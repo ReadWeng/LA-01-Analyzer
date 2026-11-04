@@ -2321,14 +2321,34 @@ except:
     st.markdown('<div class="title-container">🩸 FIT 檔與乳酸協同分析工具</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-text">上傳運動 .fit 檔案，標定乳酸測試數據，進行心率、功率、核心體溫與乳酸的完美對照作圖。</div>', unsafe_allow_html=True)
 
-# 初始化 session state 中的乳酸與血糖數據
-if 'custom_lactate' not in st.session_state:
-    st.session_state['custom_lactate'] = pd.DataFrame({
-        '相對時間 (分鐘)': pd.Series(dtype='float'),
-        '乳酸值 (mM)': pd.Series(dtype='float'),
-        '血糖值 (mg/dL)': pd.Series(dtype='float'),
-        '體感': pd.Series(dtype='object')
+def get_default_lactate_df():
+    return pd.DataFrame({
+        '相對時間 (分鐘)': pd.Series([0.0, 15.0, 30.0], dtype='float64'),
+        '乳酸值 (mM)': pd.Series([np.nan, np.nan, np.nan], dtype='float64'),
+        '血糖值 (mg/dL)': pd.Series([np.nan, np.nan, np.nan], dtype='float64'),
+        '體感': pd.Series(['運動前基期', '', ''], dtype='object')
     })
+
+def normalize_lactate_editor_df(df):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return get_default_lactate_df()
+    out = df.copy()
+    if '乳酸值 (mM)' not in out.columns and '乳酸值 (mmol/L)' in out.columns:
+        out = out.rename(columns={'乳酸值 (mmol/L)': '乳酸值 (mM)'})
+    for num_col in ['相對時間 (分鐘)', '乳酸值 (mM)', '血糖值 (mg/dL)']:
+        if num_col in out.columns:
+            out[num_col] = pd.to_numeric(out[num_col], errors='coerce').astype('float64')
+        else:
+            out[num_col] = pd.Series(np.nan, index=out.index, dtype='float64')
+    if '體感' in out.columns:
+        out['體感'] = out['體感'].fillna('').astype(str)
+    else:
+        out['體感'] = pd.Series('', index=out.index, dtype='object')
+    return out[['相對時間 (分鐘)', '乳酸值 (mM)', '血糖值 (mg/dL)', '體感']].reset_index(drop=True)
+
+# 初始化 session state 中的乳酸與血糖數據
+if 'custom_lactate' not in st.session_state or st.session_state['custom_lactate'] is None or (isinstance(st.session_state['custom_lactate'], pd.DataFrame) and st.session_state['custom_lactate'].empty):
+    st.session_state['custom_lactate'] = get_default_lactate_df()
 
 # 側邊欄：檔案上傳與設定
 st.sidebar.markdown("### 📁 數據源選擇")
@@ -2379,12 +2399,7 @@ if 'last_file' not in st.session_state:
 if file_name and file_name != st.session_state['last_file']:
     st.session_state['last_file'] = file_name
     # 重設為預設乳酸與血糖數據
-    st.session_state['custom_lactate'] = pd.DataFrame({
-        '相對時間 (分鐘)': pd.Series(dtype='float'),
-        '乳酸值 (mM)': pd.Series(dtype='float'),
-        '血糖值 (mg/dL)': pd.Series(dtype='float'),
-        '體感': pd.Series(dtype='object')
-    })
+    st.session_state['custom_lactate'] = get_default_lactate_df()
     # 清除編輯器狀態，強迫重新載入預設數據
     if 'custom_lactate_editor' in st.session_state:
         del st.session_state['custom_lactate_editor']
@@ -2504,8 +2519,11 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                                     '體感': r.get('feeling', '')
                                 })
                             if new_rows:
-                                st.session_state['custom_lactate'] = pd.DataFrame(new_rows)
+                                st.session_state['custom_lactate'] = normalize_lactate_editor_df(pd.DataFrame(new_rows))
+                                st.session_state.pop('custom_lactate_editor', None)
                                 st.rerun()
+        st.session_state['custom_lactate'] = normalize_lactate_editor_df(st.session_state.get('custom_lactate'))
+
         edited_custom_df = st.data_editor(
             st.session_state['custom_lactate'],
             column_config={
@@ -2516,6 +2534,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             },
             num_rows="dynamic",
             use_container_width=True,
+            height=220,
             key="custom_lactate_editor"
         )
         

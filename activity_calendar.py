@@ -404,20 +404,23 @@ def build_session_from_fit_record(
                     g_flt = np.nan
 
             lactate_rows.append({
-                "相對時間 (分鐘)": diff_min,
-                "乳酸值 (mM)": l_flt,
-                "血糖值 (mg/dL)": g_flt,
-                "體感": la.get("feeling", "")
+                "相對時間 (分鐘)": float(diff_min),
+                "乳酸值 (mM)": float(l_flt),
+                "血糖值 (mg/dL)": float(g_flt),
+                "體感": str(la.get("feeling") or "")
             })
 
     if lactate_rows:
         df_la = pd.DataFrame(lactate_rows).sort_values("相對時間 (分鐘)").reset_index(drop=True)
+        for num_col in ["相對時間 (分鐘)", "乳酸值 (mM)", "血糖值 (mg/dL)"]:
+            df_la[num_col] = pd.to_numeric(df_la[num_col], errors="coerce").astype("float64")
+        df_la["體感"] = df_la["體感"].fillna("").astype(str)
     else:
         df_la = pd.DataFrame({
-            "相對時間 (分鐘)": pd.Series(dtype="float"),
-            "乳酸值 (mM)": pd.Series(dtype="float"),
-            "血糖值 (mg/dL)": pd.Series(dtype="float"),
-            "體感": pd.Series(dtype="object")
+            "相對時間 (分鐘)": pd.Series([0.0, 15.0, 30.0], dtype="float64"),
+            "乳酸值 (mM)": pd.Series([np.nan, np.nan, np.nan], dtype="float64"),
+            "血糖值 (mg/dL)": pd.Series([np.nan, np.nan, np.nan], dtype="float64"),
+            "體感": pd.Series(["運動前基期", "", ""], dtype="object")
         })
 
     return {
