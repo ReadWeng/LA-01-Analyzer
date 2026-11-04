@@ -106,7 +106,7 @@ def _unused_legacy_profile_sync(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.6"
+APP_VERSION = "v1.0.7"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2536,7 +2536,9 @@ def normalize_lactate_editor_df(df):
         else:
             out[num_col] = pd.Series(np.nan, index=out.index, dtype='float64')
     if '體感' in out.columns:
-        out['體感'] = out['體感'].fillna('').astype(str)
+        out['體感'] = out['體感'].apply(
+            lambda x: '' if (x is None or pd.isna(x) or str(x).strip().lower() == 'none') else str(x).strip()
+        ).astype('object')
     else:
         out['體感'] = pd.Series('', index=out.index, dtype='object')
     
@@ -2545,6 +2547,35 @@ def normalize_lactate_editor_df(df):
     out = out[valid_mask]
     
     return out[['相對時間 (分鐘)', '乳酸值 (mM)', '血糖值 (mg/dL)', '體感']].reset_index(drop=True)
+
+def build_editor_base_df(df, min_rows=6):
+    """
+    為 st.data_editor 建立穩定且預留空白可點擊列的基底 DataFrame（不含任何預設數字，僅空白儲存格）。
+    保持基底 DataFrame 在連續儲存格編輯期間恆定不變，防止 Streamlit 因基底變動而重置編輯器。
+    """
+    clean = normalize_lactate_editor_df(df)
+    rows = []
+    for _, r in clean.iterrows():
+        feel_v = str(r['體感']).strip() if pd.notna(r['體感']) else ''
+        rows.append({
+            '相對時間 (分鐘)': float(r['相對時間 (分鐘)']) if pd.notna(r['相對時間 (分鐘)']) else np.nan,
+            '乳酸值 (mM)': float(r['乳酸值 (mM)']) if pd.notna(r['乳酸值 (mM)']) else np.nan,
+            '血糖值 (mg/dL)': float(r['血糖值 (mg/dL)']) if pd.notna(r['血糖值 (mg/dL)']) else np.nan,
+            '體感': feel_v if feel_v else None
+        })
+    while len(rows) < min_rows:
+        rows.append({
+            '相對時間 (分鐘)': np.nan,
+            '乳酸值 (mM)': np.nan,
+            '血糖值 (mg/dL)': np.nan,
+            '體感': None
+        })
+    return pd.DataFrame({
+        '相對時間 (分鐘)': pd.Series([x['相對時間 (分鐘)'] for x in rows], dtype='float64'),
+        '乳酸值 (mM)': pd.Series([x['乳酸值 (mM)'] for x in rows], dtype='float64'),
+        '血糖值 (mg/dL)': pd.Series([x['血糖值 (mg/dL)'] for x in rows], dtype='float64'),
+        '體感': pd.Series([x['體感'] for x in rows], dtype='object')
+    })
 
 # 初始化 session state 中的乳酸與血糖數據
 if 'custom_lactate' not in st.session_state or st.session_state['custom_lactate'] is None or (isinstance(st.session_state['custom_lactate'], pd.DataFrame) and st.session_state['custom_lactate'].empty):
@@ -2739,12 +2770,43 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 st.session_state.pop('custom_lactate_editor', None)
                 st.rerun()
 
-        # 確保 custom_lactate 正確正規化
-        curr_custom_df = normalize_lactate_editor_df(st.session_state.get('custom_lactate'))
-        st.session_state['custom_lactate'] = curr_custom_df
+        # 當外部動作（表單新增/刪除、雲端同步、範本載入、切換活動）重置了 custom_lactate_editor 時，重建 6 列空白可編輯基底表
+        if 'custom_lactate_editor' not in st.session_state or 'editor_base_df' not in st.session_state:
+            st.session_state['editor_base_df'] = build_editor_base_df(st.session_state.get('custom_lactate'), min_rows=6)
 
-        # 雙軌輸入介面 Tabs
+        # 雙軌輸入介面 Tabs（保持「表單逐筆輸入」在左、「試算表整批編輯」在右）
         tab_form, tab_sheet = st.tabs(["📝 表單逐筆輸入 / 快速管理 (推薦 · 100% 穩定)", "📊 試算表整批編輯模式 (st.data_editor)"])
+
+        # 先處理 tab_sheet 內之 st.data_editor，使試算表之即時編輯在同一次重繪就能同步給表單清單與下方圖表
+        with tab_sheet:
+            st.caption("💡 **試算表操作提示**：表格已預留 6 列空白儲存格，請直接在任一列儲存格上【**連按兩下 (Double-Click)**】輸入數值並按 Enter；在最下方 `+` 列點擊可無限新增列。")
+            base_grid_df = st.session_state['editor_base_df']
+            editor_rpe_options = ["運動前基期", "輕鬆 RPE 2", "適中 RPE 5", "吃力 RPE 7", "極限 RPE 9"]
+            existing_feelings = [str(f).strip() for f in base_grid_df['體感'].dropna().unique() if str(f).strip() and str(f).strip() not in editor_rpe_options]
+            if existing_feelings:
+                editor_rpe_options = editor_rpe_options + existing_feelings
+
+            edited_raw_df = st.data_editor(
+                base_grid_df,
+                column_config={
+                    '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
+                    '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
+                    '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
+                    '體感': st.column_config.SelectboxColumn(
+                        "體感 / RPE",
+                        help="與 NFC 程式相同之自覺強度選項",
+                        options=editor_rpe_options,
+                        required=False
+                    )
+                },
+                num_rows="dynamic",
+                use_container_width=True,
+                height=240,
+                key="custom_lactate_editor"
+            )
+            # 將試算表非空白之有效列正規化同步至 custom_lactate（不更動 editor_base_df，確保連續點擊下一格輸入時絕不跳掉或清空！）
+            curr_custom_df = normalize_lactate_editor_df(edited_raw_df)
+            st.session_state['custom_lactate'] = curr_custom_df
 
         with tab_form:
             # 快速表單輸入區 (原生 HTML 輸入元件，完全不依賴前端動態 Chunk，極致穩定順暢)
@@ -2815,6 +2877,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                         curr_custom_df = curr_custom_df.sort_values(by='相對時間 (分鐘)').reset_index(drop=True)
                         st.session_state['custom_lactate'] = curr_custom_df
                         st.session_state.pop('custom_lactate_editor', None)
+                        st.session_state.pop('editor_base_df', None)
                         st.toast(f"✅ 已成功記錄 {inp_time:.1f} 分鐘：乳酸 {inp_lac:.2f} mM", icon="🩸")
                         st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -2823,7 +2886,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             st.markdown("##### 📋 目前已輸入之量測數據清單")
             valid_rows = curr_custom_df[curr_custom_df['相對時間 (分鐘)'].notna() & (curr_custom_df['乳酸值 (mM)'].notna() | curr_custom_df['血糖值 (mg/dL)'].notna() | (curr_custom_df['體感'].str.strip() != ''))]
             if valid_rows.empty:
-                st.info("💡 目前尚未輸入任何量測數據。請於上方表單填寫並點擊「➕ 新增 / 更新此量測點」，或點擊上方「From MyLactate Sync LA-01」。")
+                st.info("💡 目前尚未輸入任何量測數據。請於上方表單填寫並點擊「➕ 新增 / 更新此量測點」，或切換至「📊 試算表整批編輯模式」直接輸入。")
             else:
                 for r_idx, r_val in valid_rows.iterrows():
                     t_val = r_val['相對時間 (分鐘)']
@@ -2848,36 +2911,8 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                             curr_custom_df = curr_custom_df.drop(index=r_idx).reset_index(drop=True)
                             st.session_state['custom_lactate'] = curr_custom_df
                             st.session_state.pop('custom_lactate_editor', None)
+                            st.session_state.pop('editor_base_df', None)
                             st.rerun()
-
-        with tab_sheet:
-            st.caption("💡 **試算表操作提示**：請在儲存格上【**連按兩下 (Double-Click)**】直接輸入數值；在最下方空白行點擊可新增行。若瀏覽器遇到連線或外掛阻擋，可隨時切換至上方「📝 表單逐筆輸入」！")
-            editor_rpe_options = ["運動前基期", "輕鬆 RPE 2", "適中 RPE 5", "吃力 RPE 7", "極限 RPE 9"]
-            existing_feelings = [str(f).strip() for f in curr_custom_df['體感'].dropna().unique() if str(f).strip() and str(f).strip() not in editor_rpe_options]
-            if existing_feelings:
-                editor_rpe_options = editor_rpe_options + existing_feelings
-
-            edited_custom_df = st.data_editor(
-                curr_custom_df,
-                column_config={
-                    '相對時間 (分鐘)': st.column_config.NumberColumn("相對時間 (分鐘)", min_value=None, step=0.1, format="%.1f"),
-                    '乳酸值 (mM)': st.column_config.NumberColumn("乳酸值 (mM)", min_value=0.0, step=0.1, format="%.2f"),
-                    '血糖值 (mg/dL)': st.column_config.NumberColumn("血糖值 (mg/dL)", min_value=0.0, step=1.0, format="%d"),
-                    '體感': st.column_config.SelectboxColumn(
-                        "體感 / RPE",
-                        help="與 NFC 程式相同之自覺強度選項",
-                        options=editor_rpe_options,
-                        required=False
-                    )
-                },
-                num_rows="dynamic",
-                use_container_width=True,
-                height=220,
-                key="custom_lactate_editor"
-            )
-            # 若試算表有被使用者修改，即時同步回 session_state
-            if not edited_custom_df.equals(curr_custom_df):
-                st.session_state['custom_lactate'] = edited_custom_df
 
         # 最終採納的有效乳酸數據
         effective_custom_df = st.session_state.get('custom_lactate', curr_custom_df)

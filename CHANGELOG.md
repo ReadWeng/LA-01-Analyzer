@@ -2,6 +2,15 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.7] - 2026-11-04
+
+### 🛠️ 試算表整批編輯模式 (`st.data_editor`) 輸入修復 (Spreadsheet Input Fix)
+- **預留 6 列真實空白可編輯列（不含任何預設占位數字）**：
+  - 解決先前因 DataFrame 為 0 列（`len == 0`）導致 `st.data_editor` 畫布內呈現的 5 列橫線皆為不可點擊之背景填充區、無法直接雙擊輸入的問題。
+  - 新增 `build_editor_base_df(df, min_rows=6)`，在試算表預留 6 列真實空白儲存格（數值為 `NaN`、體感為 `None`），使用者可直接雙擊任意列輸入，同時「📋 目前已輸入之量測數據清單」仍自動過濾空白列、保持 0 筆乾淨無預設數字。
+- **固定 `editor_base_df` 基底參照，杜絕連續換格輸入時被重置清空**：
+  - 修復在 `st.data_editor` 輸入第 1 格（如相對時間）後點擊第 2 格（如乳酸值）時，因底層傳入的 DataFrame 在重繪時改變而觸發 Streamlit 重置 Widget 狀態、導致輸入數值消失的問題。
+
 ## [v1.0.6] - 2026-11-04
 
 ### 🚀 重新開啟網頁／冷啟動載入速度極限優化 (Cold-Start & Reopen Speed Boost)
