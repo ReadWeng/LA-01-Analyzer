@@ -3,6 +3,7 @@ import streamlit as st
 import json
 import base64
 import time
+import html
 from datetime import datetime, date, timedelta
 
 def get_firebase_api_key() -> str:
@@ -1544,7 +1545,7 @@ if "firebase_uid" in st.session_state and st.session_state["firebase_uid"]:
             </div>
             <div style="color: #cbd5e1; font-size: 0.75rem; margin-top: 2px;">登入身分：{logged_email}</div>
         </div>
-        """.format(logged_email=logged_email), unsafe_allow_html=True)
+        """.format(logged_email=html.escape(logged_email)), unsafe_allow_html=True)
 
         # 撈取 Firestore 全體選手名冊
         admin_uid = st.session_state.get("firebase_uid")
@@ -2144,7 +2145,14 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
     else:
         st.info("💡 目前尚未選取任何期數。請至上方「☁️ 從 Firebase 雲端選取歷史數據」勾選期數，或於「📂 上傳單期 HTML 報告檔案」中選取檔案。")
 
-    output_html_path = st.text_input("輸出 HTML 報告儲存路徑", value="LactateReport/LacV5.html", help="請輸入包含檔名的完整路徑")
+    safe_base_dir = os.path.abspath("LactateReport")
+    os.makedirs(safe_base_dir, exist_ok=True)
+    raw_filename = st.text_input("輸出 HTML 報告檔名", value="LacV5.html", help="儲存於 LactateReport 安全目錄中")
+    # 防範路徑遍歷 (Path Traversal)：僅提取純檔名，確保副檔名為 .html
+    clean_filename = os.path.basename(raw_filename.strip())
+    if not clean_filename or not clean_filename.lower().endswith(".html"):
+        clean_filename = "LacV5.html" if not clean_filename else f"{clean_filename}.html"
+    output_html_path = os.path.join(safe_base_dir, clean_filename)
 
     if st.button("🚀 開始整合並繪製多期對照圖表 (LacV5)", type="primary", use_container_width=True):
         if not merged_data:
@@ -2840,19 +2848,18 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     use_container_width=True
                 )
 
-    with save_cols[3]:
-        if st.button("☁️ 備份分析報告至 MyLactate", use_container_width=True):
-            if not st.session_state.get('firebase_uid'):
-                st.error("請先於左側登入 MyLactate")
-            else:
-                with st.spinner("上傳中..."):
-                    fname = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                    ok, msg = upload_report_to_firebase_storage(html_report_data, fname)
-                    if ok:
-                        st.success("✅ 已上傳至 MyLactate 雲端儲存空間！")
+            with save_cols[3]:
+                if st.button("☁️ 備份分析報告至 MyLactate", use_container_width=True):
+                    if not st.session_state.get('firebase_uid'):
+                        st.error("請先於左側登入 MyLactate")
                     else:
-                        st.error(f"上傳失敗: {msg}")
-
+                        with st.spinner("上傳中..."):
+                            fname = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            ok, msg = upload_report_to_firebase_storage(html_report_data, fname)
+                            if ok:
+                                st.success("✅ 已上傳至 MyLactate 雲端儲存空間！")
+                            else:
+                                st.error(f"上傳失敗: {msg}")
         else:
             st.info("請於上方輸入乳酸數據，此處將自動產生對照彙整表與提供報告下載。")
             
