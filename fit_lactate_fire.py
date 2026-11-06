@@ -106,7 +106,7 @@ def _unused_legacy_profile_sync(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.9"
+APP_VERSION = "v1.0.10"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2361,7 +2361,6 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
                         os.makedirs(out_dir, exist_ok=True)
                     with open(output_html_path, 'w', encoding='utf-8') as out_f:
                         out_f.write(html_content)
-                    st.success(f"✨ 多期數據整合成功！報告已儲存至：`{output_html_path}`")
                     st.session_state['latest_output_html'] = output_html_path
                 except Exception as e:
                     st.error(f"整合過程中發生錯誤: {e}")
