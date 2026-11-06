@@ -87,7 +87,7 @@ def is_running_on_cloud() -> bool:
         return True
     return False
 
-APP_VERSION = "v1.0.11"
+APP_VERSION = "v1.0.12"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -3181,7 +3181,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 }
             )
             
-            save_cols = st.columns(4)
+            save_cols = st.columns(3)
             
             @st.dialog("💾 選擇報告儲存路徑與檔名", width="large")
             def _open_save_local_report_dialog(html_str: str, df_summary: pd.DataFrame, default_stem: str):
@@ -3402,18 +3402,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     use_container_width=True
                 )
 
-            with save_cols[3]:
-                if st.button("☁️ 備份分析報告至 MyLactate", use_container_width=True):
-                    if not st.session_state.get('firebase_uid'):
-                        st.error("請先於左側登入 MyLactate")
-                    else:
-                        with st.spinner("上傳中..."):
-                            fname = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                            ok, msg = upload_report_to_firebase_storage(html_report_data, fname)
-                            if ok:
-                                st.success("✅ 已上傳至 MyLactate 雲端儲存空間！")
-                            else:
-                                st.error(f"上傳失敗: {msg}")
+
         else:
             st.info("請於上方輸入乳酸數據，此處將自動產生對照彙整表與提供報告下載。")
             
