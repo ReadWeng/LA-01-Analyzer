@@ -2,6 +2,15 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.8] - 2026-11-06
+
+### ✨ 介面權限控制與本機儲存路徑選擇視窗 (UI & Save Path Dialog)
+- **未登入／登出狀態自動隱藏「💾 儲存並綁定乳酸數據至此活動」按鈕**：
+  - 當使用者未登入或已登出 MyLactate 雲端帳號（`firebase_uid` 為空）時，自動隱藏單期分析頁面之「💾 儲存並綁定乳酸數據至此活動」雲端儲存按鈕，使未登入狀態之操作介面更清爽直覺。
+- **「💾 儲存報告至本機專案資料夾」新增彈出式路徑詢問視窗 (`@st.dialog`)**：
+  - 點擊按鈕後立即彈出「💾 選擇報告儲存路徑與檔名」詢問視窗，支援自訂報告檔名。
+  - 整合瀏覽器原生 File System Access API（`showDirectoryPicker` / `showSaveFilePicker`），可直接跳出作業系統（Windows 檔案總管 / macOS Finder）資料夾選擇視窗或另存新檔視窗，讓使用者自由選擇電腦上的任意資料夾一鍵寫入 `.html` 報告與 `.csv` 數據檔；同時保留本機專案資料夾路徑輸入與 `tkinter` 本機資料夾瀏覽支援。
+
 ## [v1.0.7] - 2026-11-04
 
 ### 🛠️ 試算表整批編輯模式 (`st.data_editor`) 輸入修復 (Spreadsheet Input Fix)

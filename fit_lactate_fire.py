@@ -106,7 +106,7 @@ def _unused_legacy_profile_sync(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.7"
+APP_VERSION = "v1.0.8"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2917,12 +2917,11 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         # 最終採納的有效乳酸數據
         effective_custom_df = st.session_state.get('custom_lactate', curr_custom_df)
 
-        col_s1, col_s2 = st.columns([2.5, 1.5])
-        with col_s2:
-            if st.button("💾 儲存並綁定乳酸數據至此活動", type="primary", use_container_width=True, help="將上方編輯的乳酸數據直接綁定寫入此運動活動的 Firebase 紀錄中"):
-                if not st.session_state.get('firebase_uid'):
-                    st.error("請先在左側邊欄登入 MyLactate 雲端帳號！")
-                else:
+        # 僅於已登入雲端帳號時顯示「儲存並綁定乳酸數據至此活動」按鈕（登出後自動隱藏）
+        if st.session_state.get('firebase_uid'):
+            col_s1, col_s2 = st.columns([2.5, 1.5])
+            with col_s2:
+                if st.button("💾 儲存並綁定乳酸數據至此活動", type="primary", use_container_width=True, help="將上方編輯的乳酸數據直接綁定寫入此運動活動的 Firebase 紀錄中"):
                     import activity_calendar
                     act_obj = st.session_state.get('active_cloud_session', {})
                     fit_doc_id = act_obj.get('doc_id') or f"fit_{start_time.strftime('%Y%m%d_%H%M%S')}"
@@ -3209,22 +3208,196 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             
             save_cols = st.columns(4)
             
+            @st.dialog("💾 選擇報告儲存路徑與檔名", width="large")
+            def _open_save_local_report_dialog(html_str: str, df_summary: pd.DataFrame, default_stem: str):
+                st.markdown("請設定檔案名稱，並選擇**跳出系統視窗選取電腦資料夾**，或指定本機專案資料夾路徑儲存：")
+                custom_stem = st.text_input(
+                    "📄 報告檔案名稱（不含副檔名，將自動產生 .html 報告與 .csv 數據檔）",
+                    value=default_stem,
+                    key="dlg_save_report_stem"
+                ).strip() or default_stem
+                safe_stem = re.sub(r'[\\/:*?"<>|]+', '_', custom_stem)
+                html_fname = f"{safe_stem}.html"
+                csv_fname = f"{safe_stem}.csv"
+
+                csv_buf = io.StringIO()
+                df_summary.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+                csv_str_bom = "\ufeff" + csv_buf.getvalue().lstrip("\ufeff")
+
+                b64_html = base64.b64encode(html_str.encode("utf-8")).decode("ascii")
+                b64_csv = base64.b64encode(csv_str_bom.encode("utf-8")).decode("ascii")
+
+                st.markdown("##### 💻 方式一：跳出系統視窗選擇您的電腦路徑（推薦）")
+                picker_widget_html = f"""
+                <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2px 0;">
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button id="btnPickDir" style="flex: 1.4; min-width: 220px; background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff; border: none; border-radius: 8px; padding: 11px 16px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(2,132,199,0.35);">
+                            📂 跳出視窗選擇資料夾（一鍵儲存 HTML + CSV）
+                        </button>
+                        <button id="btnSaveHtmlAs" style="flex: 1; min-width: 170px; background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 11px 14px; font-size: 13.5px; font-weight: 600; cursor: pointer;">
+                            📄 另存 HTML 報告至指定路徑...
+                        </button>
+                        <button id="btnSaveCsvAs" style="flex: 1; min-width: 170px; background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 11px 14px; font-size: 13.5px; font-weight: 600; cursor: pointer;">
+                            📊 另存 CSV 數據至指定路徑...
+                        </button>
+                    </div>
+                    <div id="pickerStatus" style="margin-top: 10px; font-size: 13.5px; line-height: 1.5; color: #cbd5e1;"></div>
+                </div>
+                <script>
+                (function() {{
+                    const b64Html = "{b64_html}";
+                    const b64Csv = "{b64_csv}";
+                    const htmlName = "{html_fname}";
+                    const csvName = "{csv_fname}";
+                    const statusEl = document.getElementById("pickerStatus");
+
+                    function b64ToBytes(b64) {{
+                        const bin = atob(b64);
+                        const bytes = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                        return bytes;
+                    }}
+
+                    function getHostWindow() {{
+                        try {{ if (window.top && (window.top.showDirectoryPicker || window.top.showSaveFilePicker)) return window.top; }} catch (e) {{}}
+                        try {{ if (window.parent && (window.parent.showDirectoryPicker || window.parent.showSaveFilePicker)) return window.parent; }} catch (e) {{}}
+                        return window;
+                    }}
+
+                    function fallbackAnchorDownload(bytes, filename, mime) {{
+                        const blob = new Blob([bytes], {{ type: mime }});
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        setTimeout(() => {{ URL.revokeObjectURL(url); a.remove(); }}, 1500);
+                    }}
+
+                    async function pickDirectoryAndSave(isAuto) {{
+                        const hostWin = getHostWindow();
+                        if (typeof hostWin.showDirectoryPicker !== "function") {{
+                            if (!isAuto) {{
+                                statusEl.innerHTML = "<span style='color:#fbbf24;'>⚠️ 您目前的瀏覽器不支援直接選取資料夾 API，已改為觸發瀏覽器另存下載。</span>";
+                                fallbackAnchorDownload(b64ToBytes(b64Html), htmlName, "text/html;charset=utf-8");
+                                setTimeout(() => fallbackAnchorDownload(b64ToBytes(b64Csv), csvName, "text/csv;charset=utf-8"), 400);
+                            }}
+                            return;
+                        }}
+                        try {{
+                            const dirHandle = await hostWin.showDirectoryPicker({{ mode: "readwrite" }});
+                            const htmlFileHandle = await dirHandle.getFileHandle(htmlName, {{ create: true }});
+                            const htmlWritable = await htmlFileHandle.createWritable();
+                            await htmlWritable.write(b64ToBytes(b64Html));
+                            await htmlWritable.close();
+
+                            const csvFileHandle = await dirHandle.getFileHandle(csvName, {{ create: true }});
+                            const csvWritable = await csvFileHandle.createWritable();
+                            await csvWritable.write(b64ToBytes(b64Csv));
+                            await csvWritable.close();
+
+                            statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>已成功儲存至您選擇的資料夾 【" + dirHandle.name + "】！</b><br>• HTML 網頁報告：<code>" + htmlName + "</code><br>• CSV 生理數據檔：<code>" + csvName + "</code></div>";
+                        }} catch (err) {{
+                            if (err && err.name === "AbortError") {{
+                                statusEl.innerHTML = "<span style='color:#94a3b8;'>ℹ️ 已取消選擇資料夾，您可隨時點擊上方按鈕重新選擇路徑。</span>";
+                            }} else if (!isAuto) {{
+                                statusEl.innerHTML = "<span style='color:#f87171;'>⚠️ 無法直接開啟資料夾選擇器（" + (err.message || err) + "），請改點右側「另存...」或下方專案路徑儲存。</span>";
+                            }}
+                        }}
+                    }}
+
+                    async function saveSingleFileAs(b64Data, suggestedName, mimeType, extDesc, ext) {{
+                        const hostWin = getHostWindow();
+                        const bytes = b64ToBytes(b64Data);
+                        if (typeof hostWin.showSaveFilePicker === "function") {{
+                            try {{
+                                const handle = await hostWin.showSaveFilePicker({{
+                                    suggestedName: suggestedName,
+                                    types: [{{ description: extDesc, accept: {{ [mimeType]: [ext] }} }}]
+                                }});
+                                const writable = await handle.createWritable();
+                                await writable.write(bytes);
+                                await writable.close();
+                                statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>檔案已成功儲存為：<code>" + handle.name + "</code></b></div>";
+                                return;
+                            }} catch (err) {{
+                                if (err && err.name === "AbortError") {{
+                                    statusEl.innerHTML = "<span style='color:#94a3b8;'>ℹ️ 已取消另存檔案。</span>";
+                                    return;
+                                }}
+                            }}
+                        }}
+                        fallbackAnchorDownload(bytes, suggestedName, mimeType);
+                        statusEl.innerHTML = "<span style='color:#38bdf8;'>📥 已觸發瀏覽器另存下載：<code>" + suggestedName + "</code></span>";
+                    }}
+
+                    document.getElementById("btnPickDir").addEventListener("click", () => pickDirectoryAndSave(false));
+                    document.getElementById("btnSaveHtmlAs").addEventListener("click", () => saveSingleFileAs(b64Html, htmlName, "text/html", "HTML Analysis Report", ".html"));
+                    document.getElementById("btnSaveCsvAs").addEventListener("click", () => saveSingleFileAs(b64Csv, csvName, "text/csv", "CSV Physiological Summary", ".csv"));
+
+                    // 若瀏覽器仍保有使用者點擊開啟視窗之手勢權限，自動彈出資料夾選擇視窗
+                    setTimeout(() => pickDirectoryAndSave(true), 50);
+                }})();
+                </script>
+                """
+                components.html(picker_widget_html, height=135)
+
+                st.markdown("---")
+                st.markdown("##### 📁 方式二：指定本機專案資料夾路徑儲存")
+                if "custom_local_save_dir" not in st.session_state:
+                    st.session_state["custom_local_save_dir"] = os.path.abspath("saved_reports")
+
+                col_p_in, col_p_btn = st.columns([3.2, 1.2])
+                with col_p_btn:
+                    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                    if st.button("📂 瀏覽本機路徑...", use_container_width=True, key="btn_tk_pick_folder", help="若於本機端執行 Python，可跳出系統資料夾視窗選取路徑"):
+                        picked_dir = ""
+                        try:
+                            import tkinter as tk
+                            from tkinter import filedialog
+                            root = tk.Tk()
+                            root.withdraw()
+                            root.wm_attributes('-topmost', 1)
+                            picked_dir = filedialog.askdirectory(
+                                initialdir=st.session_state.get("custom_local_save_dir", os.path.abspath(".")),
+                                title="選擇報告儲存資料夾"
+                            )
+                            root.destroy()
+                        except Exception:
+                            picked_dir = ""
+                        if picked_dir:
+                            st.session_state["custom_local_save_dir"] = os.path.normpath(picked_dir)
+                            st.session_state["dlg_custom_dir_input"] = os.path.normpath(picked_dir)
+                        else:
+                            st.info("💡 若您正透過雲端網頁瀏覽器使用，請直接點擊上方藍色按鈕【📂 跳出視窗選擇資料夾】即可跳出電腦視窗選取路徑！")
+                with col_p_in:
+                    target_dir_str = st.text_input(
+                        "目標資料夾路徑（可自由修改或貼上本機資料夾路徑）",
+                        value=st.session_state["custom_local_save_dir"],
+                        key="dlg_custom_dir_input"
+                    ).strip()
+
+                if st.button("💾 儲存至上述專案資料夾路徑", type="primary", use_container_width=True, key="btn_save_to_typed_dir"):
+                    try:
+                        final_dir = os.path.abspath(target_dir_str or "saved_reports")
+                        os.makedirs(final_dir, exist_ok=True)
+                        st.session_state["custom_local_save_dir"] = final_dir
+                        html_full_path = os.path.join(final_dir, html_fname)
+                        csv_full_path = os.path.join(final_dir, csv_fname)
+
+                        with open(html_full_path, "w", encoding="utf-8") as f:
+                            f.write(html_str)
+                        df_summary.to_csv(csv_full_path, index=False, encoding="utf-8-sig")
+
+                        st.success(f"✨ 報告已成功儲存至 `{final_dir}`！\n\n- **HTML 網頁檔**：`{html_full_path}`\n- **CSV 數據檔**：`{csv_full_path}`")
+                    except Exception as e:
+                        st.error(f"儲存失敗：{e}")
+
             with save_cols[0]:
                 if st.button("💾 儲存報告至本機專案資料夾", use_container_width=True):
-                    try:
-                        os.makedirs("saved_reports", exist_ok=True)
-                        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        html_path = f"saved_reports/lactate_report_{timestamp_str}.html"
-                        csv_path = f"saved_reports/lactate_report_{timestamp_str}.csv"
-                        
-                        with open(html_path, "w", encoding="utf-8") as f:
-                            f.write(html_report_data)
-                        
-                        summary_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                        
-                        st.success(f"✨ 報告已成功儲存至本地 `saved_reports/` 資料夾！\n\n- **HTML 網頁檔**：`{html_path}` (雙擊即可開啟)\n- **CSV 數據檔**：`{csv_path}`")
-                    except Exception as e:
-                        st.error(f"儲存失敗: {e}")
+                    default_stem_val = f"lactate_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    _open_save_local_report_dialog(html_report_data, summary_df, default_stem_val)
             
             with save_cols[1]:
                 st.download_button(
