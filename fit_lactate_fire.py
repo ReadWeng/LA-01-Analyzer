@@ -106,7 +106,7 @@ def _unused_legacy_profile_sync(uid, email, token, display_name=None):
     except Exception as e:
         print(f"連線寫入 users/{uid} 失敗: {e}")
 
-APP_VERSION = "v1.0.8"
+APP_VERSION = "v1.0.9"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2347,12 +2347,7 @@ if app_mode == "多期數據整合儀表板 (LacV5)":
 
     safe_base_dir = os.path.abspath("LactateReport")
     os.makedirs(safe_base_dir, exist_ok=True)
-    raw_filename = st.text_input("輸出 HTML 報告檔名", value="LacV5.html", help="儲存於 LactateReport 安全目錄中")
-    # 防範路徑遍歷 (Path Traversal)：僅提取純檔名，確保副檔名為 .html
-    clean_filename = os.path.basename(raw_filename.strip())
-    if not clean_filename or not clean_filename.lower().endswith(".html"):
-        clean_filename = "LacV5.html" if not clean_filename else f"{clean_filename}.html"
-    output_html_path = os.path.join(safe_base_dir, clean_filename)
+    output_html_path = os.path.join(safe_base_dir, "LacV5.html")
 
     if st.button("🚀 開始整合並繪製多期對照圖表 (LacV5)", type="primary", use_container_width=True):
         if not merged_data:
