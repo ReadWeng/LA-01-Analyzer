@@ -74,39 +74,20 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
     threading.Thread(target=_bg_patch, daemon=True).start()
     return
 
-def _unused_legacy_profile_sync(uid, email, token, display_name=None):
+def is_running_on_cloud() -> bool:
+    """判斷是否運行於 Streamlit Community Cloud 或遠端無頭容器伺服器"""
+    cwd = os.path.abspath(".")
+    if cwd.startswith("/mount/src") or os.path.exists("/mount/src") or cwd.startswith("/home/appuser"):
+        return True
+    if os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("IS_STREAMLIT_CLOUD"):
+        return True
+    if os.environ.get("HOSTNAME", "").startswith("streamlit"):
+        return True
+    if os.path.exists("/.dockerenv"):
+        return True
+    return False
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    fields = {
-        "email": {"stringValue": clean_email},
-        "last_login": {"timestampValue": now_iso}
-    }
-    field_paths = ["email", "last_login"]
-    
-    if display_name:
-        fields["display_name"] = {"stringValue": str(display_name).strip()}
-        field_paths.append("display_name")
-        
-    mask_str = "&".join([f"updateMask.fieldPaths={fp}" for fp in field_paths])
-    url = f"https://firestore.googleapis.com/v1/projects/lactatecloud/databases/(default)/documents/users/{uid}?{mask_str}"
-    
-    payload = {
-        "fields": fields
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    try:
-        r = requests.patch(url, headers=headers, json=payload, timeout=4)
-        if r.status_code in [200, 201]:
-            st.session_state["_user_email_synced_to_firestore"] = uid
-        else:
-            print(f"寫入 users/{uid} email 失敗 ({r.status_code}): {r.text[:100]}")
-    except Exception as e:
-        print(f"連線寫入 users/{uid} 失敗: {e}")
-
-APP_VERSION = "v1.0.10"
+APP_VERSION = "v1.0.11"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -3204,7 +3185,11 @@ if fit_bytes is not None or loaded_cloud_session is not None:
             
             @st.dialog("💾 選擇報告儲存路徑與檔名", width="large")
             def _open_save_local_report_dialog(html_str: str, df_summary: pd.DataFrame, default_stem: str):
-                st.markdown("請設定檔案名稱，並選擇**跳出系統視窗選取電腦資料夾**，或指定本機專案資料夾路徑儲存：")
+                in_cloud = is_running_on_cloud()
+                if in_cloud:
+                    st.markdown("請設定檔案名稱，系統將**預設同時儲存 HTML 互動報告與 CSV 生理數據彙整**至您選擇的電腦資料夾：")
+                else:
+                    st.markdown("請設定檔案名稱，系統將**預設同時儲存 HTML 互動報告與 CSV 生理數據彙整**。您可以選擇跳出系統視窗選取電腦資料夾，或指定本機專案資料夾路徑儲存：")
                 custom_stem = st.text_input(
                     "📄 報告檔案名稱（不含副檔名，將自動產生 .html 報告與 .csv 數據檔）",
                     value=default_stem,
@@ -3221,12 +3206,15 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 b64_html = base64.b64encode(html_str.encode("utf-8")).decode("ascii")
                 b64_csv = base64.b64encode(csv_str_bom.encode("utf-8")).decode("ascii")
 
-                st.markdown("##### 💻 方式一：跳出系統視窗選擇您的電腦路徑（推薦）")
+                if in_cloud:
+                    st.markdown("##### 💻 跳出系統視窗選擇您的電腦資料夾（預設一鍵儲存 HTML + CSV）")
+                else:
+                    st.markdown("##### 💻 方式一：跳出系統視窗選擇您的電腦路徑（推薦 · 預設一鍵儲存 HTML + CSV）")
                 picker_widget_html = f"""
                 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2px 0;">
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button id="btnPickDir" style="flex: 1.4; min-width: 220px; background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff; border: none; border-radius: 8px; padding: 11px 16px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(2,132,199,0.35);">
-                            📂 跳出視窗選擇資料夾（一鍵儲存 HTML + CSV）
+                        <button id="btnPickDir" style="flex: 1.6; min-width: 240px; background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff; border: none; border-radius: 8px; padding: 12px 18px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(2,132,199,0.35);">
+                            📂 跳出視窗選擇資料夾（預設儲存 HTML + CSV）
                         </button>
                         <button id="btnSaveHtmlAs" style="flex: 1; min-width: 170px; background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 11px 14px; font-size: 13.5px; font-weight: 600; cursor: pointer;">
                             📄 另存 HTML 報告至指定路徑...
@@ -3337,56 +3325,57 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 """
                 components.html(picker_widget_html, height=135)
 
-                st.markdown("---")
-                st.markdown("##### 📁 方式二：指定本機專案資料夾路徑儲存")
-                if "custom_local_save_dir" not in st.session_state:
-                    st.session_state["custom_local_save_dir"] = os.path.abspath("saved_reports")
+                if not in_cloud:
+                    st.markdown("---")
+                    st.markdown("##### 📁 方式二：指定本機專案資料夾路徑儲存（僅限本機離線執行）")
+                    if "custom_local_save_dir" not in st.session_state:
+                        st.session_state["custom_local_save_dir"] = os.path.abspath("saved_reports")
 
-                col_p_in, col_p_btn = st.columns([3.2, 1.2])
-                with col_p_btn:
-                    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-                    if st.button("📂 瀏覽本機路徑...", use_container_width=True, key="btn_tk_pick_folder", help="若於本機端執行 Python，可跳出系統資料夾視窗選取路徑"):
-                        picked_dir = ""
-                        try:
-                            import tkinter as tk
-                            from tkinter import filedialog
-                            root = tk.Tk()
-                            root.withdraw()
-                            root.wm_attributes('-topmost', 1)
-                            picked_dir = filedialog.askdirectory(
-                                initialdir=st.session_state.get("custom_local_save_dir", os.path.abspath(".")),
-                                title="選擇報告儲存資料夾"
-                            )
-                            root.destroy()
-                        except Exception:
+                    col_p_in, col_p_btn = st.columns([3.2, 1.2])
+                    with col_p_btn:
+                        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                        if st.button("📂 瀏覽本機路徑...", use_container_width=True, key="btn_tk_pick_folder", help="若於本機端執行 Python，可跳出系統資料夾視窗選取路徑"):
                             picked_dir = ""
-                        if picked_dir:
-                            st.session_state["custom_local_save_dir"] = os.path.normpath(picked_dir)
-                            st.session_state["dlg_custom_dir_input"] = os.path.normpath(picked_dir)
-                        else:
-                            st.info("💡 若您正透過雲端網頁瀏覽器使用，請直接點擊上方藍色按鈕【📂 跳出視窗選擇資料夾】即可跳出電腦視窗選取路徑！")
-                with col_p_in:
-                    target_dir_str = st.text_input(
-                        "目標資料夾路徑（可自由修改或貼上本機資料夾路徑）",
-                        value=st.session_state["custom_local_save_dir"],
-                        key="dlg_custom_dir_input"
-                    ).strip()
+                            try:
+                                import tkinter as tk
+                                from tkinter import filedialog
+                                root = tk.Tk()
+                                root.withdraw()
+                                root.wm_attributes('-topmost', 1)
+                                picked_dir = filedialog.askdirectory(
+                                    initialdir=st.session_state.get("custom_local_save_dir", os.path.abspath(".")),
+                                    title="選擇報告儲存資料夾"
+                                )
+                                root.destroy()
+                            except Exception:
+                                picked_dir = ""
+                            if picked_dir:
+                                st.session_state["custom_local_save_dir"] = os.path.normpath(picked_dir)
+                                st.session_state["dlg_custom_dir_input"] = os.path.normpath(picked_dir)
+                            else:
+                                st.info("💡 若您正透過雲端網頁瀏覽器使用，請直接點擊上方藍色按鈕【📂 跳出視窗選擇資料夾】即可跳出電腦視窗選取路徑！")
+                    with col_p_in:
+                        target_dir_str = st.text_input(
+                            "目標資料夾路徑（可自由修改或貼上本機資料夾路徑）",
+                            value=st.session_state["custom_local_save_dir"],
+                            key="dlg_custom_dir_input"
+                        ).strip()
 
-                if st.button("💾 儲存至上述專案資料夾路徑", type="primary", use_container_width=True, key="btn_save_to_typed_dir"):
-                    try:
-                        final_dir = os.path.abspath(target_dir_str or "saved_reports")
-                        os.makedirs(final_dir, exist_ok=True)
-                        st.session_state["custom_local_save_dir"] = final_dir
-                        html_full_path = os.path.join(final_dir, html_fname)
-                        csv_full_path = os.path.join(final_dir, csv_fname)
+                    if st.button("💾 儲存至上述專案資料夾路徑", type="primary", use_container_width=True, key="btn_save_to_typed_dir"):
+                        try:
+                            final_dir = os.path.abspath(target_dir_str or "saved_reports")
+                            os.makedirs(final_dir, exist_ok=True)
+                            st.session_state["custom_local_save_dir"] = final_dir
+                            html_full_path = os.path.join(final_dir, html_fname)
+                            csv_full_path = os.path.join(final_dir, csv_fname)
 
-                        with open(html_full_path, "w", encoding="utf-8") as f:
-                            f.write(html_str)
-                        df_summary.to_csv(csv_full_path, index=False, encoding="utf-8-sig")
+                            with open(html_full_path, "w", encoding="utf-8") as f:
+                                f.write(html_str)
+                            df_summary.to_csv(csv_full_path, index=False, encoding="utf-8-sig")
 
-                        st.success(f"✨ 報告已成功儲存至 `{final_dir}`！\n\n- **HTML 網頁檔**：`{html_full_path}`\n- **CSV 數據檔**：`{csv_full_path}`")
-                    except Exception as e:
-                        st.error(f"儲存失敗：{e}")
+                            st.success(f"✨ 報告已成功儲存至 `{final_dir}`！\n\n- **HTML 網頁檔**：`{html_full_path}`\n- **CSV 數據檔**：`{csv_full_path}`")
+                        except Exception as e:
+                            st.error(f"儲存失敗：{e}")
 
             with save_cols[0]:
                 if st.button("💾 儲存報告至本機專案資料夾", use_container_width=True):
