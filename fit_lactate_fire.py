@@ -87,7 +87,7 @@ def is_running_on_cloud() -> bool:
         return True
     return False
 
-APP_VERSION = "v1.0.12"
+APP_VERSION = "v1.0.13"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):

@@ -2,6 +2,13 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.13] - 2026-11-07
+
+### 🐛 錯誤修復 (Bug Fixes)
+- **修復儲存乳酸數據時之 `RecursionError` 無窮遞迴錯誤**：
+  - 修復 `activity_calendar.py` 中 `invalidate_user_calendar_cache()` 函式誤呼叫自身導致的無窮遞迴例外。
+  - 正確清除 `st.session_state` 中之 `cal_cache_data_{uid}` 與伺服器端記憶體快取 `_get_calendar_ram_cache()`，確保點擊「💾 儲存並綁定乳酸數據至此活動」時能順暢寫入雲端並即時更新月曆狀態。
+
 ## [v1.0.12] - 2026-11-06
 
 ### 🎨 介面精簡優化 (UI Simplification)

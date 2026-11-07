@@ -32,7 +32,7 @@ def invalidate_user_calendar_cache(uid: str):
     """當新增、刪除、綁定或同步數據時，同步清除 session_state 與伺服器端記憶體快取"""
     if not uid:
         return
-    invalidate_user_calendar_cache(uid)
+    st.session_state.pop(f"cal_cache_data_{uid}", None)
     _get_calendar_ram_cache().pop(uid, None)
 from typing import Dict, List, Any, Tuple, Optional
 
