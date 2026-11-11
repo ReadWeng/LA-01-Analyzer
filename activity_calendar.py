@@ -807,6 +807,7 @@ def update_lactate_feeling_in_firestore(uid: str, token: str, doc_id: str, feeli
     return False
 
 
+@st.fragment
 def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: str = "single"):
     """
     手機極致響應式運動數據月曆 (支援單期/多期模式、單擊選取/單擊取消、URL模式記憶)
@@ -1101,7 +1102,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
             else:
                 st.session_state["cal_view_month"] = v_month - 1
             st.session_state.pop("cal_quick_date_select", None)
-            st.rerun()
+            st.rerun(scope="fragment")
     with col_nav2:
         t_color = pal["title_nav"]
         st.markdown(f"<div style='text-align:center; font-weight:800; font-size:15px; color:{t_color}; padding:6px 0; white-space:nowrap;'>📅 {v_year} 年 {v_month:02d} 月</div>", unsafe_allow_html=True)
@@ -1113,7 +1114,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
             else:
                 st.session_state["cal_view_month"] = v_month + 1
             st.session_state.pop("cal_quick_date_select", None)
-            st.rerun()
+            st.rerun(scope="fragment")
 
     # (B) 當月運動摘要統計列 (4 格等寬 Table，永不換行)
     html_parts.append(f'''
@@ -1298,7 +1299,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                 st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
                 if st.button("🔄 重新整理", key="btn_cal_force_refresh", use_container_width=True):
                     fetch_user_calendar_data(uid, token, force_reload=True)
-                    st.rerun()
+                    st.rerun(scope="fragment")
 
     # 6. 當日活動清單與一鍵綁定乳酸操作區
     st.markdown("---")
@@ -1363,13 +1364,13 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                             st.session_state["custom_lactate"] = session_obj["lactate_df"]
                             st.session_state.pop("custom_lactate_editor", None)
                             st.toast(f"✅ 成功載入 {curr_sel} 運動數據！正在開啟分析圖表與乳酸編輯器...", icon="🚀")
-                            st.rerun()
+                            st.rerun(scope="app")
                     with col_act2:
                         if st.button("🗑️ 刪除", key=f"btn_del_act_{act['doc_id']}_{idx}", help="從雲端永久刪除此運動記錄", use_container_width=True):
                             if delete_activity_from_firestore(uid, token, act['doc_id']):
                                 st.toast(f"🗑️ 已刪除記錄：{act.get('activity_name', '')}", icon="✅")
                                 fetch_user_calendar_data(uid, token, force_reload=True)
-                                st.rerun()
+                                st.rerun(scope="fragment")
                             else:
                                 st.error("刪除失敗，請檢查權限或網路連線。")
 
@@ -1423,7 +1424,7 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                                         if update_lactate_feeling_in_firestore(uid, token, la_doc_id, inp_feel):
                                             st.toast("✅ 體感紀錄已更新！", icon="💪")
                                             fetch_user_calendar_data(uid, token, force_reload=True)
-                                            st.rerun()
+                                            st.rerun(scope="fragment")
                                         else:
                                             st.error("儲存失敗，請檢查權限或網路連線。")
                                 st.caption("⚡ 快速選填：")
@@ -1434,13 +1435,13 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                                         if update_lactate_feeling_in_firestore(uid, token, la_doc_id, tag):
                                             st.toast(f"✅ 體感已記錄為【{tag}】！", icon="💪")
                                             fetch_user_calendar_data(uid, token, force_reload=True)
-                                            st.rerun()
+                                            st.rerun(scope="fragment")
                     with c_la6:
                         if la_doc_id and st.button("🗑️", key=f"btn_del_la_{la_doc_id}_{l_idx}", help="從雲端刪除此筆乳酸紀錄"):
                             if delete_lactate_from_firestore(uid, token, la_doc_id):
                                 st.toast("🗑️ 已成功刪除該筆乳酸紀錄！", icon="✅")
                                 fetch_user_calendar_data(uid, token, force_reload=True)
-                                st.rerun()
+                                st.rerun(scope="fragment")
                             else:
                                 st.error("刪除失敗，請檢查權限或網路連線。")
                 if not sel_acts:

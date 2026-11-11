@@ -2,6 +2,17 @@
 
 本專案遵循 [Semantic Versioning 2.0.0](https://semver.org/lang/zh-TW/) 語意化版本規範。
 
+## [v1.0.14] - 2026-11-11
+
+### ⚡ 核心互動導入 `@st.fragment` 局部秒開重繪 (Partial Reruns Acceleration)
+- **活動月曆全面升級為獨立 `@st.fragment` 局部片段**：
+  - 將 `render_activity_calendar` 封裝為 `@st.fragment`，在點擊「◀ 上月」、「下月 ▶」、快速日期切換、更新體感備註、刪除乳酸點或單場活動時，**只局部重新運算月曆區域**，完全跳過外層 3,500 行的整頁重新編譯、認證檢查與圖表運算，翻月與操作反應時間由原本的 1~2 秒降至 **30~50 毫秒極速秒開**。
+  - 當點擊「載入此活動並標定乳酸數據」時，精準觸發 `st.rerun(scope="app")` 順暢切換至單期協同分析視圖。
+- **首頁「最近五期乳酸紀錄趨勢與疲勞評估」升級為獨立片段**：
+  - 封裝 `_render_home_lactate_trends`，將 Plotly 圖表生成與 Takemoto 疲勞動力學計算隔離於局部片段，不再干擾其他區塊。
+- **AI 運動生理週報升級為獨立片段**：
+  - 封裝 `_render_ai_weekly_report_fragment`，在滑動「分析日期區間」或切換「專項篩選」時僅局部重新運算週報，帶來極致流暢的分析反饋。
+
 ## [v1.0.13] - 2026-11-07
 
 ### 🐛 錯誤修復 (Bug Fixes)

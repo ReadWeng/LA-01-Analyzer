@@ -87,7 +87,7 @@ def is_running_on_cloud() -> bool:
         return True
     return False
 
-APP_VERSION = "v1.0.13"
+APP_VERSION = "v1.0.14"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -2392,92 +2392,96 @@ if app_mode == "AI 運動生理週報與下一次處方":
     import streamlit.components.v1 as components
     from datetime import datetime
 
-    col_ctl1, col_ctl2, col_ctl3 = st.columns([3, 2, 1])
-    with col_ctl1:
-        bounds_key = f"date_bounds_v4_{uid}"
-        if bounds_key not in st.session_state:
-            st.session_state[bounds_key] = wpe.get_user_training_date_bounds(uid, token, ref_token)
-        slider_min, slider_max, def_start, def_end = st.session_state[bounds_key]
+    @st.fragment
+    def _render_ai_weekly_report_fragment(u_id, tok, ref_tok, ath_name):
+        col_ctl1, col_ctl2, col_ctl3 = st.columns([3, 2, 1])
+        with col_ctl1:
+            bounds_key = f"date_bounds_v4_{u_id}"
+            if bounds_key not in st.session_state:
+                st.session_state[bounds_key] = wpe.get_user_training_date_bounds(u_id, tok, ref_tok)
+            slider_min, slider_max, def_start, def_end = st.session_state[bounds_key]
 
-        selected_date_range = st.slider(
-            "選擇 AI 分析日期區間 (左右滑動選取區間)",
-            min_value=slider_min,
-            max_value=slider_max,
-            value=(def_start, def_end),
-            format="YYYY-MM-DD",
-            help="直接拖拉起始與結束日期，系統將自動納入該區間內的所有汗乳酸關鍵測驗、日常手錶運動與 Intervals.icu 晨間 HRV 數據",
-            key="ai_report_date_slider_v4"
-        )
-        if isinstance(selected_date_range, (list, tuple)) and len(selected_date_range) == 2:
-            start_date_sel, end_date_sel = selected_date_range[0], selected_date_range[1]
-        else:
-            start_date_sel, end_date_sel = def_start, def_end
-
-    with col_ctl2:
-        sport_filter = st.selectbox(
-            "運動專項篩選 (分開分析)",
-            options=["all", "running", "cycling"],
-            format_func=lambda x: {
-                "all": "🌐 全部專項 (綜合交叉分析)",
-                "running": "🏃 僅分析跑步訓練 (Running)",
-                "cycling": "🚲 僅分析自行車騎行 (Cycling)"
-            }.get(x, x),
-            help="分開評估跑步（心率/配速）與自行車（瓦數/代謝效率），避免跨專項生理特徵混淆",
-            key="ai_report_sport_filter"
-        )
-    with col_ctl3:
-        st.write("")
-        st.write("")
-        btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
-        if btn_gen:
-            st.session_state.pop(bounds_key, None)
-
-    # 自動快取失效機制（當調整日期區間、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
-    REPORT_VERSION = "20261015_v18_exclusive_lactate_matching"
-    current_cache_key = f"{uid}_{athlete_name}_{start_date_sel}_{end_date_sel}_{sport_filter}_{REPORT_VERSION}"
-    if st.session_state.get("cached_report_key") != current_cache_key:
-        st.session_state.pop("cached_weekly_report_html", None)
-
-    if btn_gen or "cached_weekly_report_html" not in st.session_state:
-        with st.spinner("🧠 正在透過汗乳酸生理學引擎運算並呼叫 AI 生成處方..."):
-            report_data = awr.generate_weekly_report_data(
-                athlete_name=athlete_name,
-                uid=uid,
-                token=token,
-                refresh_token=ref_token,
-                start_date=start_date_sel,
-                end_date=end_date_sel,
-                sport_filter=sport_filter
+            selected_date_range = st.slider(
+                "選擇 AI 分析日期區間 (左右滑動選取區間)",
+                min_value=slider_min,
+                max_value=slider_max,
+                value=(def_start, def_end),
+                format="YYYY-MM-DD",
+                help="直接拖拉起始與結束日期，系統將自動納入該區間內的所有汗乳酸關鍵測驗、日常手錶運動與 Intervals.icu 晨間 HRV 數據",
+                key="ai_report_date_slider_v4"
             )
+            if isinstance(selected_date_range, (list, tuple)) and len(selected_date_range) == 2:
+                start_date_sel, end_date_sel = selected_date_range[0], selected_date_range[1]
+            else:
+                start_date_sel, end_date_sel = def_start, def_end
 
-            # 若 token 有刷新，更新 session_state
-            if report_data.get("new_token"):
-                st.session_state["firebase_token"] = report_data["new_token"]
+        with col_ctl2:
+            sport_filter = st.selectbox(
+                "運動專項篩選 (分開分析)",
+                options=["all", "running", "cycling"],
+                format_func=lambda x: {
+                    "all": "🌐 全部專項 (綜合交叉分析)",
+                    "running": "🏃 僅分析跑步訓練 (Running)",
+                    "cycling": "🚲 僅分析自行車騎行 (Cycling)"
+                }.get(x, x),
+                help="分開評估跑步（心率/配速）與自行車（瓦數/代謝效率），避免跨專項生理特徵混淆",
+                key="ai_report_sport_filter"
+            )
+        with col_ctl3:
+            st.write("")
+            st.write("")
+            btn_gen = st.button("⚡ 立即生成/更新 AI 運動週報", type="primary", use_container_width=True)
+            if btn_gen:
+                st.session_state.pop(bounds_key, None)
 
-            # 若查無任何訓練場次，嚴格提示使用者
-            if not report_data.get("sessions"):
-                st.session_state.pop("cached_weekly_report_html", None)
-                err_msg = report_data.get("fetch_error", "查無訓練紀錄")
-                st.warning(f"⚠️ **{athlete_name} 您好**：在【{sport_filter}】專項篩選下查無足夠之運動紀錄。\n\n**詳細原因**：{err_msg}")
-                st.info("""💡 **操作建議**：
+        # 自動快取失效機制（當調整日期區間、專項篩選、切換身分或引擎升級時自動重算，避免舊快取鎖死）
+        REPORT_VERSION = "20261015_v18_exclusive_lactate_matching"
+        current_cache_key = f"{u_id}_{ath_name}_{start_date_sel}_{end_date_sel}_{sport_filter}_{REPORT_VERSION}"
+        if st.session_state.get("cached_report_key") != current_cache_key:
+            st.session_state.pop("cached_weekly_report_html", None)
+
+        if btn_gen or "cached_weekly_report_html" not in st.session_state:
+            with st.spinner("🧠 正在透過汗乳酸生理學引擎運算並呼叫 AI 生成處方..."):
+                report_data = awr.generate_weekly_report_data(
+                    athlete_name=ath_name,
+                    uid=u_id,
+                    token=tok,
+                    refresh_token=ref_tok,
+                    start_date=start_date_sel,
+                    end_date=end_date_sel,
+                    sport_filter=sport_filter
+                )
+
+                # 若 token 有刷新，更新 session_state
+                if report_data.get("new_token"):
+                    st.session_state["firebase_token"] = report_data["new_token"]
+
+                # 若查無任何訓練場次，嚴格提示使用者
+                if not report_data.get("sessions"):
+                    st.session_state.pop("cached_weekly_report_html", None)
+                    err_msg = report_data.get("fetch_error", "查無訓練紀錄")
+                    st.warning(f"⚠️ **{ath_name} 您好**：在【{sport_filter}】專項篩選下查無足夠之運動紀錄。\n\n**詳細原因**：{err_msg}")
+                    st.info("""💡 **操作建議**：
 1. **專項篩選**：若您進行的是跑步訓練，請確認上方篩選為 **🏃 僅分析跑步訓練 (Running)** 或 **🌐 全部專項**。
 2. **上傳記錄**：若尚未上傳含有乳酸測試的 FIT 檔案，可切換至【FIT 檔與乳酸協同分析】上傳並標記乳酸。
 3. **手錶日常同步**：使用左側側邊欄的【🔗 運動手錶雲端綁定 (Garmin / COROS via Intervals.icu)】一鍵同步手錶日常訓練。
 """)
-                st.stop()
+                    return
 
-            html_report = awr.render_modern_html_report(report_data)
-            st.session_state["cached_weekly_report_html"] = html_report
-            st.session_state["cached_report_key"] = current_cache_key
+                html_report = awr.render_modern_html_report(report_data)
+                st.session_state["cached_weekly_report_html"] = html_report
+                st.session_state["cached_report_key"] = current_cache_key
 
-    if "cached_weekly_report_html" in st.session_state:
-        st.download_button(
-            label="💾 下載完整 HTML 報告",
-            data=st.session_state["cached_weekly_report_html"],
-            file_name=f"lactate_weekly_report_{datetime.now().strftime('%Y%m%d')}.html",
-            mime="text/html"
-        )
-        components.html(st.session_state["cached_weekly_report_html"], height=950, scrolling=True)
+        if "cached_weekly_report_html" in st.session_state:
+            st.download_button(
+                label="💾 下載完整 HTML 報告",
+                data=st.session_state["cached_weekly_report_html"],
+                file_name=f"lactate_weekly_report_{datetime.now().strftime('%Y%m%d')}.html",
+                mime="text/html"
+            )
+            components.html(st.session_state["cached_weekly_report_html"], height=950, scrolling=True)
+
+    _render_ai_weekly_report_fragment(uid, token, ref_token, athlete_name)
 
     st.stop()
 
@@ -3430,9 +3434,10 @@ else:
     else:
         st.info("👋 歡迎使用！請先在左側欄上傳您的 `.fit` 檔案，或是登入 MyLactate 雲端帳號以啟用活動月曆瀏覽手錶擷取之運動紀錄。")
     
-    if active_uid:
+    @st.fragment
+    def _render_home_lactate_trends(u_id: str, t_theme: str):
         with st.spinner('正在載入歷史乳酸紀錄...'):
-            all_records = fetch_firebase_lactate_records(target_uid=active_uid)
+            all_records = fetch_firebase_lactate_records(target_uid=u_id)
             if all_records:
                 import plotly.express as px
                 df_hist = pd.DataFrame(all_records)
@@ -3489,7 +3494,7 @@ else:
                             trace.line.width = 2.0
                             trace.marker.size = 6
                     
-                    is_dark_theme = (theme_str == "dark")
+                    is_dark_theme = (t_theme == "dark")
                     axis_color = '#E0E0E0' if is_dark_theme else '#000000'
                     font_color = '#FFFFFF' if is_dark_theme else '#000000'
                     
@@ -3560,6 +3565,9 @@ else:
                             st.info(analysis_res['full_advice_markdown'])
                     else:
                         st.info(analysis_res['full_advice_markdown'])
+
+    if active_uid:
+        _render_home_lactate_trends(active_uid, theme_str)
 
     st.markdown("""
     ### 💡 本工具特色：
