@@ -4,6 +4,8 @@ import json
 import base64
 import time
 import html
+import hmac
+import hashlib
 import threading
 from datetime import datetime, date, timedelta
 
@@ -76,6 +78,9 @@ def ensure_user_profile_in_firestore(uid, email, token, display_name=None):
 
 def is_running_on_cloud() -> bool:
     """判斷是否運行於 Streamlit Community Cloud 或遠端無頭容器伺服器"""
+    cur_file = os.path.abspath(__file__).replace("\\", "/")
+    if "/mount/" in cur_file or os.environ.get("USER") == "appuser":
+        return True
     cwd = os.path.abspath(".")
     if cwd.startswith("/mount/src") or os.path.exists("/mount/src") or cwd.startswith("/home/appuser"):
         return True
@@ -87,7 +92,7 @@ def is_running_on_cloud() -> bool:
         return True
     return False
 
-APP_VERSION = "v1.0.14"
+APP_VERSION = "v1.0.15"
 ADMIN_EMAILS = ["bigporpoise@gmail.com"]
 
 def load_coach_roster(admin_uid, token):
@@ -308,8 +313,13 @@ def logout_firebase():
     for k in list(st.session_state.keys()):
         if any(str(k).startswith(p) for p in ("intervals_auto_synced_", "cal_cache_data_", "icu_creds_cache_", "coach_athletes_cache_")):
             keys_to_clear.append(k)
+    cur_email = st.session_state.get("firebase_email")
     ram_store = _get_server_ram_store()
-    ram_store["oidc_auth"].clear()
+    if cur_email:
+        # 僅清除當前使用者的 OIDC 快取，避免影響伺服器上其他使用者
+        for k in list(ram_store["oidc_auth"].keys()):
+            if ram_store["oidc_auth"][k][1].get("email") == cur_email:
+                ram_store["oidc_auth"].pop(k, None)
     for k in keys_to_clear:
         st.session_state.pop(k, None)
     if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
@@ -322,6 +332,27 @@ def logout_firebase():
     except Exception:
         pass
     st.rerun()
+
+def make_intervals_oauth_state(uid: str) -> str:
+    """產生包含 HMAC 簽章的 OAuth state，防止 CSRF 與未經授權的跨使用者綁定"""
+    secret_seed = FIREBASE_API_KEY or "mylactate_secure_salt"
+    sig = hmac.new(secret_seed.encode("utf-8"), f"icu_bind_{uid}".encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+    return f"icu_{uid}_{sig}"
+
+def verify_intervals_oauth_state(state_str: str, current_uid: str) -> bool:
+    """驗證 OAuth 回傳的 state 是否合法且屬於當前登入者"""
+    if not state_str or not state_str.startswith("icu_"):
+        return False
+    parts = state_str.split("_")
+    if len(parts) >= 3:
+        target_uid = parts[1]
+        expected_state = make_intervals_oauth_state(target_uid)
+        if hmac.compare_digest(state_str, expected_state):
+            return bool(not current_uid or current_uid == target_uid)
+        return False
+    # 相容舊格式: icu_<uid>，嚴格要求 current_uid 與 target_uid 相符
+    target_uid = state_str[4:]
+    return bool(current_uid and current_uid == target_uid)
 
 def login_with_google_id_token(id_token):
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
@@ -472,72 +503,70 @@ if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
                     if "firebase_uid" not in st.session_state and last_err:
                         st.session_state["_firebase_link_error"] = last_err
 
-# 檢查相容 Query Params (如果有其他地方轉跳)
-if "google_uid" in st.query_params:
-    qp_uid = st.query_params.get("google_uid")
-    qp_email = st.query_params.get("google_email", "")
-    qp_token = st.query_params.get("google_token", "")
-    st.session_state["firebase_uid"] = qp_uid
-    st.session_state["firebase_email"] = qp_email
-    st.session_state["firebase_token"] = qp_token
-    ensure_user_profile_in_firestore(qp_uid, qp_email, qp_token)
-    st.session_state.pop("cached_weekly_report_html", None)
-    st.session_state.pop("cached_report_key", None)
-    st.query_params.clear()
-    st.rerun()
+# 清除舊版遺留之未驗證網址參數，防止 Auth Spoofing 身分偽造
+if "google_uid" in st.query_params or "google_token" in st.query_params:
+    st.query_params.pop("google_uid", None)
+    st.query_params.pop("google_email", None)
+    st.query_params.pop("google_token", None)
 
-# 檢查 Intervals.icu OAuth 2.0 回呼跳轉 (Authorization Code Grant)
+# 檢查 Intervals.icu OAuth 2.0 回呼跳轉 (Authorization Code Grant，具備 HMAC 簽章防護)
 if "code" in st.query_params and str(st.query_params.get("state", "")).startswith("icu_"):
     oauth_code = st.query_params.get("code")
-    target_uid = str(st.query_params.get("state", ""))[4:]
+    state_param = str(st.query_params.get("state", ""))
     cur_uid = st.session_state.get('firebase_uid')
     cur_token = st.session_state.get('firebase_token')
 
-    effective_uid = cur_uid or target_uid
-    if effective_uid:
-        import intervals_client as ic
-        oauth_cfg = ic.get_intervals_oauth_config()
-        if oauth_cfg["client_id"] and oauth_cfg["client_secret"]:
-            saved_redirect = st.session_state.get("intervals_active_redirect_uri")
-            redirect_target = ic.resolve_redirect_uri(saved_redirect or oauth_cfg["redirect_uri"])
-            ok, tok_data, msg = ic.exchange_intervals_oauth_code(
-                client_id=oauth_cfg["client_id"],
-                client_secret=oauth_cfg["client_secret"],
-                code=oauth_code,
-                redirect_uri=redirect_target
-            )
-            if ok:
-                ath = tok_data.get("athlete", {})
-                ath_id = str(ath.get("id", "0"))
-                ath_name = ath.get("name") or ath_id
-                acc_tok = tok_data.get("access_token", "")
-                if cur_token:
-                    ic.save_user_intervals_oauth(
-                        uid=effective_uid,
-                        firebase_token=cur_token,
-                        access_token=acc_tok,
-                        athlete_id=ath_id,
-                        athlete_name=ath_name,
-                        scope=tok_data.get("scope", "")
-                    )
+    # 嚴格驗證 state 簽章與身分綁定，防止 OAuth CSRF 攻擊
+    if not verify_intervals_oauth_state(state_param, cur_uid or ""):
+        st.error("❌ Intervals.icu 授權請求驗證失敗（State 簽章不符或跨身分請求），已拒絕綁定。")
+    else:
+        parts = state_param.split("_")
+        target_uid = parts[1] if len(parts) >= 2 else ""
+        effective_uid = cur_uid or target_uid
+        if effective_uid:
+            import intervals_client as ic
+            oauth_cfg = ic.get_intervals_oauth_config()
+            if oauth_cfg["client_id"] and oauth_cfg["client_secret"]:
+                saved_redirect = st.session_state.get("intervals_active_redirect_uri")
+                redirect_target = ic.resolve_redirect_uri(saved_redirect or oauth_cfg["redirect_uri"])
+                ok, tok_data, msg = ic.exchange_intervals_oauth_code(
+                    client_id=oauth_cfg["client_id"],
+                    client_secret=oauth_cfg["client_secret"],
+                    code=oauth_code,
+                    redirect_uri=redirect_target
+                )
+                if ok:
+                    ath = tok_data.get("athlete", {})
+                    ath_id = str(ath.get("id", "0"))
+                    ath_name = ath.get("name") or ath_id
+                    acc_tok = tok_data.get("access_token", "")
+                    if cur_token:
+                        ic.save_user_intervals_oauth(
+                            uid=effective_uid,
+                            firebase_token=cur_token,
+                            access_token=acc_tok,
+                            athlete_id=ath_id,
+                            athlete_name=ath_name,
+                            scope=tok_data.get("scope", "")
+                        )
+                    else:
+                        st.session_state["pending_intervals_oauth"] = {
+                            "uid": effective_uid,
+                            "access_token": acc_tok,
+                            "athlete_id": ath_id,
+                            "athlete_name": ath_name,
+                            "scope": tok_data.get("scope", "")
+                        }
+                    st.session_state["intervals_oauth_connected"] = True
+                    st.session_state["intervals_athlete_id"] = ath_id
+                    st.session_state["intervals_athlete_name"] = ath_name
+                    st.session_state["intervals_api_key"] = acc_tok
+                    st.session_state["intervals_is_oauth"] = True
+                    st.session_state.pop(f"icu_creds_cache_{effective_uid}", None)
+                    _get_server_ram_store()["icu_creds"].pop(effective_uid, None)
+                    st.toast(f"🎉 Intervals.icu 授權成功！已連結運動員：{ath_name}", icon="✅")
                 else:
-                    st.session_state["pending_intervals_oauth"] = {
-                        "uid": effective_uid,
-                        "access_token": acc_tok,
-                        "athlete_id": ath_id,
-                        "athlete_name": ath_name,
-                        "scope": tok_data.get("scope", "")
-                    }
-                st.session_state["intervals_oauth_connected"] = True
-                st.session_state["intervals_athlete_id"] = ath_id
-                st.session_state["intervals_athlete_name"] = ath_name
-                st.session_state["intervals_api_key"] = acc_tok
-                st.session_state["intervals_is_oauth"] = True
-                st.session_state.pop(f"icu_creds_cache_{effective_uid}", None)
-                _get_server_ram_store()["icu_creds"].pop(effective_uid, None)
-                st.toast(f"🎉 Intervals.icu 授權成功！已連結運動員：{ath_name}", icon="✅")
-            else:
-                st.error(f"❌ Intervals.icu OAuth 授權失敗: {msg}")
+                    st.error(f"❌ Intervals.icu OAuth 授權失敗: {msg}")
 
     for q_param in ["code", "state", "scope"]:
         if q_param in st.query_params:
@@ -677,6 +706,7 @@ except ImportError:
     import integrate_reports
 
 def generate_html_report(df_summary, fig, start_time, file_name, metrics):
+    safe_file_name = html.escape(str(file_name))
     plotly_html = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
     
     # Render summary table as HTML
@@ -693,7 +723,7 @@ def generate_html_report(df_summary, fig, start_time, file_name, metrics):
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FIT 檔與乳酸協同分析報告 - {file_name}</title>
+    <title>FIT 檔與乳酸協同分析報告 - {safe_file_name}</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@300;400;600;700&display=swap');
         body {{
@@ -809,7 +839,7 @@ def generate_html_report(df_summary, fig, start_time, file_name, metrics):
         
         <div class="metadata-bar">
             📅 <strong>活動開始時間</strong>: {start_time.strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; 
-            📄 <strong>檔案名稱</strong>: {file_name}
+            📄 <strong>檔案名稱</strong>: {safe_file_name}
         </div>
         
         <div class="kpi-container">
@@ -2120,7 +2150,7 @@ if st.session_state.get('firebase_uid'):
                 auth_url = ic.get_intervals_oauth_authorize_url(
                     client_id=oauth_cfg["client_id"],
                     redirect_uri=redirect_target,
-                    state=f"icu_{icu_uid}"
+                    state=make_intervals_oauth_state(icu_uid)
                 )
                 st.link_button("🔗 一鍵授權連結 Intervals.icu (OAuth 2.0)", auth_url, type="primary", use_container_width=True)
             else:
@@ -2678,9 +2708,9 @@ if fit_bytes is not None or loaded_cloud_session is not None:
         }
         sport_text, sport_col = sport_icon_map.get(sport, (f"🏅 {sport.capitalize()}", "#ffab00"))
         sub_info = f" · {sub_sport}" if sub_sport and sub_sport != 'generic' else ""
-        sport_badge = f" | **🏃 運動類型**: <span style='color:{sport_col}; font-weight:700;'>{sport_text}{sub_info}</span>"
-        
-        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{file_name}`{sport_badge}{gps_badge}", unsafe_allow_html=True)
+        sport_badge = f" | **🏃 運動類型**: <span style='color:{sport_col}; font-weight:700;'>{html.escape(str(sport_text))}{html.escape(str(sub_info))}</span>"
+        safe_file_name_disp = html.escape(str(file_name))
+        st.markdown(f"**📅 活動開始時間**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} (在地時間/UTC) | **📄 檔案名稱**: `{safe_file_name_disp}`{sport_badge}{gps_badge}", unsafe_allow_html=True)
         
         kpi_cols = st.columns(4)
         with kpi_cols[0]:
@@ -2883,7 +2913,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                         glu_str = f"🍬 **{int(glu_val)}** mg/dL" if pd.notna(glu_val) and glu_val > 0 else "🍬 <span style='color:#8b949e;'>-</span>"
                         st.markdown(glu_str, unsafe_allow_html=True)
                     with c_r4:
-                        feel_str = f"💪 **{feel_val}**" if feel_val else "<span style='color:#8b949e;'>-</span>"
+                        feel_str = f"💪 **{html.escape(str(feel_val))}**" if feel_val else "<span style='color:#8b949e;'>-</span>"
                         st.markdown(feel_str, unsafe_allow_html=True)
                     with c_r5:
                         if st.button("🗑️", key=f"btn_del_row_{r_idx}_{t_val}", help=f"刪除 {t_val:.1f} 分鐘數據"):
@@ -3199,7 +3229,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                     value=default_stem,
                     key="dlg_save_report_stem"
                 ).strip() or default_stem
-                safe_stem = re.sub(r'[\\/:*?"<>|]+', '_', custom_stem)
+                safe_stem = re.sub(r'[\\/:*?"<>|]+', '_', custom_stem).replace("..", "_")
                 html_fname = f"{safe_stem}.html"
                 csv_fname = f"{safe_stem}.csv"
 
@@ -3233,9 +3263,13 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                 (function() {{
                     const b64Html = "{b64_html}";
                     const b64Csv = "{b64_csv}";
-                    const htmlName = "{html_fname}";
-                    const csvName = "{csv_fname}";
+                    const htmlName = {json.dumps(html_fname)};
+                    const csvName = {json.dumps(csv_fname)};
                     const statusEl = document.getElementById("pickerStatus");
+
+                    function escapeHtml(str) {{
+                        return String(str || "").replace(/[&<>'"]/g, tag => ({{ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }}[tag] || tag));
+                    }}
 
                     function b64ToBytes(b64) {{
                         const bin = atob(b64);
@@ -3283,12 +3317,12 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                             await csvWritable.write(b64ToBytes(b64Csv));
                             await csvWritable.close();
 
-                            statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>已成功儲存至您選擇的資料夾 【" + dirHandle.name + "】！</b><br>• HTML 網頁報告：<code>" + htmlName + "</code><br>• CSV 生理數據檔：<code>" + csvName + "</code></div>";
+                            statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>已成功儲存至您選擇的資料夾 【" + escapeHtml(dirHandle.name) + "】！</b><br>• HTML 網頁報告：<code>" + escapeHtml(htmlName) + "</code><br>• CSV 生理數據檔：<code>" + escapeHtml(csvName) + "</code></div>";
                         }} catch (err) {{
                             if (err && err.name === "AbortError") {{
                                 statusEl.innerHTML = "<span style='color:#94a3b8;'>ℹ️ 已取消選擇資料夾，您可隨時點擊上方按鈕重新選擇路徑。</span>";
                             }} else if (!isAuto) {{
-                                statusEl.innerHTML = "<span style='color:#f87171;'>⚠️ 無法直接開啟資料夾選擇器（" + (err.message || err) + "），請改點右側「另存...」或下方專案路徑儲存。</span>";
+                                statusEl.innerHTML = "<span style='color:#f87171;'>⚠️ 無法直接開啟資料夾選擇器（" + escapeHtml(err.message || err) + "），請改點右側「另存...」或下方專案路徑儲存。</span>";
                             }}
                         }}
                     }}
@@ -3305,7 +3339,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                                 const writable = await handle.createWritable();
                                 await writable.write(bytes);
                                 await writable.close();
-                                statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>檔案已成功儲存為：<code>" + handle.name + "</code></b></div>";
+                                statusEl.innerHTML = "<div style='background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#ecfdf5; padding:10px 12px; border-radius:8px;'>✨ <b>檔案已成功儲存為：<code>" + escapeHtml(handle.name) + "</code></b></div>";
                                 return;
                             }} catch (err) {{
                                 if (err && err.name === "AbortError") {{
@@ -3315,7 +3349,7 @@ if fit_bytes is not None or loaded_cloud_session is not None:
                             }}
                         }}
                         fallbackAnchorDownload(bytes, suggestedName, mimeType);
-                        statusEl.innerHTML = "<span style='color:#38bdf8;'>📥 已觸發瀏覽器另存下載：<code>" + suggestedName + "</code></span>";
+                        statusEl.innerHTML = "<span style='color:#38bdf8;'>📥 已觸發瀏覽器另存下載：<code>" + escapeHtml(suggestedName) + "</code></span>";
                     }}
 
                     document.getElementById("btnPickDir").addEventListener("click", () => pickDirectoryAndSave(false));

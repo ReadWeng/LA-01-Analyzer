@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import requests
 import calendar
+import html
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, date
 
@@ -64,6 +65,13 @@ def fetch_user_calendar_data(
     並依日期 'YYYY-MM-DD' 分組回傳。
     回傳: (activities_by_date, lactates_by_date)
     """
+    activities_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    lactates_by_date: Dict[str, List[Dict[str, Any]]] = {}
+
+    # 安全性防護：無有效 Token 者一律禁止讀取資料與伺服器記憶體快取
+    if not uid or not token:
+        return activities_by_date, lactates_by_date
+
     import time as _time
     cache_key = f"cal_cache_data_{uid}"
     ram_cache = _get_calendar_ram_cache()
@@ -78,12 +86,6 @@ def fetch_user_calendar_data(
              if _time.time() - cached_ts < 600:
                  st.session_state[cache_key] = (cached_acts, cached_las)
                  return cached_acts, cached_las
-
-    activities_by_date: Dict[str, List[Dict[str, Any]]] = {}
-    lactates_by_date: Dict[str, List[Dict[str, Any]]] = {}
-
-    if not uid or not token:
-        return activities_by_date, lactates_by_date
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     http_sess = _get_http_session()
@@ -1324,11 +1326,12 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
 
             la_badge = f'<span style="color:{pal["card_bound_la"]}; font-weight:700;">💧 已綁定乳酸數據</span>' if (has_la or len(sel_las) > 0) else f'<span style="color:{pal["card_unbound_la"]}; font-weight:700;">⚡ 待標定乳酸</span>'
 
+            safe_act_name = html.escape(str(act.get('activity_name') or act.get('file_name') or '未命名活動'))
             with st.container():
                 st.markdown(f'''
                 <div style="background:{pal['card_bg']}; border:{pal['card_bd']}; {pal['card_sh']} border-radius:10px; padding:12px; margin-bottom:10px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                        <span style="font-size:1.05rem; font-weight:700; color:{pal['card_title']};">{sp_icon} {act.get('activity_name', act.get('file_name'))}</span>
+                        <span style="font-size:1.05rem; font-weight:700; color:{pal['card_title']};">{sp_icon} {safe_act_name}</span>
                         <span style="font-size:0.85rem; color:{pal['card_time']}; font-weight:600;">🕒 {st_time_str} ({dur}分鐘)</span>
                     </div>
                     <div style="display:flex; gap:12px; font-size:0.85rem; color:{pal['card_meta']}; margin-bottom:8px; flex-wrap:wrap;">
@@ -1406,7 +1409,8 @@ def render_activity_calendar(uid: str, token: str, theme: str = "dark", mode: st
                         st.markdown(f"🍬 {glu_t}")
                     with c_la4:
                         if feel_text:
-                            st.markdown(f"💪 **{feel_text}**")
+                            safe_feel_text = html.escape(str(feel_text))
+                            st.markdown(f"💪 **{safe_feel_text}**")
                         else:
                             st.markdown("<span style='color:#8b949e;'>💪 <em>-</em></span>", unsafe_allow_html=True)
                     with c_la5:

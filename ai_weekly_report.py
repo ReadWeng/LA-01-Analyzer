@@ -12,6 +12,7 @@ ai_weekly_report.py
 import os
 import re
 import json
+import html
 from datetime import datetime
 import numpy as np
 
@@ -174,7 +175,8 @@ def render_modern_html_report(report_data):
         </div>
         """
 
-    source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{athlete}</strong> 之個人雲端真實訓練數據庫（包含關鍵乳酸測驗與日常背景運動）。</span></div>"""
+    safe_athlete = html.escape(str(athlete))
+    source_banner_html = f"""<div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; padding: 10px 16px; border-radius: 10px; font-size: 0.88rem; margin-bottom: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px;"><span>✅</span> <span><strong>【個人專屬紀錄】</strong>已成功連結運動員 <strong>{safe_athlete}</strong> 之個人雲端真實訓練數據庫（包含關鍵乳酸測驗與日常背景運動）。</span></div>"""
 
     # 圖表資料準備
     dates_labels = [s["date"] for s in sessions]
